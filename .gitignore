@@ -1,0 +1,18 @@
+# scgl
+.vs
+*.dll
+*.lib
+*.obj
+*.pdb
+*.user
+Debug/
+Release/
+build/
+
+###################################################################################################
+# Local-only reference material. NOT for publication.
+#
+# These hold third-party and decompiled code / binaries that must not be redistributed
+# with this GPL mod. They are kept locally for reference and are never committed.
+###################################################################################################
+external-files/

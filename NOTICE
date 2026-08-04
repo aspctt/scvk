@@ -1,0 +1,50 @@
+"Minecraft" is a trademark of Mojang Synergies AB; ©2009-2026 Mojang Synergies
+AB and Microsoft Corporation. This project is in no way associated with nor
+endorsed by Mojang Synergies AB or Microsoft Corporation.
+
+Other trademarks and registered trademarks are the property of the respective
+trademark holders.
+
+
+THIRD-PARTY COMPONENTS
+
+Build tooling in this repository derives from the NeoForged Mod Development Kit
+and is used under the MIT License:
+
+    MIT License
+
+    Copyright (c) 2023 NeoForged project
+
+    This license applies to the template files as supplied by
+    github.com/NeoForged/MDK
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+Ballistic API is built against the NeoForge modding platform, licensed under
+the GNU Lesser General Public License v2.1. NeoForge is not bundled with or
+redistributed by this project.
+
+Ballistic API compiles against the public API of Iris, licensed under the GNU
+Lesser General Public License v3.0, for shader compatibility. Iris is not
+required at runtime, and is not bundled with or redistributed by this project.
+
+No third-party source code is included in this project.
+
+
+© 2026 ASPCT

@@ -1,0 +1,102 @@
+BALLISTIC API LICENSE
+
+Copyright (c) 2026 ASPCT. All rights reserved.
+
+This license covers the Ballistic API mod: its source code, compiled binaries,
+and the assets distributed with it (the "Software").
+
+
+1. RESERVED RIGHTS
+
+   Except as expressly granted in Section 2, no permission is given to copy,
+   modify, merge, publish, distribute, sublicense, sell, decompile,
+   disassemble, or otherwise reverse-engineer the Software, or to create
+   derivative works of it, in whole or in part.
+
+   You may download and use the Software for personal play.
+
+
+2. CONTENT PACK GRANT
+
+   Ballistic API exists to load third-party content. Nothing in Section 1 is
+   intended to restrict that, and this section grants the rights needed to do
+   it.
+
+   "Content Pack" means a collection of data and assets (JSON definitions,
+   models, textures, sounds, animations, scripts, and similar files) that is
+   loaded at runtime by Ballistic API and does not include any part of the
+   Software's code or assets.
+
+   You are granted a perpetual, worldwide, royalty-free, irrevocable right to:
+
+   (a) Create Content Packs for Ballistic API, for any purpose, including
+       commercial purposes.
+
+   (b) Distribute, sell, and license your Content Packs on any terms you
+       choose, through any channel.
+
+   (c) Use Ballistic API's pack formats, JSON schemas, field names, directory
+       layouts, registry identifiers, and documented public API for the purpose
+       of authoring, loading, or interoperating with Content Packs.
+
+   (d) Write separate mods, tools, editors, validators, or libraries that
+       interoperate with Ballistic API through its public API or pack formats.
+
+   You own your Content Pack. This license claims no ownership over, and
+   imposes no licensing terms on, content you create. Loading your work through
+   Ballistic API does not make it a derivative work of the Software, and no
+   attribution to Ballistic API is required.
+
+   This grant is irrevocable: it cannot be withdrawn from Content Packs already
+   published, and it survives any future change to this license.
+
+
+3. LIMITS OF THE GRANT
+
+   Section 2 does not permit you to:
+
+   (a) Redistribute the Software's own code, binaries, or bundled assets,
+       whether modified or unmodified, except as allowed in Section 4.
+
+   (b) Present a Content Pack in a way that implies it is Ballistic API itself,
+       or that it is endorsed by or affiliated with the project.
+
+
+4. MODPACK INCLUSION
+
+   You may include Ballistic API in a modpack, free or paid, provided that all
+   of the following hold:
+
+   (a) The modpack uses a distribution format that fetches Ballistic API from
+       an official distribution page operated or authorised by the copyright
+       holder. The end user's launcher performs the download; the modpack
+       itself carries a reference, not the file. CurseForge manifests and
+       Modrinth .mrpack index entries are the intended examples.
+
+   (b) The modpack does not bundle, mirror, re-host, or otherwise include a
+       copy of the Ballistic API JAR.
+
+   (c) Ballistic API is distributed unmodified. You may not patch, repackage,
+       strip, recompile, or alter the JAR in any way.
+
+   (d) Configuration files and Content Packs shipped alongside are unaffected
+       by this section and remain governed by Section 2.
+
+   This permission is automatically revoked for any modpack that breaches (a)
+   through (c).
+
+
+5. THIRD-PARTY COMPONENTS
+
+   This project includes and depends on third-party material governed by its
+   own terms. See the NOTICE file distributed with this Software.
+
+
+6. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.

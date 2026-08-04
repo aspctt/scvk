@@ -1,0 +1,19 @@
+# Text files: detected automatically, stored and checked out with LF endings.
+# "text=auto" rather than a bare "text" matters. Setting it outright declares
+# every file in the repository to be text, which overrides Git's own detection
+# and strips CR bytes out of binaries as they are committed. Nothing complains:
+# the file is compared after that same normalisation, so it reads as unchanged
+# while what is stored no longer matches what is on disk.
+* text=auto eol=lf
+
+# Binaries, kept byte for byte. Auto-detection already covers these; naming them
+# is the belt to its braces, since the failure is silent and only shows up in a
+# fresh clone.
+*.dll binary
+*.pdb binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.psd binary
+*.ico binary
+*.zip binary
