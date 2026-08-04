@@ -1,50 +1,110 @@
-"Minecraft" is a trademark of Mojang Synergies AB; ©2009-2026 Mojang Synergies
-AB and Microsoft Corporation. This project is in no way associated with nor
-endorsed by Mojang Synergies AB or Microsoft Corporation.
+scvk: a native Vulkan renderer for SimCity 4
+Copyright (C) 2026 aspctt
 
-Other trademarks and registered trademarks are the property of the respective
-trademark holders.
+scvk is free software: you may redistribute it and/or modify it under the terms
+of the GNU Lesser General Public License as published by the Free Software
+Foundation, either version 2.1 of the License, or (at your option) any later
+version. See LICENSE for the full text.
+
+scvk is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+
+
+TRADEMARKS
+
+"SimCity" and "SimCity 4" are trademarks of Electronic Arts Inc. "Maxis" is a
+trademark of Electronic Arts Inc. This project is not affiliated with, endorsed
+by, or supported by Electronic Arts Inc. or Maxis.
+
+scvk is an independently developed modification. It contains no code or assets
+from SimCity 4, and it is not a substitute for owning the game. It links
+dynamically against SimCity 4 at runtime through the game's own GZCOM plugin
+interface, which is the use the GNU Lesser General Public License expressly
+permits.
+
+Other trademarks and registered trademarks are the property of their respective
+holders.
 
 
 THIRD-PARTY COMPONENTS
 
-Build tooling in this repository derives from the NeoForged Mod Development Kit
-and is used under the MIT License:
+The `vendor/` directory contains source files from the projects listed below.
+Each file retains its original copyright and license notice. All are licensed
+under the GNU Lesser General Public License, version 2.1 or (at your option) any
+later version, the same terms as scvk itself. See vendor/README.md for a
+per-file provenance record.
 
-    MIT License
+  gzcom-dll: an open-source DLL Plugin SDK for SimCity 4
+  https://github.com/nsgomez/gzcom-dll
+  Copyright (C) 2016 Nelson Gomez; Copyright (C) 2024 memo; and contributors
+  LGPL-2.1-or-later
 
-    Copyright (c) 2023 NeoForged project
+      Provides the GZCOM interface declarations that describe SimCity 4's
+      plugin and graphics-driver ABI, and the COM director implementation that
+      registers scvk with the game.
 
-    This license applies to the template files as supplied by
-    github.com/NeoForged/MDK
+  Scion: a Maxis GZCOM/RZCOM framework implementation
+  https://github.com/nsgomez/scion
+  Copyright (C) 2021 Nelson Gomez
+  LGPL-2.1-or-later
 
-    Permission is hereby granted, free of charge, to any person obtaining a
-    copy of this software and associated documentation files (the "Software"),
-    to deal in the Software without restriction, including without limitation
-    the rights to use, copy, modify, merge, publish, distribute, sublicense,
-    and/or sell copies of the Software, and to permit persons to whom the
-    Software is furnished to do so, subject to the following conditions:
+      Provides the reference-counting base class used by scvk's driver object.
 
-    The above copyright notice and this permission notice shall be included in
-    all copies or substantial portions of the Software.
+  SCGL: an OpenGL 3 renderer for SimCity 4
+  https://github.com/nsgomez/scgl
+  Copyright (C) 2025 Nelson Gomez
+  LGPL-2.1-or-later
 
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-    DEALINGS IN THE SOFTWARE.
-
-Ballistic API is built against the NeoForge modding platform, licensed under
-the GNU Lesser General Public License v2.1. NeoForge is not bundled with or
-redistributed by this project.
-
-Ballistic API compiles against the public API of Iris, licensed under the GNU
-Lesser General Public License v3.0, for shader compatibility. Iris is not
-required at runtime, and is not bundled with or redistributed by this project.
-
-No third-party source code is included in this project.
+      Provides the graphics-driver extension interface declarations and the
+      texture combiner structure. SCGL is also the reference implementation
+      that informed scvk's understanding of how SimCity 4 drives this
+      interface; scvk gratefully acknowledges that prior work.
 
 
-© 2026 ASPCT
+DERIVED WORK OUTSIDE vendor/
+
+Two files under `src/` are derived from other projects rather than vendored
+verbatim. They are noted here and in their own file headers.
+
+  src/SC4Version.cpp, src/SC4Version.h
+
+      Game version detection, including the sentinel byte table used when the
+      executable has no version resource, follows the approach taken by SC4Fix.
+
+          SC4Fix Patches for SimCity 4
+          https://github.com/nsgomez/sc4fix
+          Copyright (c) 2015 Nelson Gomez (simmaster07)
+
+          Permission is hereby granted, free of charge, to any person
+          obtaining a copy of this software and associated documentation files
+          (the "Software"), to deal in the Software without restriction,
+          including without limitation the rights to use, copy, modify, merge,
+          publish, distribute, sublicense, and/or sell copies of the Software,
+          and to permit persons to whom the Software is furnished to do so,
+          subject to the following conditions:
+
+          The above copyright notice and this permission notice shall be
+          included in all copies or substantial portions of the Software.
+
+          THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+          EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+          MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+          NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+          BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+          ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+          CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+          SOFTWARE.
+
+  src/FpsLimit.cpp, src/FpsLimit.h
+
+      The simulation speed frame rate caps, and the addresses holding them,
+      were identified by caspervg's sc4-disable-fps-limits.
+
+          sc4-disable-fps-limits
+          https://github.com/caspervg/sc4-disable-fps-limits
+          Copyright (c) caspervg
+          LGPL-2.1-or-later
+
+No code or assets from SimCity 4, Maxis, or Electronic Arts Inc. are included in
+this repository.

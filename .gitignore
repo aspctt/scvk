@@ -1,13 +1,18 @@
-# scgl
+# Build artifacts
 .vs
 *.dll
 *.lib
 *.obj
 *.pdb
 *.user
+*.exp
+*.ilk
+*.iobj
+*.ipdb
 Debug/
 Release/
 build/
+obj/
 
 ###################################################################################################
 # Local-only reference material. NOT for publication.
