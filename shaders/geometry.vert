@@ -6,10 +6,15 @@
  *
  * Vertex stage for the fixed function geometry path.
  *
- * SimCity 4 supplies only two vertex formats: V3F_C4UB (stride 16) and
- * V3F_C4UB_T2F (stride 24). Both start with a float3 position at offset 0 and
- * a packed 8-bit colour at offset 12, so one shader covers both and the
- * pipelines differ only in stride. Texture coordinates are not consumed yet.
+ * SimCity 4 has a dozen vertex formats and they do not agree on which
+ * attributes are present: V3F_C4UB has a colour and no texture coordinate,
+ * V3F_T2F has the reverse, V3F_C4UB_T2F has both, and V3F has neither. A
+ * shader may not declare an input the pipeline does not supply, so this is
+ * compiled once per combination and the backend picks the variant matching
+ * the format it was given.
+ *
+ * Every variant emits the same varyings, so one fragment shader serves all of
+ * them.
  */
 
 #version 450
@@ -22,17 +27,35 @@ layout(push_constant) uniform Push
 } push;
 
 layout(location = 0) in vec3 inPosition;
+#if SCVK_HAS_COLOUR
 layout(location = 1) in vec4 inColour;
+#endif
+#if SCVK_HAS_TEXCOORD
+layout(location = 2) in vec2 inTexCoord;
+#endif
 
 layout(location = 0) out vec4 fragColour;
+layout(location = 1) out vec2 fragTexCoord;
 
 void main()
 {
     gl_Position = push.mvp * vec4(inPosition, 1.0);
 
+#if SCVK_HAS_COLOUR
     // The game packs vertex colours as BGRA, which is why its OpenGL driver
     // requires the vertex_array_bgra extension. The attribute is declared
     // R8G8B8A8 because that format is universally supported for vertex
     // buffers, so the swizzle happens here instead.
     fragColour = inColour.bgra;
+#else
+    fragColour = vec4(1.0);
+#endif
+
+#if SCVK_HAS_TEXCOORD
+    fragTexCoord = inTexCoord;
+#else
+    // Geometry with no texture coordinate samples the 1x1 white default
+    // texture, so any coordinate gives the same result.
+    fragTexCoord = vec2(0.0);
+#endif
 }

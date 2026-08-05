@@ -180,7 +180,7 @@ namespace scvk
 		virtual void     SetTexture(uint32_t texture, uint32_t texUnit) override;
 		virtual intptr_t GetTexture(uint32_t texUnit) override;
 		virtual intptr_t CreateTexture(uint32_t gdInternalTexFormat, uint32_t width, uint32_t height, uint32_t levels, uint32_t gdTexHintFlags) override;
-		virtual void     LoadTextureLevel(uint32_t texture, int32_t face, int32_t level, int32_t xoffset, int32_t yoffset, int32_t unknown, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels) override;
+		virtual void     LoadTextureLevel(uint32_t texture, int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels) override;
 		virtual void     SetCombiner(cGDCombiner const& combiner, uint32_t texUnit) override;
 
 		virtual uint32_t CountVideoModes(void) const override;
@@ -273,10 +273,16 @@ namespace scvk
 		// Bounded because this is diagnostic output on a per-frame path.
 		int blitProbesRemaining;
 
-		// Same idea for geometry: report the leading vertices of the first few
-		// draws, so what the game is actually submitting can be checked against
-		// what appears on screen.
-		int vertexProbesRemaining;
+		// Same idea for geometry, but sampled one draw per distinct vertex
+		// format and primitive type rather than by position in the frame, so
+		// each pipeline gets described once. Sampling the first few draws
+		// instead reported only tiny sub-pixel quads, which said nothing about
+		// what was actually on screen.
+		uint32_t probedKeys[48];
+		int      probedCombinations;
+
+		int      texMatrixProbesRemaining;
+		int      mismatchReportsRemaining;
 
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
@@ -316,6 +322,10 @@ namespace scvk
 		// The last format handed to InterleavedArrays, and the client pointer
 		// it named. Draws read from that pointer, so the driver has to keep
 		// both until the draw arrives.
+		// The texture last bound to stage 0, as a backend handle.
+		uint32_t     boundTexture;
+
+		uint32_t     vertexFormat;
 		uint32_t     vertexStride;
 		void const*  vertexPointer;
 

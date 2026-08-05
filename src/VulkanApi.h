@@ -105,6 +105,19 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkCmdPushConstants)                \
 	X(vkCmdDraw)                         \
 	X(vkCmdDrawIndexed)                  \
+	X(vkCreateImage)                     \
+	X(vkDestroyImage)                    \
+	X(vkGetImageMemoryRequirements)      \
+	X(vkBindImageMemory)                 \
+	X(vkCreateSampler)                   \
+	X(vkDestroySampler)                  \
+	X(vkCreateDescriptorSetLayout)       \
+	X(vkDestroyDescriptorSetLayout)      \
+	X(vkCreateDescriptorPool)            \
+	X(vkDestroyDescriptorPool)           \
+	X(vkAllocateDescriptorSets)          \
+	X(vkUpdateDescriptorSets)            \
+	X(vkCmdBindDescriptorSets)           \
 	X(vkQueueSubmit)                     \
 	X(vkCreateSemaphore)                 \
 	X(vkDestroySemaphore)                \

@@ -93,14 +93,47 @@ namespace scvk
 		void SetTransform(float const* glMvp);
 
 		/**
+		 * Sets the viewport, in the game's OpenGL convention.
+		 *
+		 * The game renders parts of the interface into sub-rectangles and
+		 * pairs each with a projection matched to that rectangle, so ignoring
+		 * this stretches a small region across the whole window.
+		 *
+		 * y is measured from the bottom, as OpenGL does it; Vulkan measures
+		 * from the top, and the flip happens here.
+		 */
+		void SetViewport(int32_t x, int32_t y, int32_t width, int32_t height);
+
+		/** Resets the viewport to the whole window. */
+		void SetFullViewport(void);
+
+		/**
 		 * Draws from client memory.
 		 *
 		 * The interface hands over a plain pointer and a stride, so the data
 		 * is copied into a per-frame buffer before each draw. Quads have no
 		 * Vulkan equivalent and are drawn indexed as triangle pairs.
 		 */
-		void DrawVertices(uint32_t gdPrimType, uint32_t stride,
+		void DrawVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
 			void const* vertices, uint32_t firstVertex, uint32_t vertexCount);
+
+		/**
+		 * Creates a texture and returns a handle, or 0 on failure.
+		 *
+		 * gdInternalFormat is the game's own enumeration: 0 to 4 are
+		 * uncompressed and 5 to 7 are DXT1, DXT3 and DXT5.
+		 */
+		uint32_t CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels);
+
+		/** Uploads one level, or a rectangle of one level. */
+		void UploadTextureLevel(uint32_t handle, uint32_t level,
+			int32_t xoffset, int32_t yoffset, uint32_t width, uint32_t height,
+			uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
+
+		/** Selects the texture used by subsequent draws. 0 means untextured. */
+		void SetTexture(uint32_t handle);
+
+		void DestroyTexture(uint32_t handle);
 
 	private:
 		/**
@@ -112,15 +145,48 @@ namespace scvk
 		 * which will grow to cover blending, depth, alpha test and the texture
 		 * combiners.
 		 */
+		/**
+		 * What distinguishes one pipeline from another.
+		 *
+		 * Keyed on the game's vertex format id rather than the stride. Stride
+		 * is not enough: V3F_C4UB_T2F and V3F_N3F are both 24 bytes but agree
+		 * on nothing after the position, so keying on size alone silently
+		 * reads normals as colours.
+		 */
 		struct PipelineKey
 		{
-			uint32_t            stride;
+			uint32_t            format;
 			VkPrimitiveTopology topology;
 
 			bool operator==(PipelineKey const& other) const
 			{
-				return stride == other.stride && topology == other.topology;
+				return format == other.format && topology == other.topology;
 			}
+		};
+
+		/** Where a format's attributes live, decoded once per format. */
+		struct VertexLayout
+		{
+			uint32_t stride         = 0;
+			bool     hasColour      = false;
+			uint32_t colourOffset   = 0;
+			bool     hasTexCoord    = false;
+			uint32_t texCoordOffset = 0;
+		};
+
+		/** A texture, its view, and the descriptor set that binds it. */
+		struct Texture
+		{
+			VkImage         image      = VK_NULL_HANDLE;
+			VkDeviceMemory  memory     = VK_NULL_HANDLE;
+			VkImageView     view       = VK_NULL_HANDLE;
+			VkDescriptorSet descriptor = VK_NULL_HANDLE;
+			VkFormat        format     = VK_FORMAT_UNDEFINED;
+			uint32_t        width      = 0;
+			uint32_t        height     = 0;
+			uint32_t        levels     = 1;
+			bool            compressed = false;
+			bool            live       = false;
 		};
 
 		struct PipelineEntry
@@ -144,12 +210,23 @@ namespace scvk
 		bool CreateGeometryBuffers(void);
 		void DestroyPipelines(void);
 
+		bool CreateDescriptorResources(void);
+		bool CreateDefaultTexture(void);
+		void DestroyTextures(void);
+
+		/** Runs a one-off command buffer to completion. Used for uploads. */
+		bool SubmitImmediate(void (*record)(VkCommandBuffer, void*), void* context);
+
+		/** Where a format's attributes live, from the game's packed encoding. */
+		static VertexLayout DecodeVertexLayout(uint32_t gdVertexFormat);
+
 		VkPipeline GetPipeline(PipelineKey const& key);
 
 		/** Starts a frame if one is not already in progress. */
 		bool EnsureFrame(void);
 
 		void BeginRenderPassIfNeeded(void);
+		void ApplyViewport(void);
 		void EndRenderPassIfActive(void);
 
 		/** Barriers the swapchain image into a layout, tracking where it was. */
@@ -212,13 +289,33 @@ namespace scvk
 		std::vector<VkImageView>   swapchainImageViews;
 		std::vector<VkFramebuffer> framebuffers;
 
-		VkShaderModule   vertModule     = VK_NULL_HANDLE;
+		// Indexed by (hasColour << 1) | hasTexCoord.
+		VkShaderModule   vertModules[4] = {};
 		VkShaderModule   fragModule     = VK_NULL_HANDLE;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 		std::vector<PipelineEntry> pipelines;
 
+		VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
+		VkDescriptorPool      descriptorPool   = VK_NULL_HANDLE;
+		VkSampler             sampler          = VK_NULL_HANDLE;
+
+		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by
+		// one instead of needing its own shader and pipeline.
+		std::vector<Texture> textures;
+		uint32_t             currentTexture = 0;
+
+		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
+		VkFence         uploadFence         = VK_NULL_HANDLE;
+
 		VkImageLayout currentLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
 		bool          renderPassActive = false;
+
+		// In the game's coordinates, converted when a draw applies them.
+		// Negative width means "not set yet", so the full window is used.
+		int32_t viewportX      = 0;
+		int32_t viewportY      = 0;
+		int32_t viewportWidth  = -1;
+		int32_t viewportHeight = -1;
 
 		float transform[16] = {
 			1, 0, 0, 0,

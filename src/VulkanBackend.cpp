@@ -20,6 +20,8 @@
 #include "VulkanBackend.h"
 #include "Logger.h"
 #include "ShaderBinaries.h"
+
+#include <VertexFormatUtils.h>
 #include "version.h"
 
 #include <string.h>
@@ -313,7 +315,10 @@ namespace scvk
 			return false;
 		}
 
-		if (!CreateGeometryBuffers() || !CreateShaderModules() || !CreatePipelineLayout())
+		// Descriptors before the pipeline layout, which references the set
+		// layout, and the default texture needs the pool and sampler.
+		if (!CreateGeometryBuffers() || !CreateShaderModules() ||
+			!CreateDescriptorResources() || !CreatePipelineLayout())
 		{
 			return false;
 		}
@@ -820,18 +825,74 @@ namespace scvk
 		vkCmdBeginRenderPass(commandBuffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 		renderPassActive = true;
 
+		// The viewport itself is applied per draw, because the game changes it
+		// between draws within a single pass.
+		ApplyViewport();
+	}
+
+	void VulkanBackend::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height)
+	{
+		viewportX      = x;
+		viewportY      = y;
+		viewportWidth  = width;
+		viewportHeight = height;
+	}
+
+	void VulkanBackend::SetFullViewport(void)
+	{
+		viewportWidth  = -1;
+		viewportHeight = -1;
+	}
+
+	void VulkanBackend::ApplyViewport(void)
+	{
+		if (!renderPassActive)
+		{
+			return;
+		}
+
+		int32_t x = 0;
+		int32_t y = 0;
+		int32_t width  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t height = static_cast<int32_t>(swapchainExtent.height);
+
+		if (viewportWidth > 0 && viewportHeight > 0)
+		{
+			x = viewportX;
+			width  = viewportWidth;
+			height = viewportHeight;
+
+			// OpenGL measures the viewport from the bottom of the window and
+			// Vulkan from the top, so the origin has to be reflected.
+			y = static_cast<int32_t>(swapchainExtent.height) - viewportY - viewportHeight;
+		}
+
+		// Clamped because a viewport outside the framebuffer is invalid, and
+		// the game can name one while the window is being resized.
+		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
+
+		if (x < 0) { width += x; x = 0; }
+		if (y < 0) { height += y; y = 0; }
+		if (x + width  > maxWidth)  { width  = maxWidth  - x; }
+		if (y + height > maxHeight) { height = maxHeight - y; }
+		if (width <= 0 || height <= 0) { return; }
+
 		VkViewport viewport{};
-		viewport.x        = 0.0f;
-		viewport.y        = 0.0f;
-		viewport.width    = static_cast<float>(swapchainExtent.width);
-		viewport.height   = static_cast<float>(swapchainExtent.height);
+		viewport.x        = static_cast<float>(x);
+		viewport.y        = static_cast<float>(y);
+		viewport.width    = static_cast<float>(width);
+		viewport.height   = static_cast<float>(height);
 		viewport.minDepth = 0.0f;
 		viewport.maxDepth = 1.0f;
 		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
+		// Scissor follows the viewport. OpenGL treats them separately and the
+		// game enables scissoring only for sub-rectangles, but Vulkan always
+		// scissors, and matching the viewport gives the same result.
 		VkRect2D scissor{};
-		scissor.offset = { 0, 0 };
-		scissor.extent = swapchainExtent;
+		scissor.offset = { x, y };
+		scissor.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 	}
 
@@ -1069,6 +1130,481 @@ namespace scvk
 		}
 	}
 
+	namespace
+	{
+		/** The game's internal texture format enumeration, mapped to Vulkan. */
+		VkFormat MapInternalFormat(uint32_t gdInternalFormat, bool& compressed)
+		{
+			compressed = true;
+
+			switch (gdInternalFormat)
+			{
+			case 5: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;   // DXT1
+			case 6: return VK_FORMAT_BC2_UNORM_BLOCK;        // DXT3
+			case 7: return VK_FORMAT_BC3_UNORM_BLOCK;        // DXT5
+
+			default:
+				// RGB5, RGB8, RGBA4, RGB5_A1 and RGBA8 all become RGBA8. The
+				// narrower ones lose nothing that matters here, and the upload
+				// path only ever hands over 8 bits per channel anyway.
+				compressed = false;
+				return VK_FORMAT_R8G8B8A8_UNORM;
+			}
+		}
+
+		/** Compressed size for a DXT level, in bytes. */
+		VkDeviceSize CompressedSize(VkFormat format, uint32_t width, uint32_t height)
+		{
+			VkDeviceSize const blocks =
+				static_cast<VkDeviceSize>((width + 3u) / 4u) * ((height + 3u) / 4u);
+
+			// DXT1 packs a 4x4 block into 8 bytes; DXT3 and DXT5 add 8 more
+			// for the alpha block.
+			return blocks * ((format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK) ? 8u : 16u);
+		}
+	}
+
+	bool VulkanBackend::CreateDescriptorResources(void)
+	{
+		if (descriptorLayout != VK_NULL_HANDLE)
+		{
+			return true;
+		}
+
+		VkDescriptorSetLayoutBinding binding{};
+		binding.binding         = 0;
+		binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		binding.descriptorCount = 1;
+		binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		VkDescriptorSetLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+		layoutInfo.bindingCount = 1;
+		layoutInfo.pBindings    = &binding;
+
+		VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorLayout);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateDescriptorSetLayout", result);
+			return false;
+		}
+
+		// One set per texture, allocated when the texture is created and never
+		// rewritten, so nothing can be updated while the GPU is reading it.
+		// A session created 89 textures, so this has generous headroom.
+		constexpr uint32_t kMaxTextures = 4096;
+
+		VkDescriptorPoolSize poolSize{};
+		poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		poolSize.descriptorCount = kMaxTextures;
+
+		VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+		poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+		poolInfo.maxSets       = kMaxTextures;
+		poolInfo.poolSizeCount = 1;
+		poolInfo.pPoolSizes    = &poolSize;
+
+		result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateDescriptorPool", result);
+			return false;
+		}
+
+		// A single sampler for now. TexParameter carries per-texture filter and
+		// wrap settings which are not honoured yet; repeat plus linear is the
+		// common case and wrong only at the edges of clamped textures.
+		VkSamplerCreateInfo samplerInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+		samplerInfo.magFilter    = VK_FILTER_LINEAR;
+		samplerInfo.minFilter    = VK_FILTER_LINEAR;
+		samplerInfo.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.maxLod       = VK_LOD_CLAMP_NONE;
+
+		result = vkCreateSampler(device, &samplerInfo, nullptr, &sampler);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateSampler", result);
+			return false;
+		}
+
+		// A command buffer and fence reserved for uploads, which happen
+		// outside the frame's own recording.
+		VkCommandBufferAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+		allocInfo.commandPool        = commandPool;
+		allocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = 1;
+
+		result = vkAllocateCommandBuffers(device, &allocInfo, &uploadCommandBuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateCommandBuffers (upload)", result);
+			return false;
+		}
+
+		VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+		result = vkCreateFence(device, &fenceInfo, nullptr, &uploadFence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateFence (upload)", result);
+			return false;
+		}
+
+		return CreateDefaultTexture();
+	}
+
+	bool VulkanBackend::CreateDefaultTexture(void)
+	{
+		// Handle 0: a single white texel. Draws with no texture bound sample
+		// this, so modulate becomes a multiply by one and untextured geometry
+		// needs no separate shader or pipeline.
+		textures.clear();
+		textures.emplace_back();
+
+		uint32_t handle = CreateTexture(4, 1, 1, 1);
+		if (handle == 0)
+		{
+			return false;
+		}
+
+		uint8_t const white[4] = { 255, 255, 255, 255 };
+		UploadTextureLevel(handle, 0, 0, 0, 1, 1, 1 /* RGBA */, 1 /* unsigned byte */, 0, white);
+
+		// Move it into slot 0 so an unset texture resolves to it naturally.
+		//
+		// The source slot must be blanked, not just marked dead: a copy leaves
+		// both entries owning the same image, view and memory, and teardown
+		// walks every slot, so leaving it would destroy each of them twice.
+		textures[0] = textures[handle];
+		textures[handle] = Texture{};
+
+		return true;
+	}
+
+	uint32_t VulkanBackend::CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
+	{
+		if (dead || device == VK_NULL_HANDLE || width == 0 || height == 0)
+		{
+			return 0;
+		}
+
+		Texture texture;
+		texture.format = MapInternalFormat(gdInternalFormat, texture.compressed);
+		texture.width  = width;
+		texture.height = height;
+		texture.levels = (levels == 0) ? 1 : levels;
+
+		VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+		imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+		imageInfo.format        = texture.format;
+		imageInfo.extent        = { width, height, 1 };
+		imageInfo.mipLevels     = texture.levels;
+		imageInfo.arrayLayers   = 1;
+		imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VkResult result = vkCreateImage(device, &imageInfo, nullptr, &texture.image);
+		if (result != VK_SUCCESS)
+		{
+			LogNote("Vulkan: could not create a %ux%u texture (format %d): %s",
+				width, height, static_cast<int>(texture.format), VkResultName(result));
+			return 0;
+		}
+
+		VkMemoryRequirements requirements{};
+		vkGetImageMemoryRequirements(device, texture.image, &requirements);
+
+		uint32_t typeIndex = 0;
+		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		{
+			vkDestroyImage(device, texture.image, nullptr);
+			LogNote("Vulkan: no device-local memory type for textures.");
+			return 0;
+		}
+
+		VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocInfo.allocationSize  = requirements.size;
+		allocInfo.memoryTypeIndex = typeIndex;
+
+		result = vkAllocateMemory(device, &allocInfo, nullptr, &texture.memory);
+		if (result != VK_SUCCESS)
+		{
+			vkDestroyImage(device, texture.image, nullptr);
+			Fail("vkAllocateMemory (texture)", result);
+			return 0;
+		}
+
+		vkBindImageMemory(device, texture.image, texture.memory, 0);
+
+		VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+		viewInfo.image    = texture.image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format   = texture.format;
+		viewInfo.subresourceRange.aspectMask   = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount   = texture.levels;
+		viewInfo.subresourceRange.layerCount   = 1;
+
+		result = vkCreateImageView(device, &viewInfo, nullptr, &texture.view);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateImageView (texture)", result);
+			return 0;
+		}
+
+		VkDescriptorSetAllocateInfo setInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+		setInfo.descriptorPool     = descriptorPool;
+		setInfo.descriptorSetCount = 1;
+		setInfo.pSetLayouts        = &descriptorLayout;
+
+		result = vkAllocateDescriptorSets(device, &setInfo, &texture.descriptor);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateDescriptorSets", result);
+			return 0;
+		}
+
+		VkDescriptorImageInfo imageBinding{};
+		imageBinding.sampler     = sampler;
+		imageBinding.imageView   = texture.view;
+		imageBinding.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		write.dstSet          = texture.descriptor;
+		write.dstBinding      = 0;
+		write.descriptorCount = 1;
+		write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		write.pImageInfo      = &imageBinding;
+
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+		texture.live = true;
+
+		// Put the image into its sampled layout straight away, so a draw that
+		// binds it before anything has been uploaded is still valid.
+		VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		vkResetCommandBuffer(uploadCommandBuffer, 0);
+		vkBeginCommandBuffer(uploadCommandBuffer, &begin);
+
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = texture.image;
+		barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = texture.levels;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(uploadCommandBuffer,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		vkEndCommandBuffer(uploadCommandBuffer);
+
+		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers    = &uploadCommandBuffer;
+
+		vkResetFences(device, 1, &uploadFence);
+		vkQueueSubmit(queue, 1, &submit, uploadFence);
+		vkWaitForFences(device, 1, &uploadFence, VK_TRUE, UINT64_MAX);
+
+		textures.push_back(texture);
+		return static_cast<uint32_t>(textures.size() - 1);
+	}
+
+	void VulkanBackend::UploadTextureLevel(uint32_t handle, uint32_t level,
+		int32_t xoffset, int32_t yoffset, uint32_t width, uint32_t height,
+		uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels)
+	{
+		if (dead || pixels == nullptr || handle == 0 || handle >= textures.size())
+		{
+			return;
+		}
+
+		Texture& texture = textures[handle];
+		if (!texture.live || width == 0 || height == 0)
+		{
+			return;
+		}
+
+		// Build a tightly packed copy in the destination's own format.
+		std::vector<uint8_t> staged;
+
+		if (texture.compressed)
+		{
+			VkDeviceSize const size = CompressedSize(texture.format, width, height);
+			staged.resize(static_cast<size_t>(size));
+			memcpy(staged.data(), pixels, staged.size());
+		}
+		else
+		{
+			// The game's format enumeration: 1 is RGBA, 3 is BGRA. Only
+			// 8-bit-per-channel input has ever been observed.
+			bool const isBgra = (gdFormat == 3);
+			bool const isRgba = (gdFormat == 1);
+
+			if ((!isBgra && !isRgba) || gdType != 1)
+			{
+				LogNote("Vulkan: texture upload format %u type %u is not handled; skipping.", gdFormat, gdType);
+				return;
+			}
+
+			uint32_t const srcStride = (rowLength != 0) ? rowLength : width;
+
+			staged.resize(static_cast<size_t>(width) * height * 4u);
+
+			uint8_t const* src = static_cast<uint8_t const*>(pixels);
+			for (uint32_t y = 0; y < height; y++)
+			{
+				uint8_t const* srcRow = src + static_cast<size_t>(y) * srcStride * 4u;
+				uint8_t*       dstRow = staged.data() + static_cast<size_t>(y) * width * 4u;
+
+				if (isRgba)
+				{
+					memcpy(dstRow, srcRow, static_cast<size_t>(width) * 4u);
+				}
+				else
+				{
+					// BGRA to RGBA. Done here rather than by choosing a BGRA
+					// image format, so every uncompressed texture ends up in
+					// one predictable layout.
+					for (uint32_t x = 0; x < width; x++)
+					{
+						dstRow[x * 4 + 0] = srcRow[x * 4 + 2];
+						dstRow[x * 4 + 1] = srcRow[x * 4 + 1];
+						dstRow[x * 4 + 2] = srcRow[x * 4 + 0];
+						dstRow[x * 4 + 3] = srcRow[x * 4 + 3];
+					}
+				}
+			}
+		}
+
+		VkBuffer       upload       = VK_NULL_HANDLE;
+		VkDeviceMemory uploadMemory = VK_NULL_HANDLE;
+		void*          uploadMapped = nullptr;
+
+		if (!CreateHostBuffer(staged.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, upload, uploadMemory, uploadMapped))
+		{
+			return;
+		}
+
+		memcpy(uploadMapped, staged.data(), staged.size());
+
+		VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		vkResetCommandBuffer(uploadCommandBuffer, 0);
+		vkBeginCommandBuffer(uploadCommandBuffer, &begin);
+
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = texture.image;
+		barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel   = level;
+		barrier.subresourceRange.levelCount     = 1;
+		barrier.subresourceRange.layerCount     = 1;
+
+		barrier.oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+		vkCmdPipelineBarrier(uploadCommandBuffer,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkBufferImageCopy region{};
+		region.bufferOffset      = 0;
+		region.bufferRowLength   = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel   = level;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = { xoffset, yoffset, 0 };
+		region.imageExtent = { width, height, 1 };
+
+		vkCmdCopyBufferToImage(uploadCommandBuffer, upload, texture.image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		vkCmdPipelineBarrier(uploadCommandBuffer,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		vkEndCommandBuffer(uploadCommandBuffer);
+
+		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers    = &uploadCommandBuffer;
+
+		vkResetFences(device, 1, &uploadFence);
+		vkQueueSubmit(queue, 1, &submit, uploadFence);
+
+		// Waited on rather than pipelined. Uploads are rare (a few hundred in
+		// a session) and always happen outside the frame, so the simplicity is
+		// worth more than the throughput.
+		vkWaitForFences(device, 1, &uploadFence, VK_TRUE, UINT64_MAX);
+
+		vkUnmapMemory(device, uploadMemory);
+		vkFreeMemory(device, uploadMemory, nullptr);
+		vkDestroyBuffer(device, upload, nullptr);
+	}
+
+	void VulkanBackend::SetTexture(uint32_t handle)
+	{
+		currentTexture = (handle < textures.size() && textures[handle].live) ? handle : 0;
+	}
+
+	void VulkanBackend::DestroyTexture(uint32_t handle)
+	{
+		if (handle == 0 || handle >= textures.size() || !textures[handle].live)
+		{
+			return;
+		}
+
+		vkDeviceWaitIdle(device);
+
+		Texture& texture = textures[handle];
+
+		if (texture.view != VK_NULL_HANDLE)   vkDestroyImageView(device, texture.view, nullptr);
+		if (texture.image != VK_NULL_HANDLE)  vkDestroyImage(device, texture.image, nullptr);
+		if (texture.memory != VK_NULL_HANDLE) vkFreeMemory(device, texture.memory, nullptr);
+
+		texture = Texture{};
+
+		if (currentTexture == handle)
+		{
+			currentTexture = 0;
+		}
+	}
+
+	void VulkanBackend::DestroyTextures(void)
+	{
+		for (Texture& texture : textures)
+		{
+			if (texture.view != VK_NULL_HANDLE)   vkDestroyImageView(device, texture.view, nullptr);
+			if (texture.image != VK_NULL_HANDLE)  vkDestroyImage(device, texture.image, nullptr);
+			if (texture.memory != VK_NULL_HANDLE) vkFreeMemory(device, texture.memory, nullptr);
+			texture = Texture{};
+		}
+
+		textures.clear();
+		currentTexture = 0;
+	}
+
 	bool VulkanBackend::CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
 		VkBuffer& outBuffer, VkDeviceMemory& outMemory, void*& outMapped)
 	{
@@ -1200,9 +1736,35 @@ namespace scvk
 		}
 	}
 
-	void VulkanBackend::DrawVertices(uint32_t gdPrimType, uint32_t stride,
+	VulkanBackend::VertexLayout VulkanBackend::DecodeVertexLayout(uint32_t gdVertexFormat)
+	{
+		// Decoded with the game's own packed-format helpers rather than a
+		// hand-written table. The formats disagree about which attributes are
+		// present and where, and the packed encoding is the authority.
+		VertexLayout layout;
+		layout.stride = RZVertexFormatStride(gdVertexFormat);
+
+		layout.hasColour = RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color) != 0;
+		if (layout.hasColour)
+		{
+			layout.colourOffset = RZVertexFormatElementOffset(gdVertexFormat, kGDElementType_Color, 0);
+		}
+
+		layout.hasTexCoord = RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord) != 0;
+		if (layout.hasTexCoord)
+		{
+			layout.texCoordOffset = RZVertexFormatElementOffset(gdVertexFormat, kGDElementType_TexCoord, 0);
+		}
+
+		return layout;
+	}
+
+	void VulkanBackend::DrawVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
 		void const* vertices, uint32_t firstVertex, uint32_t vertexCount)
 	{
+		VertexLayout const layout = DecodeVertexLayout(gdVertexFormat);
+		uint32_t const stride = layout.stride;
+
 		if (vertices == nullptr || vertexCount == 0 || stride == 0)
 		{
 			return;
@@ -1223,6 +1785,10 @@ namespace scvk
 		case 4: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;      break;
 		case 5: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;     break;
 		case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; asQuads = true; break;
+
+		// A quad strip covers the same surface as a triangle strip over the
+		// same vertices, so it needs no index expansion at all.
+		case 7: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
 
 		default:
 			LogNote("Vulkan: primitive type %u is not handled; skipping the draw.", gdPrimType);
@@ -1251,7 +1817,7 @@ namespace scvk
 
 		vertexUsed = offset + bytes;
 
-		PipelineKey key{ stride, topology };
+		PipelineKey key{ gdVertexFormat, topology };
 		VkPipeline pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -1263,6 +1829,14 @@ namespace scvk
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
 			0, sizeof(transform), transform);
+
+		// Slot 0 holds the 1x1 white texture, so an unset or deleted texture
+		// still binds something valid and multiplies by one.
+		uint32_t const bound = (currentTexture < textures.size() && textures[currentTexture].live)
+			? currentTexture : 0;
+
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+			0, 1, &textures[bound].descriptor, 0, nullptr);
 
 		VkBuffer buffers[] = { vertexBuffer };
 		VkDeviceSize offsets[] = { offset };
@@ -1399,7 +1973,7 @@ namespace scvk
 
 	bool VulkanBackend::CreateShaderModules(void)
 	{
-		if (vertModule != VK_NULL_HANDLE)
+		if (vertModules[0] != VK_NULL_HANDLE)
 		{
 			return true;
 		}
@@ -1419,8 +1993,13 @@ namespace scvk
 			return true;
 		};
 
-		return create(kGeometryVertSpv, _countof(kGeometryVertSpv), vertModule)
-			&& create(kGeometryFragSpv, _countof(kGeometryFragSpv), fragModule);
+		// Indexed by (hasColour << 1) | hasTexCoord, matching the order the
+		// generated header declares them in.
+		return create(kGeometryVertSpv_None,   _countof(kGeometryVertSpv_None),   vertModules[0])
+			&& create(kGeometryVertSpv_Tex,    _countof(kGeometryVertSpv_Tex),    vertModules[1])
+			&& create(kGeometryVertSpv_Col,    _countof(kGeometryVertSpv_Col),    vertModules[2])
+			&& create(kGeometryVertSpv_ColTex, _countof(kGeometryVertSpv_ColTex), vertModules[3])
+			&& create(kGeometryFragSpv,        _countof(kGeometryFragSpv),        fragModule);
 	}
 
 	bool VulkanBackend::CreatePipelineLayout(void)
@@ -1439,6 +2018,8 @@ namespace scvk
 		range.size       = sizeof(float) * 16;
 
 		VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+		info.setLayoutCount         = 1;
+		info.pSetLayouts            = &descriptorLayout;
 		info.pushConstantRangeCount = 1;
 		info.pPushConstantRanges    = &range;
 
@@ -1462,10 +2043,16 @@ namespace scvk
 			}
 		}
 
+		VertexLayout const layout = DecodeVertexLayout(key.format);
+
+		// A shader may not declare an input the pipeline does not supply, so
+		// the variant has to match which attributes this format actually has.
+		uint32_t const variant = (layout.hasColour ? 2u : 0u) | (layout.hasTexCoord ? 1u : 0u);
+
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-		stages[0].module = vertModule;
+		stages[0].module = vertModules[variant];
 		stages[0].pName  = "main";
 		stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1474,25 +2061,44 @@ namespace scvk
 
 		VkVertexInputBindingDescription binding{};
 		binding.binding   = 0;
-		binding.stride    = key.stride;
+		binding.stride    = layout.stride;
 		binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-		// Both of the game's formats put a float3 position at 0 and a packed
-		// colour at 12; only the stride differs.
-		VkVertexInputAttributeDescription attributes[2]{};
-		attributes[0].location = 0;
-		attributes[0].binding  = 0;
-		attributes[0].format   = VK_FORMAT_R32G32B32_SFLOAT;
-		attributes[0].offset   = 0;
-		attributes[1].location = 1;
-		attributes[1].binding  = 0;
-		attributes[1].format   = VK_FORMAT_R8G8B8A8_UNORM;
-		attributes[1].offset   = 12;
+		// Position is the only attribute every format has. Colour and texture
+		// coordinate are added at the offsets the format itself declares,
+		// which is not the same across formats: V3F_C4UB_T2F puts the colour
+		// at 12 and V3F_N3F_C4UB puts it at 24.
+		VkVertexInputAttributeDescription attributes[3]{};
+		uint32_t attributeCount = 0;
+
+		attributes[attributeCount].location = 0;
+		attributes[attributeCount].binding  = 0;
+		attributes[attributeCount].format   = VK_FORMAT_R32G32B32_SFLOAT;
+		attributes[attributeCount].offset   = 0;
+		attributeCount++;
+
+		if (layout.hasColour)
+		{
+			attributes[attributeCount].location = 1;
+			attributes[attributeCount].binding  = 0;
+			attributes[attributeCount].format   = VK_FORMAT_R8G8B8A8_UNORM;
+			attributes[attributeCount].offset   = layout.colourOffset;
+			attributeCount++;
+		}
+
+		if (layout.hasTexCoord)
+		{
+			attributes[attributeCount].location = 2;
+			attributes[attributeCount].binding  = 0;
+			attributes[attributeCount].format   = VK_FORMAT_R32G32_SFLOAT;
+			attributes[attributeCount].offset   = layout.texCoordOffset;
+			attributeCount++;
+		}
 
 		VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 		vertexInput.vertexBindingDescriptionCount   = 1;
 		vertexInput.pVertexBindingDescriptions      = &binding;
-		vertexInput.vertexAttributeDescriptionCount = 2;
+		vertexInput.vertexAttributeDescriptionCount = attributeCount;
 		vertexInput.pVertexAttributeDescriptions    = attributes;
 
 		VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
@@ -1552,8 +2158,8 @@ namespace scvk
 			return VK_NULL_HANDLE;
 		}
 
-		LogNote("Vulkan: created pipeline for stride %u, topology %d.",
-			key.stride, static_cast<int>(key.topology));
+		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord %d), topology %d.",
+			key.format, layout.stride, layout.hasColour ? 1 : 0, layout.hasTexCoord ? 1 : 0, static_cast<int>(key.topology));
 
 		pipelines.push_back({ key, pipeline });
 		return pipeline;
@@ -1599,10 +2205,17 @@ namespace scvk
 
 			DestroySwapchain();
 			DestroyPipelines();
+			DestroyTextures();
+
+			if (uploadFence != VK_NULL_HANDLE) { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
+			if (sampler != VK_NULL_HANDLE) { vkDestroySampler(device, sampler, nullptr); sampler = VK_NULL_HANDLE; }
+			if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
+			if (descriptorLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, descriptorLayout, nullptr); descriptorLayout = VK_NULL_HANDLE; }
+			for (VkShaderModule& m : vertModules) { if (m != VK_NULL_HANDLE) { vkDestroyShaderModule(device, m, nullptr); m = VK_NULL_HANDLE; } }
 
 			if (renderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
 			if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
-			if (vertModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, vertModule, nullptr); vertModule = VK_NULL_HANDLE; }
+			
 			if (fragModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, fragModule, nullptr); fragModule = VK_NULL_HANDLE; }
 
 			if (vertexMapped != nullptr) { vkUnmapMemory(device, vertexMemory); vertexMapped = nullptr; }

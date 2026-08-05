@@ -64,14 +64,31 @@ namespace scvk
 
 $body = ''
 
-foreach ($stage in @(@{ file = 'geometry.vert'; name = 'kGeometryVertSpv' },
-                     @{ file = 'geometry.frag'; name = 'kGeometryFragSpv' })) {
+# The vertex stage is built once per attribute combination. A shader may not
+# declare an input the pipeline does not supply, and the game's vertex formats
+# disagree about which of colour and texture coordinate are present.
+#
+# The names match the order the backend indexes them: colour bit, then
+# texture coordinate bit.
+$stages = @(
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_None';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_HAS_TEXCOORD=0') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex';      defines = @('SCVK_HAS_COLOUR=0', 'SCVK_HAS_TEXCOORD=1') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Col';      defines = @('SCVK_HAS_COLOUR=1', 'SCVK_HAS_TEXCOORD=0') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex';   defines = @('SCVK_HAS_COLOUR=1', 'SCVK_HAS_TEXCOORD=1') },
+    @{ file = 'geometry.frag'; name = 'kGeometryFragSpv';          defines = @() }
+)
+
+foreach ($stage in $stages) {
 
     $src = Join-Path $shaderDir $stage.file
     $spv = [System.IO.Path]::GetTempFileName() + '.spv'
 
-    & $Glslc -O --target-env=vulkan1.0 $src -o $spv
-    if ($LASTEXITCODE -ne 0) { throw "glslc failed on $($stage.file)" }
+    $args = @('-O', '--target-env=vulkan1.0')
+    foreach ($d in $stage.defines) { $args += "-D$d" }
+    $args += @($src, '-o', $spv)
+
+    & $Glslc @args
+    if ($LASTEXITCODE -ne 0) { throw "glslc failed on $($stage.name)" }
 
     $bytes = [System.IO.File]::ReadAllBytes($spv)
     Remove-Item $spv -Force
@@ -91,7 +108,7 @@ foreach ($stage in @(@{ file = 'geometry.vert'; name = 'kGeometryVertSpv' },
     }
     $body += "`t};`n`n"
 
-    Write-Host ("{0,-16} {1,6} bytes, {2} words" -f $stage.file, $bytes.Length, $words.Count)
+    Write-Host ("{0,-24} {1,6} bytes, {2} words" -f $stage.name, $bytes.Length, $words.Count)
 }
 
 $footer = "}`n"

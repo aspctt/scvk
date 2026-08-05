@@ -32,6 +32,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 
 #include <cGDCombiner.h>
 
@@ -131,6 +132,21 @@ namespace scvk
 	void cVKDriver::TexStageMatrix(float const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags)
 	{
 		SCVK_CALL("%p, %u, %u, 0x%x", matrix, unknown0, unknown1, gdTexMatFlags);
+
+		// Logged once per distinct flag value. The game drives this over a
+		// million times a session, and a texture matrix that scales texture
+		// coordinates would magnify whatever it samples, which is one of the
+		// candidate explanations for the picture being too large.
+		if (texMatrixProbesRemaining > 0 && matrix != nullptr)
+		{
+			texMatrixProbesRemaining--;
+			LogNote("    texture matrix flags 0x%x: [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]",
+				gdTexMatFlags,
+				matrix[0], matrix[1], matrix[2], matrix[3],
+				matrix[4], matrix[5], matrix[6], matrix[7],
+				matrix[8], matrix[9], matrix[10], matrix[11],
+				matrix[12], matrix[13], matrix[14], matrix[15]);
+		}
 	}
 
 	void cVKDriver::TexStageCombine(eGDTextureStageCombineParamType gdParamType, eGDTextureStageCombineModeParam gdParam)
@@ -156,12 +172,20 @@ namespace scvk
 	void cVKDriver::SetTexture(uint32_t texture, uint32_t texUnit)
 	{
 		SCVK_CALL("%u, %u", texture, texUnit);
+
+		// Only the first stage is honoured. The game drives two, but the second
+		// is part of the combiner network that has no equivalent yet.
+		if (texUnit == 0)
+		{
+			boundTexture = texture;
+			vulkan->SetTexture(texture);
+		}
 	}
 
 	intptr_t cVKDriver::GetTexture(uint32_t texUnit)
 	{
 		SCVK_CALL("%u", texUnit);
-		return 0;
+		return (texUnit == 0) ? static_cast<intptr_t>(boundTexture) : 0;
 	}
 
 	intptr_t cVKDriver::CreateTexture(uint32_t gdInternalTexFormat, uint32_t width, uint32_t height, uint32_t levels, uint32_t gdTexHintFlags)
@@ -169,13 +193,22 @@ namespace scvk
 		SCVK_CALL("fmt %u, %ux%u, %u levels, hints 0x%x", gdInternalTexFormat, width, height, levels, gdTexHintFlags);
 
 		// Must be non-zero: the game tests the result before using it.
-		return static_cast<intptr_t>(nextTextureName++);
+		return static_cast<intptr_t>(vulkan->CreateTexture(gdInternalTexFormat, width, height, levels));
 	}
 
-	void cVKDriver::LoadTextureLevel(uint32_t texture, int32_t face, int32_t level, int32_t xoffset, int32_t yoffset, int32_t unknown, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels)
+	void cVKDriver::LoadTextureLevel(uint32_t texture, int32_t level, int32_t xoffset, int32_t yoffset, int32_t width, int32_t height, uint32_t gdTexFormat, uint32_t gdType, uint32_t rowLength, void const* pixels)
 	{
-		SCVK_CALL("%u, face %d, level %d, +%d+%d, %d, fmt %u, type %u, row %u, %p",
-			texture, face, level, xoffset, yoffset, unknown, gdTexFormat, gdType, rowLength, pixels);
+		SCVK_CALL("%u, level %d, +%d+%d, %dx%d, fmt %u, type %u, row %u, %p",
+			texture, level, xoffset, yoffset, width, height, gdTexFormat, gdType, rowLength, pixels);
+
+		if (level < 0 || width <= 0 || height <= 0)
+		{
+			return;
+		}
+
+		vulkan->UploadTextureLevel(texture, static_cast<uint32_t>(level), xoffset, yoffset,
+			static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+			gdTexFormat, gdType, rowLength, pixels);
 	}
 
 	void cVKDriver::SetCombiner(cGDCombiner const& combiner, uint32_t texUnit)

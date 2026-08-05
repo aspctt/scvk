@@ -388,6 +388,8 @@ namespace scvk
 		viewportY      = 0;
 		viewportWidth  = windowWidth;
 		viewportHeight = windowHeight;
+
+		vulkan->SetFullViewport();
 	}
 
 	void cVKDriver::SetViewport(int32_t x, int32_t y, int32_t width, int32_t height)
@@ -398,6 +400,11 @@ namespace scvk
 		viewportY      = y;
 		viewportWidth  = width;
 		viewportHeight = height;
+
+		// The game pairs each sub-viewport with a projection matched to it.
+		// Dropping this on the floor was what stretched a 667 pixel wide
+		// region across the whole 1920 pixel window.
+		vulkan->SetViewport(x, y, width, height);
 	}
 
 	void cVKDriver::GetViewport(int32_t dimensions[4])

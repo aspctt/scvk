@@ -47,10 +47,15 @@ namespace scvk
 		modelViewMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		projectionMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		activeMatrix(0),
+		boundTexture(0),
+		vertexFormat(0),
 		vertexStride(0),
 		vertexPointer(nullptr),
 		blitProbesRemaining(3),
-		vertexProbesRemaining(6),
+		probedKeys{},
+		probedCombinations(0),
+		texMatrixProbesRemaining(4),
+		mismatchReportsRemaining(12),
 		vulkan(std::make_unique<VulkanBackend>()),
 		windowHandle(nullptr)
 	{
