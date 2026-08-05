@@ -25,10 +25,12 @@ for the actual Vulkan work.
 | Video mode enumeration and `SetVideoMode` | Working in game |
 | Vertex format decoding | Working (vendored from SCGL) |
 | Call tracing | Working |
-| Vulkan instance, device, swapchain | Not started |
-| 2D blits (startup and loading screens) | Not started, **next** |
-| Fixed function emulation (ubershader, pipeline cache) | Not started |
-| Textures and combiners | Not started |
+| Vulkan instance, device, swapchain | Working, validated |
+| 2D blits (startup and loading screens) | Working, unscaled only |
+| 3D geometry: pipelines, vertex upload, matrices | Working, vertex colour only |
+| Textures | Not started, **next** |
+| Depth buffer | Not started |
+| Blending, alpha test, fog, combiners | Not started |
 
 What the first in-game trace established:
 
@@ -123,8 +125,8 @@ untidy but not dangerous.
 
 ## Building
 
-Requires Visual Studio 2022 or later with the desktop C++ workload. There are
-no external dependencies.
+Requires Visual Studio 2022 or later with the desktop C++ workload, and the
+Vulkan SDK for its headers.
 
 ```
 msbuild scvk.sln /p:Configuration=Release /p:Platform=Win32
@@ -132,6 +134,39 @@ msbuild scvk.sln /p:Configuration=Release /p:Platform=Win32
 
 SimCity 4 is a 32-bit process, so **Win32 is the only supported platform**.
 There is deliberately no x64 configuration.
+
+### Vulkan SDK
+
+scvk loads `vulkan-1.dll` by name rather than linking `vulkan-1.lib`, so the
+SDK is only needed at build time and users do not need it installed. Nothing
+Vulkan-specific ships with the DLL.
+
+The build looks for the SDK in this order: an explicit
+`/p:VulkanSdkDir=<root>`, then a `VULKAN_SDK_32` environment variable, then a
+local `1.3.296.0` install, then `VULKAN_SDK`.
+
+> **For validation layers, use SDK 1.3.296.0.** SimCity 4 is a 32-bit process,
+> so the layers must be 32-bit to load into it, and 1.3.296.0 is the last
+> release that ships 32-bit components at all. Later SDKs are 64-bit only and
+> their layers will silently not load. Only the layers care; the headers are
+> architecture independent, so a newer SDK still builds fine, just without
+> validation.
+
+Debug builds enable the validation layers when they are present and route
+their output into `scvk.log`, which is the only channel visible when running
+inside the game. Release builds enable neither.
+
+### Shaders
+
+GLSL lives in `shaders/`. It is compiled to SPIR-V and embedded into
+`src/ShaderBinaries.h`, which is **committed**, so building scvk needs no
+shader compiler and the DLL ships no external shader files.
+
+Regenerate only after changing a shader:
+
+```
+pwsh shaders/compile.ps1
+```
 
 ## Installing
 

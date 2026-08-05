@@ -32,19 +32,52 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 
 #include <VertexFormatUtils.h>
 
 namespace scvk
 {
+	void cVKDriver::UpdateTransform(void)
+	{
+		// Column-major, matching both the game and GLSL: result = P * M, so
+		// result[col][row] = sum over k of P[k][row] * M[col][k].
+		float mvp[16];
+
+		for (int col = 0; col < 4; col++)
+		{
+			for (int row = 0; row < 4; row++)
+			{
+				float sum = 0.0f;
+				for (int k = 0; k < 4; k++)
+				{
+					sum += projectionMatrix[k * 4 + row] * modelViewMatrix[col * 4 + k];
+				}
+				mvp[col * 4 + row] = sum;
+			}
+		}
+
+		vulkan->SetTransform(mvp);
+	}
+
 	void cVKDriver::DrawArrays(uint32_t gdPrimType, int32_t first, int32_t count)
 	{
 		SCVK_CALL("%u, %d, %d", gdPrimType, first, count);
+
+		if (count <= 0 || first < 0 || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		UpdateTransform();
+		vulkan->DrawVertices(gdPrimType, vertexStride, vertexPointer,
+			static_cast<uint32_t>(first), static_cast<uint32_t>(count));
 	}
 
 	void cVKDriver::DrawElements(uint32_t gdPrimType, int32_t count, uint32_t gdType, void const* indices)
 	{
-		SCVK_CALL("%u, %d, %u, %p", gdPrimType, count, gdType, indices);
+		// Never observed from the game, which only ever uses DrawArrays.
+		SCVK_CALL("%u, %d, %u, %p  [UNIMPLEMENTED]", gdPrimType, count, gdType, indices);
 	}
 
 	void cVKDriver::InterleavedArrays(uint32_t gdVertexFormat, int32_t stride, void const* pointer)
@@ -57,6 +90,12 @@ namespace scvk
 		}
 
 		SCVK_CALL("0x%x, %d, %p", gdVertexFormat, stride, pointer);
+
+		// Recorded rather than uploaded. The game names a client pointer here
+		// and draws from it later, possibly several times, so the copy happens
+		// at draw time when the vertex range is actually known.
+		vertexStride  = static_cast<uint32_t>(stride);
+		vertexPointer = pointer;
 	}
 
 	uint32_t cVKDriver::MakeVertexFormat(uint32_t count, intptr_t gdElementTypePtr)

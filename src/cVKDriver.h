@@ -18,6 +18,7 @@
  */
 
 #pragma once
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,10 @@
 
 namespace scvk
 {
+	// Held by pointer so vulkan.h, and the windows.h it drags in, stay out of
+	// every translation unit that only needs the driver interface.
+	class VulkanBackend;
+
 	/**
 	 * scvk's implementation of SimCity 4's renderer interface.
 	 *
@@ -181,7 +186,10 @@ namespace scvk
 		virtual uint32_t CountVideoModes(void) const override;
 		virtual void     GetVideoModeInfo(uint32_t dwIndex, sGDMode& gdMode) override;
 		virtual void     GetVideoModeInfo(sGDMode& gdMode) override;
-		virtual void     SetVideoMode(int32_t newModeIndex, void* hwndProc, bool showWindow, bool unknown) override;
+		// The two trailing flags are of unknown meaning and are ignored. See
+		// the definition: one of them looks like a visibility hint, but acting
+		// on it hides the game's window.
+		virtual void     SetVideoMode(int32_t newModeIndex, void* hwndProc, bool unknownFlag1, bool unknownFlag2) override;
 
 		virtual void PolygonOffset(int32_t offset) override;
 
@@ -248,6 +256,26 @@ namespace scvk
 		int  EnumerateVideoModes(void);
 		void DestroyRenderWindow(void);
 
+		/**
+		 * Shared by all six blit entry points.
+		 *
+		 * They differ only in how they scale and how they treat alpha; the
+		 * pixel upload underneath is identical, so it lives in one place.
+		 */
+		void UploadBlit(char const* caller,
+			int32_t destLeft, int32_t destTop,
+			int32_t destWidth, int32_t destHeight,
+			int32_t srcWidth, int32_t srcHeight,
+			uint32_t gdTexFormat, uint32_t gdType,
+			void const* buffer1, void const* buffer2);
+
+		// How many blits still owe a description of their source buffers.
+		// Bounded because this is diagnostic output on a per-frame path.
+		int blitProbesRemaining;
+
+		/** Recomputes projection times modelview and hands it to the backend. */
+		void UpdateTransform(void);
+
 	private:
 		DriverError lastError;
 
@@ -268,6 +296,25 @@ namespace scvk
 		// and passes them back, and treats zero as "no texture", so names must
 		// be unique and non-zero even while nothing is backing them yet.
 		uint32_t nextTextureName;
+
+		// Held from ClearColor until the next Clear, because the interface
+		// splits what Vulkan takes as a single call.
+		float clearColour[4];
+
+		// The fixed function matrix stack, reduced to what the game uses: it
+		// only ever loads whole matrices into the modelview and projection
+		// slots, never pushes, pops or multiplies.
+		float modelViewMatrix[16];
+		float projectionMatrix[16];
+		uint32_t activeMatrix;
+
+		// The last format handed to InterleavedArrays, and the client pointer
+		// it named. Draws read from that pointer, so the driver has to keep
+		// both until the draw arrives.
+		uint32_t     vertexStride;
+		void const*  vertexPointer;
+
+		std::unique_ptr<VulkanBackend> vulkan;
 
 		void* windowHandle;
 	};

@@ -19,6 +19,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 #include "version.h"
 
 #include <Windows.h>
@@ -40,24 +41,32 @@ namespace scvk
 		LogOpen();
 		SCVK_CALL("");
 
-		LogNote("scvk %s initialising. No Vulkan device is created at this stage;", SCVK_VERSION_STRING);
-		LogNote("this build exists to record how SimCity 4 drives the interface.");
+		LogNote("scvk %s initialising.", SCVK_VERSION_STRING);
+
+		// A Vulkan renderer that cannot reach Vulkan is of no use to anyone.
+		// Reporting failure here lets the game fall back to a renderer that
+		// works, which is far better than presenting a black window.
+		if (!vulkan->CreateInstance())
+		{
+			LogNote("Vulkan is unavailable, so scvk is declining to act as the renderer. "
+				"The game will fall back to another driver.");
+			SetLastError(DriverError::CreateContextFailed);
+			return false;
+		}
 
 		// Shaped to match what the game's own drivers report, because we do not
 		// know how this string is parsed. SCGL, which works, produces eight
 		// newline-separated fields: a three field header, then five describing
-		// the device. The first build of scvk emitted only five fields total,
-		// which is a candidate explanation for the game rejecting it. Cheap to
-		// align, so align it.
+		// the device.
 		driverInfo.clear();
 		driverInfo.append("Maxis 3D GDriver\n");
 		driverInfo.append("Vulkan\n");
-		driverInfo.append("1.0\n");
+		driverInfo.append(vulkan->ApiVersion()).append("\n");
 		driverInfo.append("UnknownDriverName\n");
 		driverInfo.append("scvk " SCVK_VERSION_STRING "\n");
-		driverInfo.append("scvk stub driver\n");
+		driverInfo.append(vulkan->DeviceName()).append("\n");
 		driverInfo.append("UnknownCardVersion\n");
-		driverInfo.append("scvk stub driver\n");
+		driverInfo.append(vulkan->DeviceName()).append("\n");
 
 		int modes = EnumerateVideoModes();
 		if (modes == 0)
@@ -86,6 +95,8 @@ namespace scvk
 	bool cVKDriver::Shutdown(void)
 	{
 		SCVK_CALL("");
+
+		vulkan->Destroy();
 
 		DestroyRenderWindow();
 		UnregisterClassA(kWindowClassName, GetModuleHandleA(nullptr));
@@ -222,9 +233,9 @@ namespace scvk
 		GetVideoModeInfo(static_cast<uint32_t>(currentVideoMode), gdMode);
 	}
 
-	void cVKDriver::SetVideoMode(int32_t newModeIndex, void* hwndProc, bool showWindow, bool unknown)
+	void cVKDriver::SetVideoMode(int32_t newModeIndex, void* hwndProc, bool unknownFlag1, bool unknownFlag2)
 	{
-		SCVK_CALL("%d, %p, %d, %d", newModeIndex, hwndProc, showWindow, unknown);
+		SCVK_CALL("%d, %p, %d, %d", newModeIndex, hwndProc, unknownFlag1, unknownFlag2);
 
 		if (newModeIndex == -1)
 		{
@@ -321,7 +332,26 @@ namespace scvk
 			SetWindowLongPtrA(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(hwndProc));
 		}
 
-		ShowWindow(hwnd, showWindow ? SW_SHOWNORMAL : SW_HIDE);
+		// Shown unconditionally, and the flags above are deliberately ignored.
+		//
+		// The third parameter looks like it should mean "show the window", and
+		// treating it that way is what an earlier build did. The game passes 0
+		// for it, so the window was hidden and the driver spent an entire run
+		// rendering and presenting perfectly into something nobody could see.
+		// SCGL, which works, also ignores both flags and always shows.
+		//
+		// Whatever they mean, it is not this.
+		ShowWindow(hwnd, SW_SHOWNORMAL);
+
+		// The surface has to come after the window is created and shown, and
+		// the swapchain after that, so this is the earliest point any of it
+		// can exist.
+		if (!vulkan->CreateSurfaceAndDevice(hwnd, static_cast<uint32_t>(windowWidth), static_cast<uint32_t>(windowHeight)))
+		{
+			LogNote("Vulkan: could not attach to the window; nothing will be drawn.");
+			SetLastError(DriverError::CreateContextFailed);
+			return;
+		}
 
 		SetViewport();
 		SetLastError(DriverError::OK);
@@ -339,14 +369,15 @@ namespace scvk
 	bool cVKDriver::IsDeviceReady(void)
 	{
 		SCVK_CALL("");
-		return windowHandle != nullptr;
+		return windowHandle != nullptr && vulkan->IsReady();
 	}
 
 	void cVKDriver::Flush(void)
 	{
-		// The frame boundary. The game believes this swaps buffers, so this is
-		// where the swapchain present will go.
+		// The frame boundary. The game believes this swaps buffers, and for us
+		// it submits the recorded commands and presents.
 		SCVK_CALL("");
+		vulkan->Present();
 	}
 
 	void cVKDriver::SetViewport(void)

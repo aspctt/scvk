@@ -32,17 +32,40 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
+
+#include <string.h>
 
 namespace scvk
 {
+	namespace
+	{
+		// The game's clear mask, in its own encoding rather than GL's.
+		constexpr uint32_t kClearDepth   = 0x1000;
+		constexpr uint32_t kClearStencil = 0x2000;
+		constexpr uint32_t kClearColour  = 0x4000;
+	}
+
 	void cVKDriver::Clear(uint32_t mask)
 	{
 		SCVK_CALL("0x%x", mask);
+
+		// Only the colour buffer for now. There is no depth or stencil
+		// attachment yet, because nothing renders through a pipeline.
+		if ((mask & kClearColour) != 0)
+		{
+			vulkan->Clear(clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
+		}
 	}
 
 	void cVKDriver::ClearColor(float r, float g, float b, float a)
 	{
 		SCVK_CALL("%.3f, %.3f, %.3f, %.3f", r, g, b, a);
+
+		clearColour[0] = r;
+		clearColour[1] = g;
+		clearColour[2] = b;
+		clearColour[3] = a;
 	}
 
 	void cVKDriver::ClearDepth(double depth)
@@ -130,16 +153,38 @@ namespace scvk
 	void cVKDriver::MatrixMode(uint32_t gdMatrixTarget)
 	{
 		SCVK_CALL("%u", gdMatrixTarget);
+
+		// The game's own mapping is 0 modelview, 1 projection. It also names
+		// texture and colour matrices, but never selects them.
+		activeMatrix = gdMatrixTarget;
 	}
 
 	void cVKDriver::LoadMatrix(float const* m)
 	{
 		SCVK_CALL("%p", m);
+
+		if (m == nullptr)
+		{
+			return;
+		}
+
+		float* target = (activeMatrix == 1) ? projectionMatrix : modelViewMatrix;
+		memcpy(target, m, sizeof(float) * 16);
 	}
 
 	void cVKDriver::LoadIdentity(void)
 	{
 		SCVK_CALL("");
+
+		static float const identity[16] = {
+			1, 0, 0, 0,
+			0, 1, 0, 0,
+			0, 0, 1, 0,
+			0, 0, 0, 1,
+		};
+
+		float* target = (activeMatrix == 1) ? projectionMatrix : modelViewMatrix;
+		memcpy(target, identity, sizeof(identity));
 	}
 
 	void cVKDriver::Enable(uint32_t gdDriverState)

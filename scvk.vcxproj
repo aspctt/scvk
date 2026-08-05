@@ -44,12 +44,39 @@
     <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)obj\$(Configuration)\</IntDir>
   </PropertyGroup>
+  <!--
+    Vulkan SDK location.
+
+    SimCity 4 is a 32-bit process, so the validation layers have to be 32-bit
+    to load into it. SDK 1.3.296.0 is the last release that ships 32-bit
+    components at all; every later SDK is 64-bit only. Since the machine-wide
+    VULKAN_SDK variable will normally point at a newer, 64-bit-only install,
+    this deliberately prefers the older one.
+
+    Only the layers actually require the old SDK. The headers are architecture
+    independent and scvk loads vulkan-1.dll by name rather than linking against
+    vulkan-1.lib, so nothing else here is version sensitive.
+
+    Override order: an explicit /p:VulkanSdkDir=..., then a VULKAN_SDK_32
+    environment variable, then the known 1.3.296.0 install, then whatever
+    VULKAN_SDK points at.
+  -->
+  <PropertyGroup Label="VulkanSdk">
+    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And '$(VULKAN_SDK_32)' != ''">$(VULKAN_SDK_32)</VulkanSdkDir>
+    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And Exists('S:\VulkanSDK\1.3.296.0\Include\vulkan\vulkan.h')">S:\VulkanSDK\1.3.296.0</VulkanSdkDir>
+    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == ''">$(VULKAN_SDK)</VulkanSdkDir>
+  </PropertyGroup>
+  <Target Name="ScvkCheckVulkanSdk" BeforeTargets="ClCompile">
+    <Error Condition="!Exists('$(VulkanSdkDir)\Include\vulkan\vulkan.h')"
+           Text="Vulkan headers not found. Set VULKAN_SDK_32 or pass /p:VulkanSdkDir=&lt;sdk root&gt;. Looked in '$(VulkanSdkDir)'." />
+    <Message Importance="high" Text="scvk: using Vulkan SDK at $(VulkanSdkDir)" />
+  </Target>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <Optimization>Disabled</Optimization>
@@ -66,7 +93,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <Optimization>MaxSpeed</Optimization>
@@ -90,6 +117,8 @@
     <ClCompile Include="src\FpsLimit.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
+    <ClCompile Include="src\VulkanApi.cpp" />
+    <ClCompile Include="src\VulkanBackend.cpp" />
     <ClCompile Include="vendor\src\cRZBaseString.cpp" />
     <ClCompile Include="vendor\src\cRZCOMDllDirector.cpp" />
     <ClCompile Include="vendor\src\cRZRefCount.cpp" />
@@ -100,7 +129,10 @@
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\SC4Version.h" />
+    <ClInclude Include="src\ShaderBinaries.h" />
     <ClInclude Include="src\version.h" />
+    <ClInclude Include="src\VulkanApi.h" />
+    <ClInclude Include="src\VulkanBackend.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -19,6 +19,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 #include "version.h"
 
 // Both interfaces declare a pure virtual destructor, which still requires a
@@ -42,6 +43,14 @@ namespace scvk
 		viewportHeight(0),
 		enabledCapabilities{},
 		nextTextureName(1),
+		clearColour{ 0.0f, 0.0f, 0.0f, 1.0f },
+		modelViewMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
+		projectionMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
+		activeMatrix(0),
+		vertexStride(0),
+		vertexPointer(nullptr),
+		blitProbesRemaining(3),
+		vulkan(std::make_unique<VulkanBackend>()),
 		windowHandle(nullptr)
 	{
 		refCount = 0;

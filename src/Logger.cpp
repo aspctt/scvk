@@ -36,6 +36,8 @@ namespace scvk
 
 		FILE*     gLog         = nullptr;
 		uint32_t  gTraced      = 0;
+		uint64_t  gTotalCalls  = 0;
+		uint64_t  gNextSummary = 0;
 		uint32_t  gNextOrdinal = 0;
 		CallSite* gSites       = nullptr;
 		bool      gEverOpened  = false;
@@ -224,8 +226,33 @@ namespace scvk
 	void LogCall(CallSite& site, char const* argFmt, ...)
 	{
 		site.calls++;
+		gTotalCalls++;
 
-		if (gLog == nullptr || gTraced >= kTraceBudget)
+		if (gLog == nullptr)
+		{
+			return;
+		}
+
+		// Snapshot the counters periodically rather than only at shutdown.
+		//
+		// The ordered trace covers startup and then stops, which is the point
+		// of the budget. But the per-method counts are the only view of the
+		// steady state, and writing them only in Shutdown means they are lost
+		// whenever the game is killed rather than closed. That is the normal
+		// case while the renderer is incomplete, so the first 3D session
+		// produced a log with no summary in it at all.
+		if (gTotalCalls >= gNextSummary)
+		{
+			// First snapshot when the ordered trace runs out, then at
+			// intervals, so a killed session still leaves usable numbers.
+			gNextSummary = (gNextSummary == 0) ? kTraceBudget : gTotalCalls + 250000;
+			if (gTotalCalls >= kTraceBudget)
+			{
+				LogSummary("periodic snapshot");
+			}
+		}
+
+		if (gTraced >= kTraceBudget)
 		{
 			return;
 		}
