@@ -24,6 +24,7 @@
 #include <VertexFormatUtils.h>
 #include "version.h"
 
+#include <stdio.h>
 #include <string.h>
 
 namespace scvk
@@ -608,7 +609,8 @@ namespace scvk
 		info.imageColorSpace  = chosen.colorSpace;
 		info.imageExtent      = extent;
 		info.imageArrayLayers = 1;
-		info.imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		info.imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+		                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		info.preTransform     = caps.currentTransform;
 		info.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -1027,6 +1029,66 @@ namespace scvk
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 	}
 
+	void VulkanBackend::RequestCapture(char const* path)
+	{
+		if (dead || path == nullptr)
+		{
+			return;
+		}
+
+		captureRequested = true;
+		capturePath      = path;
+	}
+
+	namespace
+	{
+		/**
+		 * Writes BGRA pixels as a 32 bit BMP.
+		 *
+		 * Top-down, signalled by a negative height, so the rows can go
+		 * straight out in the order the GPU produced them.
+		 */
+		bool WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch)
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+			{
+				return false;
+			}
+
+			uint32_t const imageBytes = width * height * 4u;
+			uint32_t const fileBytes  = 14u + 40u + imageBytes;
+
+			auto put16 = [file](uint16_t v) { fwrite(&v, 2, 1, file); };
+			auto put32 = [file](uint32_t v) { fwrite(&v, 4, 1, file); };
+
+			fwrite("BM", 1, 2, file);
+			put32(fileBytes);
+			put32(0);
+			put32(14u + 40u);
+
+			put32(40u);
+			put32(width);
+			put32(static_cast<uint32_t>(-static_cast<int32_t>(height)));
+			put16(1);
+			put16(32);
+			put32(0);
+			put32(imageBytes);
+			put32(2835);
+			put32(2835);
+			put32(0);
+			put32(0);
+
+			for (uint32_t y = 0; y < height; y++)
+			{
+				fwrite(pixels + static_cast<size_t>(y) * rowPitch, 4, width, file);
+			}
+
+			fclose(file);
+			return true;
+		}
+	}
+
 	void VulkanBackend::Present(void)
 	{
 		if (dead)
@@ -1059,6 +1121,52 @@ namespace scvk
 		}
 
 		EndRenderPassIfActive();
+
+		// The capture is recorded into this frame's command buffer, between
+		// the last draw and the transition for presenting, so it sees exactly
+		// what the user sees.
+		bool capturingThisFrame = false;
+
+		if (captureRequested)
+		{
+			VkDeviceSize const needed =
+				static_cast<VkDeviceSize>(swapchainExtent.width) * swapchainExtent.height * 4u;
+
+			if (readbackSize < needed)
+			{
+				if (readbackMapped != nullptr) { vkUnmapMemory(device, readbackMemory); readbackMapped = nullptr; }
+				if (readbackMemory != VK_NULL_HANDLE) { vkFreeMemory(device, readbackMemory, nullptr); readbackMemory = VK_NULL_HANDLE; }
+				if (readbackBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, readbackBuffer, nullptr); readbackBuffer = VK_NULL_HANDLE; }
+
+				if (CreateHostBuffer(needed, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+						readbackBuffer, readbackMemory, readbackMapped))
+				{
+					readbackSize = needed;
+				}
+			}
+
+			if (readbackSize >= needed)
+			{
+				TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+				VkBufferImageCopy region{};
+				region.bufferOffset      = 0;
+				region.bufferRowLength   = 0;
+				region.bufferImageHeight = 0;
+				region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				region.imageSubresource.layerCount = 1;
+				region.imageOffset = { 0, 0, 0 };
+				region.imageExtent = { swapchainExtent.width, swapchainExtent.height, 1 };
+
+				vkCmdCopyImageToBuffer(commandBuffer, swapchainImages[imageIndex],
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &region);
+
+				capturingThisFrame = true;
+			}
+
+			captureRequested = false;
+		}
+
 		TransitionTo(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 		VkResult result = vkEndCommandBuffer(commandBuffer);
@@ -1088,6 +1196,28 @@ namespace scvk
 			Fail("vkQueueSubmit", result);
 			frameActive = false;
 			return;
+		}
+
+		if (capturingThisFrame)
+		{
+			// Waiting here stalls the pipeline, which is fine: captures are
+			// deliberate, rare, and the alternative is reading a buffer the
+			// GPU is still writing.
+			vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX);
+
+			uint32_t const rowPitch = swapchainExtent.width * 4u;
+
+			if (WriteBmp(capturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
+					swapchainExtent.width, swapchainExtent.height, rowPitch))
+			{
+				LogNote("Vulkan: captured frame %llu to %s (%ux%u)",
+					static_cast<unsigned long long>(presentedFrames + 1),
+					capturePath.c_str(), swapchainExtent.width, swapchainExtent.height);
+			}
+			else
+			{
+				LogNote("Vulkan: could not write the capture to %s", capturePath.c_str());
+			}
 		}
 
 		VkPresentInfoKHR present{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
@@ -2224,6 +2354,10 @@ namespace scvk
 
 			if (quadIndexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, quadIndexMemory, nullptr); quadIndexMemory = VK_NULL_HANDLE; }
 			if (quadIndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, quadIndexBuffer, nullptr); quadIndexBuffer = VK_NULL_HANDLE; }
+
+			if (readbackMapped != nullptr) { vkUnmapMemory(device, readbackMemory); readbackMapped = nullptr; }
+			if (readbackMemory != VK_NULL_HANDLE) { vkFreeMemory(device, readbackMemory, nullptr); readbackMemory = VK_NULL_HANDLE; }
+			if (readbackBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, readbackBuffer, nullptr); readbackBuffer = VK_NULL_HANDLE; }
 
 			if (stagingMapped != nullptr) { vkUnmapMemory(device, stagingMemory); stagingMapped = nullptr; }
 			if (stagingMemory != VK_NULL_HANDLE) { vkFreeMemory(device, stagingMemory, nullptr); stagingMemory = VK_NULL_HANDLE; }

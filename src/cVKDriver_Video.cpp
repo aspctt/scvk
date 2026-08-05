@@ -23,6 +23,7 @@
 #include "version.h"
 
 #include <Windows.h>
+#include <string.h>
 
 namespace scvk
 {
@@ -377,6 +378,48 @@ namespace scvk
 		// The frame boundary. The game believes this swaps buffers, and for us
 		// it submits the recorded commands and presents.
 		SCVK_CALL("");
+
+		if (dumpFrame)
+		{
+			LogNote("=== end of frame dump, %d draws ===", dumpedDraws);
+			dumpFrame = false;
+		}
+
+		frameCounter++;
+
+		// Late enough that the interface has settled, early enough to be
+		// reached in a short session.
+		// Spread across the session rather than fixed early points.
+		//
+		// The first attempt dumped frames 600 and 3000, and both landed while
+		// the startup screen was still up: it runs at well over a thousand
+		// frames a second, so those were the same two seconds of a session
+		// lasting tens of thousands of frames. Sampling periodically covers
+		// whatever the game is actually showing later.
+		if (frameCounter % 2000u == 0u && frameDumpsRemaining > 0)
+		{
+			LogNote("=== dumping every draw of frame %u ===", frameCounter);
+			frameDumpsRemaining--;
+			dumpFrame   = true;
+			dumpedDraws = 0;
+
+			// A picture of the same frame the dump describes, so the
+			// rectangles in the log can be checked against actual pixels
+			// rather than against a screenshot taken at some other moment.
+			char path[MAX_PATH];
+			if (LogDirectory(path, sizeof(path)))
+			{
+				char name[64];
+				sprintf_s(name, sizeof(name), "scvk-frame-%u.bmp", frameCounter);
+
+				if (strlen(path) + strlen(name) < sizeof(path))
+				{
+					strcat_s(path, sizeof(path), name);
+					vulkan->RequestCapture(path);
+				}
+			}
+		}
+
 		vulkan->Present();
 	}
 

@@ -151,6 +151,164 @@ namespace scvk
 			}
 		}
 
+		// Dump one entire frame, as screen rectangles.
+		//
+		// Sampling has repeatedly answered the wrong question: it shows which
+		// contexts exist, not what the finished picture is made of. This
+		// records every draw of a single frame with the pixel rectangle it
+		// lands on, so the frame can be reconstructed and compared against a
+		// screenshot directly. One frame is a few hundred lines, which is
+		// affordable exactly once.
+		if (dumpFrame)
+		{
+			float minX = 1e30f, maxX = -1e30f;
+			float minY = 1e30f, maxY = -1e30f;
+			bool  usable = true;
+
+			int const sampled = (count < 8) ? count : 8;
+			for (int i = 0; i < sampled; i++)
+			{
+				float const* p = reinterpret_cast<float const*>(
+					static_cast<uint8_t const*>(vertexPointer) +
+					static_cast<size_t>(first + i) * vertexStride);
+
+				float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+				for (int row = 0; row < 4; row++)
+				{
+					float sum = 0.0f;
+					for (int k = 0; k < 4; k++)
+					{
+						sum += modelViewMatrix[k * 4 + row] * ((k < 3) ? p[k] : 1.0f);
+					}
+					eye[row] = sum;
+				}
+
+				float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+				for (int row = 0; row < 4; row++)
+				{
+					float sum = 0.0f;
+					for (int k = 0; k < 4; k++)
+					{
+						sum += projectionMatrix[k * 4 + row] * eye[k];
+					}
+					clip[row] = sum;
+				}
+
+				if (clip[3] > -1e-6f && clip[3] < 1e-6f) { usable = false; break; }
+
+				float const x = clip[0] / clip[3];
+				float const y = clip[1] / clip[3];
+
+				if (x < minX) minX = x;
+				if (x > maxX) maxX = x;
+				if (y < minY) minY = y;
+				if (y > maxY) maxY = y;
+			}
+
+			if (usable)
+			{
+				int const vpW = (viewportWidth  > 0) ? viewportWidth  : windowWidth;
+				int const vpH = (viewportHeight > 0) ? viewportHeight : windowHeight;
+				int const vpX = (viewportWidth  > 0) ? viewportX : 0;
+
+				// The stored viewport y is bottom-origin, as OpenGL has it.
+				int const vpTop = (viewportHeight > 0)
+					? (windowHeight - viewportY - viewportHeight) : 0;
+
+				// Clip space y runs the other way from screen y.
+				float const left   = vpX   + (minX + 1.0f) * 0.5f * vpW;
+				float const right  = vpX   + (maxX + 1.0f) * 0.5f * vpW;
+				float const top    = vpTop + (1.0f - maxY) * 0.5f * vpH;
+				float const bottom = vpTop + (1.0f - minY) * 0.5f * vpH;
+
+				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d",
+					dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
+					boundTexture, vertexFormat, gdPrimType, count,
+					viewportX, viewportY, viewportWidth, viewportHeight);
+			}
+			else
+			{
+				LogNote("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d",
+					dumpedDraws++, boundTexture, vertexFormat, gdPrimType, count);
+			}
+		}
+
+		// Measure how much of its viewport a draw actually covers.
+		//
+		// Reasoning about matrices has repeatedly failed to find why the
+		// interface renders too large, and the projections all turn out to
+		// agree with their viewports. So this stops inferring and measures:
+		// transform the vertices the way the shader will, and report any draw
+		// that ends up covering most of the screen. Whatever is painting over
+		// everything will name itself.
+		if (coverageReportsRemaining > 0 && count >= 3)
+		{
+			float minX = 1e30f, maxX = -1e30f;
+			float minY = 1e30f, maxY = -1e30f;
+			bool  usable = true;
+
+			int const sampled = (count < 8) ? count : 8;
+			for (int i = 0; i < sampled; i++)
+			{
+				float const* p = reinterpret_cast<float const*>(
+					static_cast<uint8_t const*>(vertexPointer) +
+					static_cast<size_t>(first + i) * vertexStride);
+
+				// Projection times modelview times position, in the same
+				// column-major convention as everywhere else.
+				float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+				for (int row = 0; row < 4; row++)
+				{
+					float eye = 0.0f;
+					for (int k = 0; k < 4; k++)
+					{
+						float const v = (k < 3) ? p[k] : 1.0f;
+						eye += modelViewMatrix[k * 4 + row] * v;
+					}
+					clip[row] = eye;
+				}
+
+				float ndc[2] = { 0.0f, 0.0f };
+				for (int row = 0; row < 2; row++)
+				{
+					float sum = 0.0f;
+					for (int k = 0; k < 4; k++)
+					{
+						sum += projectionMatrix[k * 4 + row] * clip[k];
+					}
+					ndc[row] = sum;
+				}
+
+				float w = 0.0f;
+				for (int k = 0; k < 4; k++)
+				{
+					w += projectionMatrix[k * 4 + 3] * clip[k];
+				}
+
+				if (w > -1e-6f && w < 1e-6f) { usable = false; break; }
+
+				float const x = ndc[0] / w;
+				float const y = ndc[1] / w;
+
+				if (x < minX) minX = x;
+				if (x > maxX) maxX = x;
+				if (y < minY) minY = y;
+				if (y > maxY) maxY = y;
+			}
+
+			// Clip space runs -1 to 1, so an extent of 2 is the whole
+			// viewport. Anything past 1.2 is covering well over half of it.
+			if (usable && ((maxX - minX) > 1.2f || (maxY - minY) > 1.2f))
+			{
+				coverageReportsRemaining--;
+				LogNote("  LARGE DRAW: covers ndc x %.2f..%.2f y %.2f..%.2f of viewport %d,%d %dx%d, "
+					"texture %u, format 0x%x prim %u, %d vertices",
+					minX, maxX, minY, maxY,
+					viewportX, viewportY, viewportWidth, viewportHeight,
+					boundTexture, vertexFormat, gdPrimType, count);
+			}
+		}
+
 		// Detect a projection that disagrees with the viewport it is drawn
 		// into.
 		//

@@ -13,6 +13,7 @@ Debug/
 Release/
 build/
 obj/
+logs/
 
 ###################################################################################################
 # Local-only reference material. NOT for publication.

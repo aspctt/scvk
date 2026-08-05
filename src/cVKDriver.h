@@ -283,6 +283,14 @@ namespace scvk
 
 		int      texMatrixProbesRemaining;
 		int      mismatchReportsRemaining;
+		int      coverageReportsRemaining;
+
+		// A single frame is dumped in full, once, a little after startup so the
+		// interface has settled.
+		uint32_t frameCounter;
+		bool     dumpFrame;
+		int      dumpedDraws;
+		int      frameDumpsRemaining;
 
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);

@@ -108,6 +108,19 @@ namespace scvk
 		void SetFullViewport(void);
 
 		/**
+		 * Writes the next presented frame to a file, as a 32 bit BMP.
+		 *
+		 * Captured from the swapchain image rather than from the screen. That
+		 * is the only way to be sure the picture is what scvk drew: grabbing
+		 * the desktop needs the window focused, cannot see a Vulkan surface
+		 * reliably, and captures whatever else happens to be on screen.
+		 *
+		 * BMP because its 32 bit layout is already BGRA, matching the
+		 * swapchain exactly, so no encoder and no conversion are needed.
+		 */
+		void RequestCapture(char const* path);
+
+		/**
 		 * Draws from client memory.
 		 *
 		 * The interface hands over a plain pointer and a stride, so the data
@@ -334,6 +347,15 @@ namespace scvk
 		float lastClearColour[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 		uint64_t presentedFrames = 0;
+
+		// Readback for RequestCapture. Allocated on first use and kept, since
+		// captures come in small numbers and the buffer is large.
+		VkBuffer       readbackBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
+		void*          readbackMapped = nullptr;
+		VkDeviceSize   readbackSize   = 0;
+		bool           captureRequested = false;
+		std::string    capturePath;
 
 		std::string deviceName;
 		std::string apiVersion;

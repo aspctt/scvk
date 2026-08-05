@@ -56,6 +56,11 @@ namespace scvk
 		probedCombinations(0),
 		texMatrixProbesRemaining(4),
 		mismatchReportsRemaining(12),
+		coverageReportsRemaining(12),
+		frameCounter(0),
+		dumpFrame(false),
+		dumpedDraws(0),
+		frameDumpsRemaining(10),
 		vulkan(std::make_unique<VulkanBackend>()),
 		windowHandle(nullptr)
 	{

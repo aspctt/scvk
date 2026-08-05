@@ -83,6 +83,7 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkCmdPipelineBarrier)              \
 	X(vkCmdClearColorImage)              \
 	X(vkCmdCopyBufferToImage)            \
+	X(vkCmdCopyImageToBuffer)            \
 	X(vkCreateRenderPass)                \
 	X(vkDestroyRenderPass)               \
 	X(vkCreateImageView)                 \

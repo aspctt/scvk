@@ -59,6 +59,9 @@ namespace scvk
 	 */
 	void LogSummary(char const* reason);
 
+	/** Directory the log is written to, with a trailing separator. */
+	bool LogDirectory(char* out, size_t size);
+
 	/** Writes a free-form line, always, regardless of the trace budget. */
 	void LogNote(char const* fmt, ...);
 

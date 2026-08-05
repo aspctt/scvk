@@ -95,6 +95,11 @@ namespace scvk
 		gSites = this;
 	}
 
+	bool LogDirectory(char* out, size_t size)
+	{
+		return ModuleDirectory(out, size);
+	}
+
 	void LogOpen(void)
 	{
 		if (gLog != nullptr)
