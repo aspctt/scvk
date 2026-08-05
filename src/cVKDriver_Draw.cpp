@@ -69,6 +69,30 @@ namespace scvk
 			return;
 		}
 
+		if (vertexProbesRemaining > 0)
+		{
+			vertexProbesRemaining--;
+
+			LogNote("  DrawArrays prim %u, %d vertices, stride %u:", gdPrimType, count, vertexStride);
+
+			int const shown = (count < 3) ? count : 3;
+			for (int i = 0; i < shown; i++)
+			{
+				uint8_t const* v = static_cast<uint8_t const*>(vertexPointer) +
+					static_cast<size_t>(first + i) * vertexStride;
+
+				float const* position = reinterpret_cast<float const*>(v);
+				uint8_t const* colour = v + 12;
+
+				// Colour is read as-is. If these come back 255 255 255 the
+				// geometry is relying on a texture for its colour, and drawing
+				// it untextured can only ever produce white.
+				LogNote("    v%d pos %.3f %.3f %.3f  colour %3u %3u %3u %3u",
+					i, position[0], position[1], position[2],
+					colour[0], colour[1], colour[2], colour[3]);
+			}
+		}
+
 		UpdateTransform();
 		vulkan->DrawVertices(gdPrimType, vertexStride, vertexPointer,
 			static_cast<uint32_t>(first), static_cast<uint32_t>(count));

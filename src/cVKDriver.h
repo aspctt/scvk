@@ -273,6 +273,11 @@ namespace scvk
 		// Bounded because this is diagnostic output on a per-frame path.
 		int blitProbesRemaining;
 
+		// Same idea for geometry: report the leading vertices of the first few
+		// draws, so what the game is actually submitting can be checked against
+		// what appears on screen.
+		int vertexProbesRemaining;
+
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
 

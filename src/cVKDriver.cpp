@@ -50,6 +50,7 @@ namespace scvk
 		vertexStride(0),
 		vertexPointer(nullptr),
 		blitProbesRemaining(3),
+		vertexProbesRemaining(6),
 		vulkan(std::make_unique<VulkanBackend>()),
 		windowHandle(nullptr)
 	{
