@@ -19,6 +19,7 @@
 
 #include "VulkanBackend.h"
 #include "Logger.h"
+#include <Windows.h>
 #include "ShaderBinaries.h"
 
 #include <VertexFormatUtils.h>
@@ -1613,6 +1614,39 @@ namespace scvk
 						dstRow[x * 4 + 2] = srcRow[x * 4 + 0];
 						dstRow[x * 4 + 3] = srcRow[x * 4 + 3];
 					}
+				}
+			}
+		}
+
+		// Write out what the game actually handed over.
+		//
+		// The interface geometry, viewports, projections and uploads are all
+		// 1:1, yet the finished picture is magnified, so the question is
+		// whether the content arriving here is already wrong. A texture that
+		// looks like a normal interface element means we mangle it later; one
+		// that is already blown up means the game drew it that way, and the
+		// cause is something we report back to the game.
+		if (textureDumpsRemaining > 0 && !texture.compressed)
+		{
+			textureDumpsRemaining--;
+
+			char path[MAX_PATH];
+			if (LogDirectory(path, sizeof(path)))
+			{
+				char name[64];
+				sprintf_s(name, sizeof(name), "scvk-tex-%u-%ux%u.bmp", handle, width, height);
+
+				if (strlen(path) + strlen(name) < sizeof(path))
+				{
+					strcat_s(path, sizeof(path), name);
+
+					// The source is BGRA, which is already BMP's byte order,
+					// so it goes out untouched rather than via the swizzled
+					// copy above.
+					uint32_t const srcStride = (rowLength != 0) ? rowLength : width;
+					WriteBmp(path, static_cast<uint8_t const*>(pixels), width, height, srcStride * 4u);
+
+					LogNote("Vulkan: wrote texture %u (%ux%u) to %s", handle, width, height, path);
 				}
 			}
 		}

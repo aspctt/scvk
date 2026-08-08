@@ -354,6 +354,7 @@ namespace scvk
 		VkDeviceMemory readbackMemory = VK_NULL_HANDLE;
 		void*          readbackMapped = nullptr;
 		VkDeviceSize   readbackSize   = 0;
+		int            textureDumpsRemaining = 8;
 		bool           captureRequested = false;
 		std::string    capturePath;
 

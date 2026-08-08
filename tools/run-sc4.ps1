@@ -173,7 +173,7 @@ Copy-Item $liveLog $captured
 # The driver writes a BMP per dumped frame next to its log. Converted to PNG
 # here purely because it is a more convenient format to look at.
 Add-Type -AssemblyName System.Drawing
-foreach ($bmp in Get-ChildItem $PluginsDir -Filter 'scvk-frame-*.bmp' -ErrorAction SilentlyContinue) {
+foreach ($bmp in Get-ChildItem $PluginsDir -Filter 'scvk-*.bmp' -ErrorAction SilentlyContinue) {
     $png = Join-Path $logDir (($bmp.BaseName) + "-$stamp$suffix.png")
     try {
         $img = [System.Drawing.Image]::FromFile($bmp.FullName)
