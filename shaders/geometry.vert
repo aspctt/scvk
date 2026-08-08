@@ -19,11 +19,17 @@
 
 #version 450
 
+// Must match the fragment stage exactly: a push constant block is shared
+// across the stages that declare it.
 layout(push_constant) uniform Push
 {
     // Projection times modelview, already combined on the CPU and corrected
     // for Vulkan's clip space.
     mat4 mvp;
+
+    // Used only by the fragment stage, declared here to keep the blocks
+    // identical.
+    vec4 fragmentState;
 } push;
 
 layout(location = 0) in vec3 inPosition;

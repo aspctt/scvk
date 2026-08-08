@@ -46,6 +46,17 @@ namespace scvk
 		constexpr uint32_t kClearColour  = 0x4000;
 	}
 
+	void cVKDriver::PushBlendState(void)
+	{
+		vulkan->SetBlendState(enabledCapabilities[kGDCapability_Blend], blendSrcFactor, blendDstFactor);
+	}
+
+	void cVKDriver::PushAlphaTest(void)
+	{
+		// A negative comparison is how the shader is told the test is off.
+		vulkan->SetAlphaTest(enabledCapabilities[kGDCapability_AlphaTest] ? static_cast<int>(alphaFunc) : -1, alphaRef);
+	}
+
 	void cVKDriver::Clear(uint32_t mask)
 	{
 		SCVK_CALL("0x%x", mask);
@@ -111,13 +122,22 @@ namespace scvk
 	void cVKDriver::BlendFunc(uint32_t gdBlendFunc, uint32_t gdBlend)
 	{
 		SCVK_CALL("%u, %u", gdBlendFunc, gdBlend);
+
+		blendSrcFactor = gdBlendFunc;
+		blendDstFactor = gdBlend;
+		PushBlendState();
 	}
 
 	void cVKDriver::AlphaFunc(uint32_t gdTestFunc, float ref)
 	{
 		// No fixed function alpha test in Vulkan; this becomes a discard in the
-		// fragment shader, with the comparison and reference as uniforms.
+		// fragment shader, with the comparison and reference pushed as
+		// constants.
 		SCVK_CALL("%u, %.3f", gdTestFunc, ref);
+
+		alphaFunc = gdTestFunc;
+		alphaRef  = ref;
+		PushAlphaTest();
 	}
 
 	void cVKDriver::ShadeModel(uint32_t gdShade)
@@ -194,6 +214,9 @@ namespace scvk
 		if (gdDriverState < kGDNumCapabilities)
 		{
 			enabledCapabilities[gdDriverState] = true;
+
+			if (gdDriverState == kGDCapability_Blend)     PushBlendState();
+			if (gdDriverState == kGDCapability_AlphaTest) PushAlphaTest();
 		}
 		else
 		{
@@ -208,6 +231,9 @@ namespace scvk
 		if (gdDriverState < kGDNumCapabilities)
 		{
 			enabledCapabilities[gdDriverState] = false;
+
+			if (gdDriverState == kGDCapability_Blend)     PushBlendState();
+			if (gdDriverState == kGDCapability_AlphaTest) PushAlphaTest();
 		}
 		else
 		{

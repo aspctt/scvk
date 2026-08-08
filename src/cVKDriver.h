@@ -295,6 +295,12 @@ namespace scvk
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
 
+		/** Forwards blend enable and factors, which the backend keys on. */
+		void PushBlendState(void);
+
+		/** Forwards the alpha comparison, disabled when the capability is off. */
+		void PushAlphaTest(void);
+
 	private:
 		DriverError lastError;
 
@@ -319,6 +325,14 @@ namespace scvk
 		// Held from ClearColor until the next Clear, because the interface
 		// splits what Vulkan takes as a single call.
 		float clearColour[4];
+
+		// Blend and alpha test state, held until a draw needs it. Both are
+		// pipeline or shader state in Vulkan rather than commands, so they are
+		// forwarded on change rather than applied immediately.
+		uint32_t blendSrcFactor;
+		uint32_t blendDstFactor;
+		uint32_t alphaFunc;
+		float    alphaRef;
 
 		// The fixed function matrix stack, reduced to what the game uses: it
 		// only ever loads whole matrices into the modelview and projection

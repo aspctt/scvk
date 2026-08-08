@@ -108,6 +108,26 @@ namespace scvk
 		void SetFullViewport(void);
 
 		/**
+		 * Sets the blend state for subsequent draws.
+		 *
+		 * Factors are the game's own enumeration, which matches OpenGL's
+		 * order. Blending is part of a Vulkan pipeline rather than a command,
+		 * so changing it selects a different pipeline.
+		 */
+		void SetBlendState(bool enabled, uint32_t srcFactor, uint32_t dstFactor);
+
+		/**
+		 * Sets the alpha test for subsequent draws.
+		 *
+		 * A negative comparison disables it. Applied in the fragment shader,
+		 * since Vulkan has no fixed function alpha test.
+		 */
+		void SetAlphaTest(int comparison, float reference);
+
+		/** Selects the texture environment: false modulate, true replace. */
+		void SetTextureReplace(bool replace);
+
+		/**
 		 * Writes the next presented frame to a file, as a 32 bit BMP.
 		 *
 		 * Captured from the swapchain image rather than from the screen. That
@@ -171,9 +191,21 @@ namespace scvk
 			uint32_t            format;
 			VkPrimitiveTopology topology;
 
+			// Blending is baked into a Vulkan pipeline rather than being a
+			// command, so every combination the game uses becomes its own
+			// pipeline. This is the state key growing the way the fixed
+			// function emulation always needed it to.
+			bool                blendEnable;
+			uint8_t             srcFactor;
+			uint8_t             dstFactor;
+
 			bool operator==(PipelineKey const& other) const
 			{
-				return format == other.format && topology == other.topology;
+				return format      == other.format
+					&& topology    == other.topology
+					&& blendEnable == other.blendEnable
+					&& srcFactor   == other.srcFactor
+					&& dstFactor   == other.dstFactor;
 			}
 		};
 
@@ -331,6 +363,14 @@ namespace scvk
 		int     viewportLogsRemaining = 12;
 		int32_t loggedViewport[4] = { -1, -1, -1, -1 };
 		int32_t viewportHeight = -1;
+
+		// Sent to the shader alongside the transform: alpha comparison,
+		// reference, and the texture environment mode.
+		float fragmentState[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+
+		bool    blendEnable = false;
+		uint8_t blendSrc    = 1;  // one
+		uint8_t blendDst    = 0;  // zero
 
 		float transform[16] = {
 			1, 0, 0, 0,

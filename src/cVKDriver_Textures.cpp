@@ -57,6 +57,14 @@ namespace scvk
 	void cVKDriver::TexEnv(uint32_t gdTextureEnvTarget, uint32_t gdTextureEnvParamType, int32_t gdTextureEnvModeParam)
 	{
 		SCVK_CALL("%u, %u, %d", gdTextureEnvTarget, gdTextureEnvParamType, gdTextureEnvModeParam);
+
+		// Parameter type 0 is the mode, whose values start Replace, Modulate.
+		// Only the first stage is honoured; the second is part of the combiner
+		// network that has no equivalent yet.
+		if (gdTextureEnvParamType == kGDTextureEnvParamType_Mode && gdTextureEnvTarget == 0)
+		{
+			vulkan->SetTextureReplace(gdTextureEnvModeParam == kGDTextureEnvParam_Replace);
+		}
 	}
 
 	void cVKDriver::TexEnv(uint32_t gdTextureEnvTarget, uint32_t gdTextureEnvParamType, float const* params)

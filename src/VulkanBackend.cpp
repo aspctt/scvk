@@ -847,6 +847,24 @@ namespace scvk
 		viewportHeight = -1;
 	}
 
+	void VulkanBackend::SetBlendState(bool enabled, uint32_t srcFactor, uint32_t dstFactor)
+	{
+		blendEnable = enabled;
+		blendSrc    = static_cast<uint8_t>(srcFactor);
+		blendDst    = static_cast<uint8_t>(dstFactor);
+	}
+
+	void VulkanBackend::SetAlphaTest(int comparison, float reference)
+	{
+		fragmentState[0] = static_cast<float>(comparison);
+		fragmentState[1] = reference;
+	}
+
+	void VulkanBackend::SetTextureReplace(bool replace)
+	{
+		fragmentState[2] = replace ? 1.0f : 0.0f;
+	}
+
 	void VulkanBackend::ApplyViewport(void)
 	{
 		if (!renderPassActive)
@@ -1312,6 +1330,29 @@ namespace scvk
 			// DXT1 packs a 4x4 block into 8 bytes; DXT3 and DXT5 add 8 more
 			// for the alpha block.
 			return blocks * ((format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK) ? 8u : 16u);
+		}
+	}
+
+	namespace
+	{
+		/** The game's blend factor enumeration, which follows OpenGL's order. */
+		VkBlendFactor MapBlendFactor(uint8_t gdFactor)
+		{
+			switch (gdFactor)
+			{
+			case 0:  return VK_BLEND_FACTOR_ZERO;
+			case 1:  return VK_BLEND_FACTOR_ONE;
+			case 2:  return VK_BLEND_FACTOR_SRC_COLOR;
+			case 3:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+			case 4:  return VK_BLEND_FACTOR_SRC_ALPHA;
+			case 5:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			case 6:  return VK_BLEND_FACTOR_DST_ALPHA;
+			case 7:  return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+			case 8:  return VK_BLEND_FACTOR_DST_COLOR;
+			case 9:  return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+			case 10: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+			default: return VK_BLEND_FACTOR_ONE;
+			}
 		}
 	}
 
@@ -2005,7 +2046,7 @@ namespace scvk
 
 		vertexUsed = offset + bytes;
 
-		PipelineKey key{ gdVertexFormat, topology };
+		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst };
 		VkPipeline pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -2025,8 +2066,12 @@ namespace scvk
 		ApplyViewport();
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
+		vkCmdPushConstants(commandBuffer, pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			0, sizeof(transform), transform);
+		vkCmdPushConstants(commandBuffer, pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			sizeof(transform), sizeof(fragmentState), fragmentState);
 
 		// Slot 0 holds the 1x1 white texture, so an unset or deleted texture
 		// still binds something valid and multiplies by one.
@@ -2211,9 +2256,9 @@ namespace scvk
 		// is 128 bytes, so 64 always fits and this needs no descriptor set,
 		// no uniform buffer and no per-frame allocation.
 		VkPushConstantRange range{};
-		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 		range.offset     = 0;
-		range.size       = sizeof(float) * 16;
+		range.size       = sizeof(float) * 20;
 
 		VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 		info.setLayoutCount         = 1;
@@ -2320,7 +2365,13 @@ namespace scvk
 		multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
 		VkPipelineColorBlendAttachmentState blendAttachment{};
-		blendAttachment.blendEnable    = VK_FALSE;
+		blendAttachment.blendEnable         = key.blendEnable ? VK_TRUE : VK_FALSE;
+		blendAttachment.srcColorBlendFactor = MapBlendFactor(key.srcFactor);
+		blendAttachment.dstColorBlendFactor = MapBlendFactor(key.dstFactor);
+		blendAttachment.colorBlendOp        = VK_BLEND_OP_ADD;
+		blendAttachment.srcAlphaBlendFactor = MapBlendFactor(key.srcFactor);
+		blendAttachment.dstAlphaBlendFactor = MapBlendFactor(key.dstFactor);
+		blendAttachment.alphaBlendOp        = VK_BLEND_OP_ADD;
 		blendAttachment.colorWriteMask =
 			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
 			VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -2356,8 +2407,8 @@ namespace scvk
 			return VK_NULL_HANDLE;
 		}
 
-		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord %d), topology %d.",
-			key.format, layout.stride, layout.hasColour ? 1 : 0, layout.hasTexCoord ? 1 : 0, static_cast<int>(key.topology));
+		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord %d), topology %d, blend %d (%u,%u).",
+			key.format, layout.stride, layout.hasColour ? 1 : 0, layout.hasTexCoord ? 1 : 0, static_cast<int>(key.topology), key.blendEnable ? 1 : 0, key.srcFactor, key.dstFactor);
 
 		pipelines.push_back({ key, pipeline });
 		return pipeline;
