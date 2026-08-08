@@ -1626,7 +1626,11 @@ namespace scvk
 		// looks like a normal interface element means we mangle it later; one
 		// that is already blown up means the game drew it that way, and the
 		// cause is something we report back to the game.
-		if (textureDumpsRemaining > 0 && !texture.compressed)
+		// Only once past the startup screen. The first uploads are all splash
+		// tiles, which were dumped and turned out to be perfectly correct, so
+		// they answer nothing. The interesting textures are the interface ones
+		// uploaded later.
+		if (textureDumpsRemaining > 0 && !texture.compressed && presentedFrames > 1000)
 		{
 			textureDumpsRemaining--;
 

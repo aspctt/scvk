@@ -221,10 +221,38 @@ namespace scvk
 				float const top    = vpTop + (1.0f - maxY) * 0.5f * vpH;
 				float const bottom = vpTop + (1.0f - minY) * 0.5f * vpH;
 
-				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d",
+				// Texture coordinate range as well as the screen rectangle.
+				// The interface textures turn out to be atlases holding
+				// several elements, so a draw that samples the whole 0..1
+				// range is showing the entire atlas stretched across its quad
+				// instead of the one element it wanted.
+				float uMin = 0.0f, uMax = 0.0f, vMin = 0.0f, vMax = 0.0f;
+				bool  haveUv = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0;
+
+				if (haveUv)
+				{
+					uint32_t const uvOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
+					uMin = vMin = 1e30f;
+					uMax = vMax = -1e30f;
+
+					for (int i = 0; i < sampled; i++)
+					{
+						float const* uv = reinterpret_cast<float const*>(
+							static_cast<uint8_t const*>(vertexPointer) +
+							static_cast<size_t>(first + i) * vertexStride + uvOffset);
+
+						if (uv[0] < uMin) uMin = uv[0];
+						if (uv[0] > uMax) uMax = uv[0];
+						if (uv[1] < vMin) vMin = uv[1];
+						if (uv[1] > vMax) vMax = uv[1];
+					}
+				}
+
+				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f",
 					dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
 					boundTexture, vertexFormat, gdPrimType, count,
-					viewportX, viewportY, viewportWidth, viewportHeight);
+					viewportX, viewportY, viewportWidth, viewportHeight,
+					uMin, uMax, vMin, vMax);
 			}
 			else
 			{
