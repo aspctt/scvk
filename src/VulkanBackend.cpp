@@ -897,6 +897,26 @@ namespace scvk
 		scissor.offset = { x, y };
 		scissor.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+		// What actually reached Vulkan, as opposed to what the driver believes
+		// it asked for. The arithmetic in the frame dump says these rectangles
+		// should already be producing a correct picture, so the discrepancy is
+		// either here or downstream of here.
+		if (viewportLogsRemaining > 0 &&
+			(x != loggedViewport[0] || y != loggedViewport[1] ||
+			 width != loggedViewport[2] || height != loggedViewport[3]))
+		{
+			viewportLogsRemaining--;
+			loggedViewport[0] = x;
+			loggedViewport[1] = y;
+			loggedViewport[2] = width;
+			loggedViewport[3] = height;
+
+			LogNote("Vulkan: viewport %d,%d %dx%d (from game %d,%d %dx%d, swapchain %ux%u)",
+				x, y, width, height,
+				viewportX, viewportY, viewportWidth, viewportHeight,
+				swapchainExtent.width, swapchainExtent.height);
+		}
 	}
 
 	void VulkanBackend::EndRenderPassIfActive(void)
@@ -1993,6 +2013,16 @@ namespace scvk
 		}
 
 		BeginRenderPassIfNeeded();
+
+		// Per draw, not once per render pass.
+		//
+		// The game changes the viewport between draws inside a single pass: it
+		// tiles the interface by drawing full-sized quads and letting a much
+		// smaller viewport clip each one. Applying the viewport only when the
+		// pass opens leaves every draw in that pass using whichever viewport
+		// happened to be current at the time, which stretched the interface
+		// across the window.
+		ApplyViewport();
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,

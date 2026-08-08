@@ -328,6 +328,8 @@ namespace scvk
 		int32_t viewportX      = 0;
 		int32_t viewportY      = 0;
 		int32_t viewportWidth  = -1;
+		int     viewportLogsRemaining = 12;
+		int32_t loggedViewport[4] = { -1, -1, -1, -1 };
 		int32_t viewportHeight = -1;
 
 		float transform[16] = {
