@@ -286,6 +286,50 @@ namespace scvk
 		int      coverageReportsRemaining;
 		int      indexTypeWarningsRemaining;
 
+		/**
+		 * Reports each distinct configuration once, and answers false after.
+		 *
+		 * The ordinary trace stops after a call budget, which the interface
+		 * alone exhausts long before a city finishes loading. Anything that
+		 * needs observing inside a city has to be recorded by value instead of
+		 * by position, so it still reports the first time it is seen no matter
+		 * how late that is.
+		 */
+		bool NoteOnce(uint32_t bucket, uint32_t key);
+
+		uint64_t notedKeys[192];
+		int      notedCount;
+
+		// The combiner network as the shader will read it, kept so a draw can
+		// report the configuration that was actually in force for it.
+		uint32_t packedCombiner[4];
+
+		// What each stage was last told to combine with, and how. The mode
+		// decides which of the two the stage actually uses: the network only
+		// applies when the mode selects Combine.
+		uint32_t rawCombiner[4];
+		int32_t  texEnvMode[2];
+
+		// Which stage the stage-scoped calls refer to, and whether texturing
+		// is switched on for each. Both are per stage in this interface even
+		// though the enable arrives through the same call as the global
+		// capabilities.
+		uint32_t activeTexStage;
+		bool     texStageEnabled[2];
+
+		/** Applies a texture enable to the stage TexStage last selected. */
+		void SetTextureStageEnabled(bool enabled);
+
+		/** Recomputes both stages from the mode and network and pushes them. */
+		void PushCombinerState(void);
+
+		// The last configuration reported, so an unchanged one costs a compare
+		// rather than a search of everything already seen.
+		uint32_t lastMultitexKey;
+
+		/** Reports the combiner in force, once per distinct multitextured draw. */
+		void NoteMultitexturedDraw(uint32_t gdVertexFormat);
+
 		// A single frame is dumped in full, once, a little after startup so the
 		// interface has settled.
 		uint32_t frameCounter;

@@ -232,7 +232,15 @@ namespace scvk
 	{
 		SCVK_CALL("%u", gdDriverState);
 
-		if (gdDriverState < kGDNumCapabilities)
+		if (gdDriverState == kGDCapability_Texture2D)
+		{
+			// Texturing is per stage, not global: it applies to whichever
+			// stage TexStage last selected. Treating it as one flag leaves the
+			// second stage looking live when the game has switched it off,
+			// which paints the terrain with the placeholder bound to it.
+			SetTextureStageEnabled(true);
+		}
+		else if (gdDriverState < kGDNumCapabilities)
 		{
 			enabledCapabilities[gdDriverState] = true;
 
@@ -250,7 +258,11 @@ namespace scvk
 	{
 		SCVK_CALL("%u", gdDriverState);
 
-		if (gdDriverState < kGDNumCapabilities)
+		if (gdDriverState == kGDCapability_Texture2D)
+		{
+			SetTextureStageEnabled(false);
+		}
+		else if (gdDriverState < kGDNumCapabilities)
 		{
 			enabledCapabilities[gdDriverState] = false;
 
@@ -267,6 +279,11 @@ namespace scvk
 	bool cVKDriver::IsEnabled(uint32_t gdDriverState)
 	{
 		SCVK_CALL("%u", gdDriverState);
+
+		if (gdDriverState == kGDCapability_Texture2D)
+		{
+			return texStageEnabled[activeTexStage];
+		}
 
 		if (gdDriverState >= kGDNumCapabilities)
 		{

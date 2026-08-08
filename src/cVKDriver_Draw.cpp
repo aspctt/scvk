@@ -42,6 +42,59 @@
 
 namespace scvk
 {
+	bool cVKDriver::NoteOnce(uint32_t bucket, uint32_t key)
+	{
+		uint64_t const entry = (static_cast<uint64_t>(bucket) << 32) | key;
+
+		for (int i = 0; i < notedCount; i++)
+		{
+			if (notedKeys[i] == entry)
+			{
+				return false;
+			}
+		}
+
+		if (notedCount >= static_cast<int>(_countof(notedKeys)))
+		{
+			return false;
+		}
+
+		notedKeys[notedCount++] = entry;
+		return true;
+	}
+
+	void cVKDriver::NoteMultitexturedDraw(uint32_t gdVertexFormat)
+	{
+		if (RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord) < 2)
+		{
+			return;
+		}
+
+		// Keyed on the combiner rather than the format, since the format is
+		// already reported on its own and what matters here is which of the
+		// configurations is the one the terrain actually draws with.
+		uint32_t const key = packedCombiner[0] ^ (packedCombiner[1] << 1)
+			^ (packedCombiner[2] << 2) ^ (packedCombiner[3] << 3);
+
+		// This runs per draw, and the configuration almost never changes
+		// between two of them, so the repeat is caught before the search.
+		if (key == lastMultitexKey)
+		{
+			return;
+		}
+
+		lastMultitexKey = key;
+
+		if (NoteOnce(5, key))
+		{
+			LogNote("  MULTITEX format 0x%x: stage 0 rgb 0x%05x alpha 0x%05x, "
+				"stage 1 rgb 0x%05x alpha 0x%05x",
+				gdVertexFormat,
+				packedCombiner[0], packedCombiner[1],
+				packedCombiner[2], packedCombiner[3]);
+		}
+	}
+
 	void cVKDriver::UpdateTransform(void)
 	{
 		// Column-major, matching both the game and GLSL: result = P * M, so
@@ -376,6 +429,7 @@ namespace scvk
 			}
 		}
 
+		NoteMultitexturedDraw(vertexFormat);
 		UpdateTransform();
 		vulkan->DrawVertices(gdPrimType, vertexFormat, vertexPointer,
 			static_cast<uint32_t>(first), static_cast<uint32_t>(count));
@@ -410,6 +464,7 @@ namespace scvk
 			return;
 		}
 
+		NoteMultitexturedDraw(vertexFormat);
 		UpdateTransform();
 		vulkan->DrawIndexedVertices(gdPrimType, vertexFormat, vertexPointer,
 			indices, static_cast<uint32_t>(count), indicesAre32Bit);
@@ -425,6 +480,17 @@ namespace scvk
 		}
 
 		SCVK_CALL("0x%x, %d, %p", gdVertexFormat, stride, pointer);
+
+		// How many texture coordinate sets a format carries is what decides
+		// whether a second texture stage has anything to sample with.
+		if (NoteOnce(4, gdVertexFormat))
+		{
+			LogNote("  FORMAT 0x%x: stride %u, %u texcoord set(s), %u colour, %u normal",
+				gdVertexFormat, static_cast<uint32_t>(stride),
+				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord),
+				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color),
+				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Normal));
+		}
 
 		// Recorded rather than uploaded. The game names a client pointer here
 		// and draws from it later, possibly several times, so the copy happens

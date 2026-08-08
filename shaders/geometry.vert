@@ -8,10 +8,11 @@
  *
  * SimCity 4 has a dozen vertex formats and they do not agree on which
  * attributes are present: V3F_C4UB has a colour and no texture coordinate,
- * V3F_T2F has the reverse, V3F_C4UB_T2F has both, and V3F has neither. A
- * shader may not declare an input the pipeline does not supply, so this is
- * compiled once per combination and the backend picks the variant matching
- * the format it was given.
+ * V3F_T2F has the reverse, V3F_C4UB_T2F has both, and V3F has neither. The
+ * terrain adds a second coordinate set on top of that. A shader may not
+ * declare an input the pipeline does not supply, so this is compiled once per
+ * combination and the backend picks the variant matching the format it was
+ * given.
  *
  * Every variant emits the same varyings, so one fragment shader serves all of
  * them.
@@ -29,19 +30,25 @@ layout(push_constant) uniform Push
 
     // Used only by the fragment stage, declared here to keep the blocks
     // identical.
-    vec4 fragmentState;
+    vec4  fragmentState;
+    uvec4 combiner;
+    vec4  constantColour;
 } push;
 
 layout(location = 0) in vec3 inPosition;
 #if SCVK_HAS_COLOUR
 layout(location = 1) in vec4 inColour;
 #endif
-#if SCVK_HAS_TEXCOORD
-layout(location = 2) in vec2 inTexCoord;
+#if SCVK_TEXCOORD_SETS >= 1
+layout(location = 2) in vec2 inTexCoord0;
+#endif
+#if SCVK_TEXCOORD_SETS >= 2
+layout(location = 3) in vec2 inTexCoord1;
 #endif
 
 layout(location = 0) out vec4 fragColour;
-layout(location = 1) out vec2 fragTexCoord;
+layout(location = 1) out vec2 fragTexCoord0;
+layout(location = 2) out vec2 fragTexCoord1;
 
 void main()
 {
@@ -57,11 +64,19 @@ void main()
     fragColour = vec4(1.0);
 #endif
 
-#if SCVK_HAS_TEXCOORD
-    fragTexCoord = inTexCoord;
+#if SCVK_TEXCOORD_SETS >= 1
+    fragTexCoord0 = inTexCoord0;
 #else
     // Geometry with no texture coordinate samples the 1x1 white default
     // texture, so any coordinate gives the same result.
-    fragTexCoord = vec2(0.0);
+    fragTexCoord0 = vec2(0.0);
+#endif
+
+#if SCVK_TEXCOORD_SETS >= 2
+    fragTexCoord1 = inTexCoord1;
+#else
+    // A single set feeds both stages. Only geometry that carries two sets
+    // ever has a second stage bound, so this is never the one sampled.
+    fragTexCoord1 = fragTexCoord0;
 #endif
 }

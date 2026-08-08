@@ -68,13 +68,15 @@ $body = ''
 # declare an input the pipeline does not supply, and the game's vertex formats
 # disagree about which of colour and texture coordinate are present.
 #
-# The names match the order the backend indexes them: colour bit, then
-# texture coordinate bit.
+# The names match the order the backend indexes them: the colour flag times
+# three, plus the number of texture coordinate sets.
 $stages = @(
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_None';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_HAS_TEXCOORD=0') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex';      defines = @('SCVK_HAS_COLOUR=0', 'SCVK_HAS_TEXCOORD=1') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Col';      defines = @('SCVK_HAS_COLOUR=1', 'SCVK_HAS_TEXCOORD=0') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex';   defines = @('SCVK_HAS_COLOUR=1', 'SCVK_HAS_TEXCOORD=1') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_None';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=0') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex';      defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=1') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex2';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=2') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Col';      defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=0') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex';   defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=1') },
+    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex2';  defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=2') },
     @{ file = 'geometry.frag'; name = 'kGeometryFragSpv';          defines = @() }
 )
 

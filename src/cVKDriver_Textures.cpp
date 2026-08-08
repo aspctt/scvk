@@ -23,8 +23,16 @@
  * The texture stage combiners are the hardest part of this interface to carry
  * over. They describe a two-stage fixed function blending network - sources,
  * operands, combine modes and output scale - which Vulkan has no equivalent
- * for at all. Reproducing it means encoding the combiner state into the same
- * key that selects the pipeline, and evaluating it in the fragment shader.
+ * for at all. It is reproduced by packing the network into push constants and
+ * evaluating it in the fragment shader, rather than by baking it into the
+ * pipeline: the network changes far too often for that, and none of it needs
+ * to be known at pipeline creation.
+ *
+ * The second stage runs only for geometry that carries two texture coordinate
+ * sets and has a texture bound to that stage, which in practice means the
+ * terrain. Everything else stays on the texture environment path, which is
+ * already correct and does not gain anything from being restated in terms of
+ * combiners.
  *
  * Texture names are handed out for real here even though nothing backs them,
  * because the game stores what it is given and passes it back.
@@ -38,6 +46,77 @@
 
 namespace scvk
 {
+	namespace
+	{
+		/**
+		 * Packs one channel of a combiner into the word the shader reads.
+		 *
+		 * Layout, low bits first: the combine mode, then three source and
+		 * operand pairs, then the output scale.
+		 *
+		 * The operand arrives as an eGDBlend, whose useful values here are
+		 * SrcColor, OneMinusSrcColor, SrcAlpha and OneMinusSrcAlpha. Those are
+		 * numbered 2 to 5 in that enumeration and 0 to 3 in the shader, and the
+		 * game leaves the field at zero when it means the default, which is the
+		 * plain colour. Both readings land on 0, so a subtraction that would
+		 * underflow is simply clamped rather than special cased.
+		 */
+		uint32_t PackCombinerChannel(uint8_t mode, cGDCombiner::ParamOperandPair const* params, uint8_t scale)
+		{
+			uint32_t packed = static_cast<uint32_t>(mode) & 7u;
+
+			for (uint32_t i = 0; i < 3; i++)
+			{
+				uint32_t const source = static_cast<uint32_t>(params[i].SourceType) & 3u;
+
+				uint32_t operand = static_cast<uint32_t>(params[i].OperandType);
+				operand = (operand >= 2u) ? (operand - 2u) : 0u;
+				operand &= 7u;
+
+				packed |= source  << (3u + i * 5u);
+				packed |= operand << (5u + i * 5u);
+			}
+
+			packed |= (static_cast<uint32_t>(scale) & 3u) << 18u;
+			return packed;
+		}
+
+		/**
+		 * Expresses a texture environment mode as a combiner word.
+		 *
+		 * The combiner network is only consulted when the environment mode
+		 * selects Combine, exactly as the fixed function pipeline defines it.
+		 * SimCity 4 sets combiners on both stages but never asks for Combine,
+		 * so the network it uploads is inert state, and taking it at face value
+		 * paints the terrain in the environment colour it never set: a flat
+		 * dark navy where the ground should be.
+		 *
+		 * Translating the mode into the same encoding keeps one path in the
+		 * shader rather than two.
+		 */
+		uint32_t SynthesiseEnvCombiner(int32_t envMode)
+		{
+			// Source 0 is the texture and source 1 is what the previous stage
+			// produced, which for the first stage is the primary colour.
+			constexpr uint32_t kFromTexture  = 0u << 3;
+			constexpr uint32_t kFromPrevious = 1u << 8;
+
+			switch (envMode)
+			{
+			case kGDTextureEnvParam_Replace:
+				return 0u | kFromTexture;
+
+			// Decal and Blend need the environment colour and an interpolation
+			// against the texture alpha. Neither has been seen from the game,
+			// and guessing at them would repeat the mistake above, so they fall
+			// through to the default rather than being invented.
+			case kGDTextureEnvParam_Modulate:
+			default:
+				return 1u | kFromTexture | kFromPrevious;
+			}
+		}
+	}
+
 	void cVKDriver::BindTexture(uint32_t gdTextureTarget, uint32_t texture)
 	{
 		SCVK_CALL("%u, %u", gdTextureTarget, texture);
@@ -58,23 +137,73 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %u, %d", gdTextureEnvTarget, gdTextureEnvParamType, gdTextureEnvModeParam);
 
-		// Parameter type 0 is the mode, whose values start Replace, Modulate.
-		// Only the first stage is honoured; the second is part of the combiner
-		// network that has no equivalent yet.
-		if (gdTextureEnvParamType == kGDTextureEnvParamType_Mode && gdTextureEnvTarget == 0)
+		if (NoteOnce(3, gdTextureEnvTarget | (gdTextureEnvParamType << 8) |
+				(static_cast<uint32_t>(gdTextureEnvModeParam & 0xff) << 16)))
 		{
-			vulkan->SetTextureReplace(gdTextureEnvModeParam == kGDTextureEnvParam_Replace);
+			LogNote("  TEXENV target %u, param type %u, mode %d",
+				gdTextureEnvTarget, gdTextureEnvParamType, gdTextureEnvModeParam);
+		}
+
+		// Parameter type 0 is the mode, whose values start Replace, Modulate.
+		if (gdTextureEnvParamType == kGDTextureEnvParamType_Mode && gdTextureEnvTarget < 2)
+		{
+			texEnvMode[gdTextureEnvTarget] = gdTextureEnvModeParam;
+			PushCombinerState();
+
+			if (gdTextureEnvTarget == 0)
+			{
+				vulkan->SetTextureReplace(gdTextureEnvModeParam == kGDTextureEnvParam_Replace);
+			}
+		}
+	}
+
+	void cVKDriver::PushCombinerState(void)
+	{
+		for (uint32_t stage = 0; stage < 2; stage++)
+		{
+			bool const combining = texEnvMode[stage] == kGDTextureEnvParam_Combine
+				|| texEnvMode[stage] == kGDTextureEnvParam_Combine4;
+
+			uint32_t const rgb = combining
+				? rawCombiner[stage * 2 + 0]
+				: SynthesiseEnvCombiner(texEnvMode[stage]);
+			uint32_t const alpha = combining
+				? rawCombiner[stage * 2 + 1]
+				: SynthesiseEnvCombiner(texEnvMode[stage]);
+
+			packedCombiner[stage * 2 + 0] = rgb;
+			packedCombiner[stage * 2 + 1] = alpha;
+
+			vulkan->SetCombinerState(stage, rgb, alpha);
 		}
 	}
 
 	void cVKDriver::TexEnv(uint32_t gdTextureEnvTarget, uint32_t gdTextureEnvParamType, float const* params)
 	{
 		SCVK_CALL("%u, %u, %p", gdTextureEnvTarget, gdTextureEnvParamType, params);
+
+		// The environment colour, which a combiner may name as a source. One
+		// value is kept rather than one per stage, because the game has not
+		// been seen setting it per stage and the shader has room for one.
+		if (gdTextureEnvParamType == kGDTextureEnvParamType_Color && params != nullptr)
+		{
+			vulkan->SetConstantColour(params[0], params[1], params[2], params[3]);
+		}
 	}
 
 	void cVKDriver::TexParameter(uint32_t gdTextureTarget, uint32_t gdTextureParamType, int32_t gdTextureParam)
 	{
 		SCVK_CALL("%u, %u, %d", gdTextureTarget, gdTextureParamType, gdTextureParam);
+
+		// Filters, wrap modes and the level clamp all arrive here, and all of
+		// them are currently ignored. Which of them the game actually sets
+		// decides how much that costs.
+		if (NoteOnce(6, gdTextureTarget | (gdTextureParamType << 8) |
+				(static_cast<uint32_t>(gdTextureParam & 0xffff) << 16)))
+		{
+			LogNote("  TEXPARAM target %u, param type %u, value %d",
+				gdTextureTarget, gdTextureParamType, gdTextureParam);
+		}
 	}
 
 	void cVKDriver::GenTextures(int32_t count, uint32_t* textures)
@@ -130,6 +259,16 @@ namespace scvk
 	void cVKDriver::TexStage(uint32_t texUnit)
 	{
 		SCVK_CALL("%u", texUnit);
+
+		// Selects which stage the texture enable, the combiner and the stage
+		// matrix calls that follow are talking about.
+		activeTexStage = (texUnit < 2) ? texUnit : 1;
+	}
+
+	void cVKDriver::SetTextureStageEnabled(bool enabled)
+	{
+		texStageEnabled[activeTexStage] = enabled;
+		vulkan->SetTextureStageEnabled(activeTexStage, enabled);
 	}
 
 	void cVKDriver::TexStageCoord(uint32_t gdTexCoordSource)
@@ -181,12 +320,30 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %u", texture, texUnit);
 
-		// Only the first stage is honoured. The game drives two, but the second
-		// is part of the combiner network that has no equivalent yet.
+		// Whether the second unit is ever given a texture, and what it is
+		// paired with, decides how much of the combiner network matters.
+		if (NoteOnce(2, texUnit | (texture != 0 ? 0x100u : 0u)))
+		{
+			LogNote("  STAGE unit %u %s (texture %u)",
+				texUnit, texture != 0 ? "bound" : "cleared", texture);
+		}
+
+		// A handful of the textures the second stage is given, described in
+		// full. The terrain samples black there, and whether the level the
+		// sampler reaches was ever filled is the first thing to rule out.
+		if (texUnit == 1 && texture != 0 && NoteOnce(7, texture))
+		{
+			vulkan->LogTextureInfo(texture, "stage 1");
+		}
+
 		if (texUnit == 0)
 		{
 			boundTexture = texture;
 			vulkan->SetTexture(texture);
+		}
+		else if (texUnit == 1)
+		{
+			vulkan->SetTexture1(texture);
 		}
 	}
 
@@ -229,5 +386,46 @@ namespace scvk
 			combiner.RGBScale,
 			combiner.AlphaCombineMode,
 			combiner.AlphaScale);
+
+		// The whole configuration, keyed by value, so each distinct one is
+		// described exactly once however late in the session it first appears.
+		uint32_t key = texUnit
+			| (static_cast<uint32_t>(combiner.RGBCombineMode)   << 4)
+			| (static_cast<uint32_t>(combiner.AlphaCombineMode) << 8)
+			| (static_cast<uint32_t>(combiner.RGBScale)         << 12)
+			| (static_cast<uint32_t>(combiner.AlphaScale)       << 14);
+
+		for (int i = 0; i < 3; i++)
+		{
+			key ^= (static_cast<uint32_t>(combiner.RGBParams[i].SourceType)    << (16 + i * 2))
+			     ^ (static_cast<uint32_t>(combiner.RGBParams[i].OperandType)   << (22 + i * 2))
+			     ^ (static_cast<uint32_t>(combiner.AlphaParams[i].SourceType)  << (26 + i))
+			     ^ (static_cast<uint32_t>(combiner.AlphaParams[i].OperandType) << (29 + i));
+		}
+
+		if (texUnit < 2)
+		{
+			rawCombiner[texUnit * 2 + 0] =
+				PackCombinerChannel(combiner.RGBCombineMode, combiner.RGBParams, combiner.RGBScale);
+			rawCombiner[texUnit * 2 + 1] =
+				PackCombinerChannel(combiner.AlphaCombineMode, combiner.AlphaParams, combiner.AlphaScale);
+
+			PushCombinerState();
+		}
+
+		if (NoteOnce(1, key))
+		{
+			LogNote("  COMBINER unit %u: rgb mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u) | "
+				"alpha mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u)",
+				texUnit,
+				combiner.RGBCombineMode, combiner.RGBScale,
+				combiner.RGBParams[0].SourceType, combiner.RGBParams[0].OperandType,
+				combiner.RGBParams[1].SourceType, combiner.RGBParams[1].OperandType,
+				combiner.RGBParams[2].SourceType, combiner.RGBParams[2].OperandType,
+				combiner.AlphaCombineMode, combiner.AlphaScale,
+				combiner.AlphaParams[0].SourceType, combiner.AlphaParams[0].OperandType,
+				combiner.AlphaParams[1].SourceType, combiner.AlphaParams[1].OperandType,
+				combiner.AlphaParams[2].SourceType, combiner.AlphaParams[2].OperandType);
+		}
 	}
 }

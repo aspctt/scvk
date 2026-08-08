@@ -1674,6 +1674,11 @@ namespace scvk
 			return;
 		}
 
+		if (level + 1 > texture.uploadedLevels)
+		{
+			texture.uploadedLevels = level + 1;
+		}
+
 		// Build a tightly packed copy in the destination's own format.
 		std::vector<uint8_t> staged;
 
@@ -1842,6 +1847,53 @@ namespace scvk
 	void VulkanBackend::SetTexture(uint32_t handle)
 	{
 		currentTexture = (handle < textures.size() && textures[handle].live) ? handle : 0;
+	}
+
+	void VulkanBackend::LogTextureInfo(uint32_t handle, char const* why)
+	{
+		if (handle == 0 || handle >= textures.size() || !textures[handle].live)
+		{
+			LogNote("  TEXINFO %s: handle %u is not a live texture", why, handle);
+			return;
+		}
+
+		Texture const& texture = textures[handle];
+		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded",
+			why, handle, texture.width, texture.height, static_cast<int>(texture.format),
+			texture.compressed ? "compressed" : "plain",
+			texture.levels, texture.uploadedLevels);
+	}
+
+	void VulkanBackend::SetTexture1(uint32_t handle)
+	{
+		currentTexture1 = (handle < textures.size() && textures[handle].live) ? handle : 0;
+	}
+
+	void VulkanBackend::SetTextureStageEnabled(uint32_t stage, bool enabled)
+	{
+		if (stage < 2)
+		{
+			stageEnabled[stage] = enabled;
+		}
+	}
+
+	void VulkanBackend::SetCombinerState(uint32_t stage, uint32_t packedRGB, uint32_t packedAlpha)
+	{
+		if (stage > 1)
+		{
+			return;
+		}
+
+		combinerState[stage * 2 + 0] = packedRGB;
+		combinerState[stage * 2 + 1] = packedAlpha;
+	}
+
+	void VulkanBackend::SetConstantColour(float r, float g, float b, float a)
+	{
+		constantColour[0] = r;
+		constantColour[1] = g;
+		constantColour[2] = b;
+		constantColour[3] = a;
 	}
 
 	void VulkanBackend::DestroyTexture(uint32_t handle)
@@ -2042,10 +2094,17 @@ namespace scvk
 			layout.colourOffset = RZVertexFormatElementOffset(gdVertexFormat, kGDElementType_Color, 0);
 		}
 
-		layout.hasTexCoord = RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord) != 0;
-		if (layout.hasTexCoord)
+		// This counts coordinate sets, not components. The terrain carries two,
+		// one per texture stage, which is what the second stage samples with.
+		layout.texCoordSets = RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord);
+		if (layout.texCoordSets > 2)
 		{
-			layout.texCoordOffset = RZVertexFormatElementOffset(gdVertexFormat, kGDElementType_TexCoord, 0);
+			layout.texCoordSets = 2;
+		}
+
+		for (uint32_t set = 0; set < layout.texCoordSets; set++)
+		{
+			layout.texCoordOffset[set] = RZVertexFormatElementOffset(gdVertexFormat, kGDElementType_TexCoord, set);
 		}
 
 		return layout;
@@ -2079,7 +2138,7 @@ namespace scvk
 	}
 
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
-		VkDeviceSize vertexOffset)
+		VkDeviceSize vertexOffset, uint32_t texCoordSets)
 	{
 		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst, depthTest, depthWrite, depthCompare };
 		VkPipeline pipeline = GetPipeline(key);
@@ -2100,6 +2159,17 @@ namespace scvk
 		// across the window.
 		ApplyViewport();
 
+		// The second stage runs only when it is switched on, has a texture, and
+		// the geometry carries a coordinate set to sample it with. All three
+		// matter: the game leaves a 4x4 placeholder bound to the stage for the
+		// whole session and turns the stage itself off, so taking the binding
+		// as the signal modulates the city terrain down to black.
+		//
+		// Everything else keeps the texture environment path, which is already
+		// correct and has no business being rewritten in terms of combiners.
+		bool const twoStages = texCoordSets >= 2 && currentTexture1 != 0 && stageEnabled[1];
+		fragmentState[3] = twoStages ? 2.0f : 1.0f;
+
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2107,14 +2177,27 @@ namespace scvk
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			sizeof(transform), sizeof(fragmentState), fragmentState);
+		vkCmdPushConstants(commandBuffer, pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			sizeof(transform) + sizeof(fragmentState), sizeof(combinerState), combinerState);
+		vkCmdPushConstants(commandBuffer, pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			sizeof(transform) + sizeof(fragmentState) + sizeof(combinerState),
+			sizeof(constantColour), constantColour);
 
 		// Slot 0 holds the 1x1 white texture, so an unset or deleted texture
-		// still binds something valid and multiplies by one.
+		// still binds something valid and multiplies by one. That is also what
+		// the second stage gets when it is idle, since the fragment shader
+		// samples both unconditionally.
 		uint32_t const bound = (currentTexture < textures.size() && textures[currentTexture].live)
 			? currentTexture : 0;
+		uint32_t const bound1 = (twoStages && currentTexture1 < textures.size() && textures[currentTexture1].live)
+			? currentTexture1 : 0;
+
+		VkDescriptorSet const sets[] = { textures[bound].descriptor, textures[bound1].descriptor };
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
-			0, 1, &textures[bound].descriptor, 0, nullptr);
+			0, _countof(sets), sets, 0, nullptr);
 
 		VkBuffer buffers[] = { vertexBuffer };
 		VkDeviceSize offsets[] = { vertexOffset };
@@ -2171,7 +2254,7 @@ namespace scvk
 			return;
 		}
 
-		if (!BindDrawState(gdVertexFormat, topology, offset))
+		if (!BindDrawState(gdVertexFormat, topology, offset, layout.texCoordSets))
 		{
 			return;
 		}
@@ -2316,7 +2399,7 @@ namespace scvk
 
 		indexUsed = indexOffset + indexBytes;
 
-		if (!BindDrawState(gdVertexFormat, topology, vertexOffset))
+		if (!BindDrawState(gdVertexFormat, topology, vertexOffset, layout.texCoordSets))
 		{
 			return;
 		}
@@ -2995,13 +3078,15 @@ namespace scvk
 			return true;
 		};
 
-		// Indexed by (hasColour << 1) | hasTexCoord, matching the order the
+		// Indexed by hasColour * 3 + texCoordSets, matching the order the
 		// generated header declares them in.
-		return create(kGeometryVertSpv_None,   _countof(kGeometryVertSpv_None),   vertModules[0])
-			&& create(kGeometryVertSpv_Tex,    _countof(kGeometryVertSpv_Tex),    vertModules[1])
-			&& create(kGeometryVertSpv_Col,    _countof(kGeometryVertSpv_Col),    vertModules[2])
-			&& create(kGeometryVertSpv_ColTex, _countof(kGeometryVertSpv_ColTex), vertModules[3])
-			&& create(kGeometryFragSpv,        _countof(kGeometryFragSpv),        fragModule);
+		return create(kGeometryVertSpv_None,    _countof(kGeometryVertSpv_None),    vertModules[0])
+			&& create(kGeometryVertSpv_Tex,     _countof(kGeometryVertSpv_Tex),     vertModules[1])
+			&& create(kGeometryVertSpv_Tex2,    _countof(kGeometryVertSpv_Tex2),    vertModules[2])
+			&& create(kGeometryVertSpv_Col,     _countof(kGeometryVertSpv_Col),     vertModules[3])
+			&& create(kGeometryVertSpv_ColTex,  _countof(kGeometryVertSpv_ColTex),  vertModules[4])
+			&& create(kGeometryVertSpv_ColTex2, _countof(kGeometryVertSpv_ColTex2), vertModules[5])
+			&& create(kGeometryFragSpv,         _countof(kGeometryFragSpv),         fragModule);
 	}
 
 	bool VulkanBackend::CreatePipelineLayout(void)
@@ -3011,17 +3096,24 @@ namespace scvk
 			return true;
 		}
 
-		// One mat4 by push constant. The guaranteed minimum push constant size
-		// is 128 bytes, so 64 always fits and this needs no descriptor set,
-		// no uniform buffer and no per-frame allocation.
+		// A mat4, the fragment state, the combiner network and the environment
+		// colour, all by push constant: 112 bytes against a guaranteed minimum
+		// of 128. No descriptor set, no uniform buffer, no per-frame
+		// allocation.
 		VkPushConstantRange range{};
 		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 		range.offset     = 0;
-		range.size       = sizeof(float) * 20;
+		range.size       = sizeof(float) * 28;
+
+		// One set per texture stage, both with the same single-sampler layout.
+		// Keeping them separate is what lets a descriptor set stay a property
+		// of one texture: a single set with two bindings would need a set per
+		// pair of textures instead, and the pairs multiply.
+		VkDescriptorSetLayout const setLayouts[] = { descriptorLayout, descriptorLayout };
 
 		VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-		info.setLayoutCount         = 1;
-		info.pSetLayouts            = &descriptorLayout;
+		info.setLayoutCount         = _countof(setLayouts);
+		info.pSetLayouts            = setLayouts;
 		info.pushConstantRangeCount = 1;
 		info.pPushConstantRanges    = &range;
 
@@ -3049,7 +3141,7 @@ namespace scvk
 
 		// A shader may not declare an input the pipeline does not supply, so
 		// the variant has to match which attributes this format actually has.
-		uint32_t const variant = (layout.hasColour ? 2u : 0u) | (layout.hasTexCoord ? 1u : 0u);
+		uint32_t const variant = (layout.hasColour ? 3u : 0u) + layout.texCoordSets;
 
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -3070,7 +3162,7 @@ namespace scvk
 		// coordinate are added at the offsets the format itself declares,
 		// which is not the same across formats: V3F_C4UB_T2F puts the colour
 		// at 12 and V3F_N3F_C4UB puts it at 24.
-		VkVertexInputAttributeDescription attributes[3]{};
+		VkVertexInputAttributeDescription attributes[4]{};
 		uint32_t attributeCount = 0;
 
 		attributes[attributeCount].location = 0;
@@ -3088,12 +3180,12 @@ namespace scvk
 			attributeCount++;
 		}
 
-		if (layout.hasTexCoord)
+		for (uint32_t set = 0; set < layout.texCoordSets; set++)
 		{
-			attributes[attributeCount].location = 2;
+			attributes[attributeCount].location = 2 + set;
 			attributes[attributeCount].binding  = 0;
 			attributes[attributeCount].format   = VK_FORMAT_R32G32_SFLOAT;
-			attributes[attributeCount].offset   = layout.texCoordOffset;
+			attributes[attributeCount].offset   = layout.texCoordOffset[set];
 			attributeCount++;
 		}
 
@@ -3174,8 +3266,8 @@ namespace scvk
 			return VK_NULL_HANDLE;
 		}
 
-		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord %d), topology %d, blend %d (%u,%u).",
-			key.format, layout.stride, layout.hasColour ? 1 : 0, layout.hasTexCoord ? 1 : 0, static_cast<int>(key.topology), key.blendEnable ? 1 : 0, key.srcFactor, key.dstFactor);
+		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).",
+			key.format, layout.stride, layout.hasColour ? 1 : 0, layout.texCoordSets, static_cast<int>(key.topology), key.blendEnable ? 1 : 0, key.srcFactor, key.dstFactor);
 
 		pipelines.push_back({ key, pipeline });
 		return pipeline;

@@ -183,7 +183,28 @@ namespace scvk
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
 
+		/** Selects the texture on the second stage. 0 disables that stage. */
+		void SetTexture1(uint32_t handle);
+
+		/** Switches texturing on or off for one stage. */
+		void SetTextureStageEnabled(uint32_t stage, bool enabled);
+
+		/**
+		 * Sets one stage's combiner, already packed the way the shader reads it.
+		 *
+		 * Two words per stage, one for colour and one for alpha, each holding
+		 * the combine mode, three source and operand pairs, and the output
+		 * scale.
+		 */
+		void SetCombinerState(uint32_t stage, uint32_t packedRGB, uint32_t packedAlpha);
+
+		/** The environment colour a combiner may name as a source. */
+		void SetConstantColour(float r, float g, float b, float a);
+
 		void DestroyTexture(uint32_t handle);
+
+		/** Describes a texture in the log, for working out why one samples wrong. */
+		void LogTextureInfo(uint32_t handle, char const* why);
 
 		/**
 		 * Allocates an offscreen copy of the colour or depth buffer.
@@ -259,11 +280,14 @@ namespace scvk
 		/** Where a format's attributes live, decoded once per format. */
 		struct VertexLayout
 		{
-			uint32_t stride         = 0;
-			bool     hasColour      = false;
-			uint32_t colourOffset   = 0;
-			bool     hasTexCoord    = false;
-			uint32_t texCoordOffset = 0;
+			uint32_t stride        = 0;
+			bool     hasColour     = false;
+			uint32_t colourOffset  = 0;
+
+			// Coordinate sets, not components. Two means the geometry can feed
+			// a second texture stage; the terrain is the only thing that does.
+			uint32_t texCoordSets     = 0;
+			uint32_t texCoordOffset[2] = { 0, 0 };
 		};
 
 		/** A texture, its view, and the descriptor set that binds it. */
@@ -279,6 +303,11 @@ namespace scvk
 			uint32_t        levels     = 1;
 			bool            compressed = false;
 			bool            live       = false;
+
+			// The highest level the game has actually filled, plus one. A
+			// declared level that was never uploaded is undefined memory, and
+			// sampling it is indistinguishable from sampling black.
+			uint32_t        uploadedLevels = 0;
 		};
 
 		struct PipelineEntry
@@ -350,7 +379,8 @@ namespace scvk
 			uint32_t vertexCount, uint32_t stride, VkDeviceSize& outOffset);
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
-		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkDeviceSize vertexOffset);
+		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
+			VkDeviceSize vertexOffset, uint32_t texCoordSets);
 
 		VkPipeline GetPipeline(PipelineKey const& key);
 
@@ -429,8 +459,8 @@ namespace scvk
 		std::vector<VkImageView>   swapchainImageViews;
 		std::vector<VkFramebuffer> framebuffers;
 
-		// Indexed by (hasColour << 1) | hasTexCoord.
-		VkShaderModule   vertModules[4] = {};
+		// Indexed by hasColour * 3 + texCoordSets.
+		VkShaderModule   vertModules[6] = {};
 		VkShaderModule   fragModule     = VK_NULL_HANDLE;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 		std::vector<PipelineEntry> pipelines;
@@ -443,6 +473,14 @@ namespace scvk
 		// one instead of needing its own shader and pipeline.
 		std::vector<Texture> textures;
 		uint32_t             currentTexture = 0;
+
+		// The texture on the second stage, and the combiner network that says
+		// how to fold it into the first. Only geometry carrying two coordinate
+		// sets can use them, which in practice means the terrain.
+		uint32_t currentTexture1 = 0;
+		bool     stageEnabled[2] = { false, false };
+		uint32_t combinerState[4] = {};
+		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence         uploadFence         = VK_NULL_HANDLE;

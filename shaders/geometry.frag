@@ -6,12 +6,17 @@
  *
  * Fragment stage for the fixed function geometry path.
  *
- * Reproduces two things Vulkan has no equivalent for.
+ * Reproduces three things Vulkan has no equivalent for.
  *
  * The texture environment: modulate multiplies the texture by the vertex
  * colour, replace ignores the vertex colour entirely. The game uses both, and
  * an untextured build renders a fully textured scene as solid white because
  * the vertex colours are white and the texture carries the image.
+ *
+ * The texture stage combiners: a two stage network of sources, operands,
+ * combine modes and output scales, which the terrain uses to blend a second
+ * texture over the first. With only the first stage honoured the terrain
+ * renders in flat pale patches wherever the second was meant to contribute.
  *
  * The alpha test: a fixed function comparison that discards fragments below a
  * threshold. It was removed from the programmable pipeline, so it becomes an
@@ -31,24 +36,137 @@ layout(push_constant) uniform Push
     //    0 never, 1 less, 2 equal, 3 lequal, 4 greater, 5 notequal,
     //    6 gequal, 7 always. Negative means the test is disabled.
     // y: reference value.
-    // z: 0 for modulate, 1 for replace.
+    // z: 0 for modulate, 1 for replace. Used only by the single stage path.
+    // w: how many texture stages are live, 1 or 2.
     vec4 fragmentState;
+
+    // The combiner network, one packed word per stage per channel:
+    // x stage 0 rgb, y stage 0 alpha, z stage 1 rgb, w stage 1 alpha.
+    //
+    //   bits 0..2   combine mode
+    //   bits 3..4   source 0      bits 5..7    operand 0
+    //   bits 8..9   source 1      bits 10..12  operand 1
+    //   bits 13..14 source 2      bits 15..17  operand 2
+    //   bits 18..19 output scale, 0 for x1, 1 for x2, 2 for x4
+    uvec4 combiner;
+
+    // The environment colour, which a combiner may name as a source.
+    vec4 constantColour;
 } push;
 
-layout(set = 0, binding = 0) uniform sampler2D texSampler;
+layout(set = 0, binding = 0) uniform sampler2D texSampler0;
+layout(set = 1, binding = 0) uniform sampler2D texSampler1;
 
 layout(location = 0) in vec4 fragColour;
-layout(location = 1) in vec2 fragTexCoord;
+layout(location = 1) in vec2 fragTexCoord0;
+layout(location = 2) in vec2 fragTexCoord1;
 
 layout(location = 0) out vec4 outColour;
 
+// Sources, in the game's order: texture, previous, constant, primary colour.
+vec4 combinerSource(uint source, vec4 texel, vec4 previous)
+{
+    if (source == 0u) { return texel; }
+    if (source == 1u) { return previous; }
+    if (source == 2u) { return push.constantColour; }
+    return fragColour;
+}
+
+// Operands, reduced to the four the fixed function pipeline allows: the
+// colour, its complement, the alpha, and its complement.
+vec3 operandRGB(uint operand, vec4 value)
+{
+    if (operand == 0u) { return value.rgb; }
+    if (operand == 1u) { return vec3(1.0) - value.rgb; }
+    if (operand == 2u) { return vec3(value.a); }
+    return vec3(1.0 - value.a);
+}
+
+float operandAlpha(uint operand, vec4 value)
+{
+    // Only the alpha operands are meaningful on the alpha channel, so a
+    // colour operand is read as its alpha counterpart.
+    if (operand == 1u || operand == 3u) { return 1.0 - value.a; }
+    return value.a;
+}
+
+vec3 combineRGB(uint mode, vec3 a0, vec3 a1, vec3 a2)
+{
+    if (mode == 0u) { return a0; }
+    if (mode == 1u) { return a0 * a1; }
+    if (mode == 2u) { return a0 + a1; }
+    if (mode == 3u) { return a0 + a1 - vec3(0.5); }
+    if (mode == 4u) { return a0 * a2 + a1 * (vec3(1.0) - a2); }
+
+    // Dot3, which returns one value replicated across the three channels.
+    return vec3(4.0 * dot(a0 - vec3(0.5), a1 - vec3(0.5)));
+}
+
+float combineAlpha(uint mode, float a0, float a1, float a2)
+{
+    if (mode == 0u) { return a0; }
+    if (mode == 1u) { return a0 * a1; }
+    if (mode == 2u) { return a0 + a1; }
+    if (mode == 3u) { return a0 + a1 - 0.5; }
+    if (mode == 4u) { return a0 * a2 + a1 * (1.0 - a2); }
+
+    // Dot3 writes the same value to alpha as to the colour channels.
+    return a0;
+}
+
+float scaleFactor(uint packed)
+{
+    uint scale = (packed >> 18) & 3u;
+    return (scale == 0u) ? 1.0 : ((scale == 1u) ? 2.0 : 4.0);
+}
+
+vec4 runStage(uint packedRGB, uint packedAlpha, vec4 texel, vec4 previous)
+{
+    vec4 s0 = combinerSource((packedRGB >> 3)  & 3u, texel, previous);
+    vec4 s1 = combinerSource((packedRGB >> 8)  & 3u, texel, previous);
+    vec4 s2 = combinerSource((packedRGB >> 13) & 3u, texel, previous);
+
+    vec3 rgb = combineRGB(packedRGB & 7u,
+        operandRGB((packedRGB >> 5)  & 7u, s0),
+        operandRGB((packedRGB >> 10) & 7u, s1),
+        operandRGB((packedRGB >> 15) & 7u, s2));
+
+    vec4 a0 = combinerSource((packedAlpha >> 3)  & 3u, texel, previous);
+    vec4 a1 = combinerSource((packedAlpha >> 8)  & 3u, texel, previous);
+    vec4 a2 = combinerSource((packedAlpha >> 13) & 3u, texel, previous);
+
+    float alpha = combineAlpha(packedAlpha & 7u,
+        operandAlpha((packedAlpha >> 5)  & 7u, a0),
+        operandAlpha((packedAlpha >> 10) & 7u, a1),
+        operandAlpha((packedAlpha >> 15) & 7u, a2));
+
+    return vec4(rgb * scaleFactor(packedRGB), alpha * scaleFactor(packedAlpha));
+}
+
 void main()
 {
-    vec4 texel = texture(texSampler, fragTexCoord);
+    vec4 texel0 = texture(texSampler0, fragTexCoord0);
+    vec4 result;
 
-    // Replace takes the texture alone; modulate scales it by the vertex
-    // colour. Selected without branching, since both operands are cheap.
-    vec4 result = mix(texel * fragColour, texel, push.fragmentState.z);
+    if (push.fragmentState.w < 1.5)
+    {
+        // One stage, driven by the texture environment rather than the
+        // combiner network. This is the path everything but the terrain is on,
+        // and it is left exactly as it was: replace takes the texture alone,
+        // modulate scales it by the vertex colour.
+        result = mix(texel0 * fragColour, texel0, push.fragmentState.z);
+    }
+    else
+    {
+        vec4 texel1 = texture(texSampler1, fragTexCoord1);
+
+        // The first stage has no predecessor, so the primary colour stands in
+        // as "previous", which is what the fixed function pipeline defines.
+        result = runStage(push.combiner.x, push.combiner.y, texel0, fragColour);
+        result = runStage(push.combiner.z, push.combiner.w, texel1, result);
+    }
+
+    result = clamp(result, 0.0, 1.0);
 
     int  comparison = int(push.fragmentState.x);
     float reference = push.fragmentState.y;
