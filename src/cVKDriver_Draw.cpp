@@ -383,8 +383,36 @@ namespace scvk
 
 	void cVKDriver::DrawElements(uint32_t gdPrimType, int32_t count, uint32_t gdType, void const* indices)
 	{
-		// Never observed from the game, which only ever uses DrawArrays.
-		SCVK_CALL("%u, %d, %u, %p  [UNIMPLEMENTED]", gdPrimType, count, gdType, indices);
+		SCVK_CALL("%u, %d, %u, %p", gdPrimType, count, gdType, indices);
+
+		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		// The game's type numbering, shared with its texture uploads: 3 is
+		// unsigned short and 5 is unsigned int. Unsigned byte indices are
+		// expressible in the enumeration but Vulkan has no core equivalent, and
+		// the game has not been seen using them.
+		bool indicesAre32Bit;
+
+		switch (gdType)
+		{
+		case 3: indicesAre32Bit = false; break;
+		case 5: indicesAre32Bit = true;  break;
+
+		default:
+			if (indexTypeWarningsRemaining > 0)
+			{
+				indexTypeWarningsRemaining--;
+				LogNote("  DrawElements: index type %u is not handled; skipping the draw.", gdType);
+			}
+			return;
+		}
+
+		UpdateTransform();
+		vulkan->DrawIndexedVertices(gdPrimType, vertexFormat, vertexPointer,
+			indices, static_cast<uint32_t>(count), indicesAre32Bit);
 	}
 
 	void cVKDriver::InterleavedArrays(uint32_t gdVertexFormat, int32_t stride, void const* pointer)

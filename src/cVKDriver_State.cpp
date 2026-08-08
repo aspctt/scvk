@@ -46,6 +46,11 @@ namespace scvk
 		constexpr uint32_t kClearColour  = 0x4000;
 	}
 
+	void cVKDriver::PushDepthState(void)
+	{
+		vulkan->SetDepthState(enabledCapabilities[kGDCapability_DepthTest], depthWrite, depthCompare);
+	}
+
 	void cVKDriver::PushBlendState(void)
 	{
 		vulkan->SetBlendState(enabledCapabilities[kGDCapability_Blend], blendSrcFactor, blendDstFactor);
@@ -67,6 +72,11 @@ namespace scvk
 		{
 			vulkan->Clear(clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
 		}
+
+		if ((mask & kClearDepth) != 0)
+		{
+			vulkan->ClearDepth(clearDepthValue);
+		}
 	}
 
 	void cVKDriver::ClearColor(float r, float g, float b, float a)
@@ -82,6 +92,11 @@ namespace scvk
 	void cVKDriver::ClearDepth(double depth)
 	{
 		SCVK_CALL("%.3f", depth);
+
+		// Kept until the game asks for a clear, matching how ClearColor works.
+		// The value needs no conversion: OpenGL's depth clear is already 0 to 1,
+		// and the Vulkan clip correction puts depth in the same range.
+		clearDepthValue = static_cast<float>(depth);
 	}
 
 	void cVKDriver::ClearStencil(int32_t s)
@@ -97,11 +112,17 @@ namespace scvk
 	void cVKDriver::DepthFunc(uint32_t gdTestFunc)
 	{
 		SCVK_CALL("%u", gdTestFunc);
+
+		depthCompare = gdTestFunc;
+		PushDepthState();
 	}
 
 	void cVKDriver::DepthMask(bool flag)
 	{
 		SCVK_CALL("%d", flag);
+
+		depthWrite = flag;
+		PushDepthState();
 	}
 
 	void cVKDriver::StencilFunc(uint32_t gdTestFunc, int32_t ref, uint32_t mask)
@@ -217,6 +238,7 @@ namespace scvk
 
 			if (gdDriverState == kGDCapability_Blend)     PushBlendState();
 			if (gdDriverState == kGDCapability_AlphaTest) PushAlphaTest();
+			if (gdDriverState == kGDCapability_DepthTest) PushDepthState();
 		}
 		else
 		{
@@ -234,6 +256,7 @@ namespace scvk
 
 			if (gdDriverState == kGDCapability_Blend)     PushBlendState();
 			if (gdDriverState == kGDCapability_AlphaTest) PushAlphaTest();
+			if (gdDriverState == kGDCapability_DepthTest) PushDepthState();
 		}
 		else
 		{

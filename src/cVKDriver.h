@@ -284,6 +284,7 @@ namespace scvk
 		int      texMatrixProbesRemaining;
 		int      mismatchReportsRemaining;
 		int      coverageReportsRemaining;
+		int      indexTypeWarningsRemaining;
 
 		// A single frame is dumped in full, once, a little after startup so the
 		// interface has settled.
@@ -297,6 +298,9 @@ namespace scvk
 
 		/** Forwards blend enable and factors, which the backend keys on. */
 		void PushBlendState(void);
+
+		/** Forwards depth test, write and comparison. */
+		void PushDepthState(void);
 
 		/** Forwards the alpha comparison, disabled when the capability is off. */
 		void PushAlphaTest(void);
@@ -333,6 +337,9 @@ namespace scvk
 		uint32_t blendDstFactor;
 		uint32_t alphaFunc;
 		float    alphaRef;
+		uint32_t depthCompare;
+		bool     depthWrite;
+		float    clearDepthValue;
 
 		// The fixed function matrix stack, reduced to what the game uses: it
 		// only ever loads whole matrices into the modelview and projection

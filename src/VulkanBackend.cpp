@@ -643,7 +643,7 @@ namespace scvk
 		// The render pass depends on the swapchain format, and the
 		// framebuffers on the images and extent, so both belong here rather
 		// than in one-time setup.
-		return CreateRenderPass() && CreateFramebuffers();
+		return CreateDepthResources() && CreateRenderPass() && CreateFramebuffers();
 	}
 
 	bool VulkanBackend::EnsureFrame(void)
@@ -726,6 +726,7 @@ namespace scvk
 		frameActive = true;
 		stagingUsed = 0;
 		vertexUsed  = 0;
+		indexUsed   = 0;
 
 		// UNDEFINED as the starting point: we overwrite every pixel we care
 		// about and discarding the previous contents is cheaper than
@@ -745,6 +746,11 @@ namespace scvk
 			{
 			case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
 				access = VK_ACCESS_TRANSFER_WRITE_BIT;
+				stage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
+				break;
+
+			case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+				access = VK_ACCESS_TRANSFER_READ_BIT;
 				stage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
 				break;
 
@@ -813,6 +819,31 @@ namespace scvk
 		// transition is driven by what is about to happen rather than fixed
 		// once per frame.
 		TransitionTo(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		// A freshly created depth image is UNDEFINED, and the render pass
+		// declares its attachment layout as the initial one. Moving it here
+		// covers the case where the game opens a pass before it has asked for
+		// any depth clear.
+		if (depthLayoutPending && depthImage != VK_NULL_HANDLE)
+		{
+			VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image               = depthImage;
+			barrier.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			depthLayoutPending = false;
+		}
 
 		VkRenderPassBeginInfo begin{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 		begin.renderPass  = renderPass;
@@ -1335,6 +1366,22 @@ namespace scvk
 
 	namespace
 	{
+		/** The game's comparison enumeration, which follows OpenGL's order. */
+		VkCompareOp MapCompareOp(uint8_t gdFunc)
+		{
+			switch (gdFunc)
+			{
+			case 0:  return VK_COMPARE_OP_NEVER;
+			case 1:  return VK_COMPARE_OP_LESS;
+			case 2:  return VK_COMPARE_OP_EQUAL;
+			case 3:  return VK_COMPARE_OP_LESS_OR_EQUAL;
+			case 4:  return VK_COMPARE_OP_GREATER;
+			case 5:  return VK_COMPARE_OP_NOT_EQUAL;
+			case 6:  return VK_COMPARE_OP_GREATER_OR_EQUAL;
+			default: return VK_COMPARE_OP_ALWAYS;
+			}
+		}
+
 		/** The game's blend factor enumeration, which follows OpenGL's order. */
 		VkBlendFactor MapBlendFactor(uint8_t gdFactor)
 		{
@@ -1896,7 +1943,9 @@ namespace scvk
 			return true;
 		}
 
-		constexpr VkDeviceSize kVertexBufferSize = 16u * 1024u * 1024u;
+		// Sized from measurement rather than guesswork: a city frame overflowed
+		// 16MB even after each draw was trimmed to the vertices it references.
+		constexpr VkDeviceSize kVertexBufferSize = 64u * 1024u * 1024u;
 
 		if (!CreateHostBuffer(kVertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 				vertexBuffer, vertexMemory, vertexMapped))
@@ -1906,6 +1955,20 @@ namespace scvk
 
 		vertexSize = kVertexBufferSize;
 		vertexUsed = 0;
+
+		// Indices arriving with a draw are client memory too, so they get the
+		// same treatment as the vertices: copied into a per-frame arena that is
+		// rewound when the frame begins.
+		constexpr VkDeviceSize kIndexBufferSize = 8u * 1024u * 1024u;
+
+		if (!CreateHostBuffer(kIndexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+				indexBuffer, indexMemory, indexMapped))
+		{
+			return false;
+		}
+
+		indexBufferSize = kIndexBufferSize;
+		indexUsed       = 0;
 
 		// Vulkan has no quad topology, so quads are drawn as indexed triangle
 		// pairs. The index pattern depends only on the vertex count, never on
@@ -1988,69 +2051,41 @@ namespace scvk
 		return layout;
 	}
 
-	void VulkanBackend::DrawVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
-		void const* vertices, uint32_t firstVertex, uint32_t vertexCount)
+	bool VulkanBackend::MapTopology(uint32_t gdPrimType, VkPrimitiveTopology& topology, bool& asQuads)
 	{
-		VertexLayout const layout = DecodeVertexLayout(gdVertexFormat);
-		uint32_t const stride = layout.stride;
-
-		if (vertices == nullptr || vertexCount == 0 || stride == 0)
-		{
-			return;
-		}
-
 		// The game's primitive numbering, from its own translation table:
 		// 0 triangles, 1 triangle strip, 2 triangle fan, 3 points, 4 lines,
 		// 5 line strip, 6 quads, 7 quad strip.
-		VkPrimitiveTopology topology;
-		bool asQuads = false;
+		asQuads = false;
 
 		switch (gdPrimType)
 		{
-		case 0: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;  break;
-		case 1: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
-		case 2: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;   break;
-		case 3: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;     break;
-		case 4: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;      break;
-		case 5: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;     break;
-		case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; asQuads = true; break;
+		case 0: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;  return true;
+		case 1: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; return true;
+		case 2: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;   return true;
+		case 3: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;     return true;
+		case 4: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;      return true;
+		case 5: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;     return true;
+		case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; asQuads = true; return true;
 
 		// A quad strip covers the same surface as a triangle strip over the
 		// same vertices, so it needs no index expansion at all.
-		case 7: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+		case 7: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; return true;
 
 		default:
 			LogNote("Vulkan: primitive type %u is not handled; skipping the draw.", gdPrimType);
-			return;
+			return false;
 		}
+	}
 
-		if (!EnsureFrame())
-		{
-			return;
-		}
-
-		VkDeviceSize bytes = static_cast<VkDeviceSize>(vertexCount) * stride;
-
-		// Alignment so the binding offset stays legal for the attributes.
-		VkDeviceSize offset = (vertexUsed + 15u) & ~static_cast<VkDeviceSize>(15u);
-
-		if (offset + bytes > vertexSize)
-		{
-			LogNote("Vulkan: per-frame vertex buffer exhausted; dropping a draw of %u vertices.", vertexCount);
-			return;
-		}
-
-		memcpy(static_cast<uint8_t*>(vertexMapped) + offset,
-			static_cast<uint8_t const*>(vertices) + static_cast<size_t>(firstVertex) * stride,
-			static_cast<size_t>(bytes));
-
-		vertexUsed = offset + bytes;
-
-		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst };
+	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
+		VkDeviceSize vertexOffset)
+	{
+		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst, depthTest, depthWrite, depthCompare };
 		VkPipeline pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
-			return;
+			return false;
 		}
 
 		BeginRenderPassIfNeeded();
@@ -2082,8 +2117,64 @@ namespace scvk
 			0, 1, &textures[bound].descriptor, 0, nullptr);
 
 		VkBuffer buffers[] = { vertexBuffer };
-		VkDeviceSize offsets[] = { offset };
+		VkDeviceSize offsets[] = { vertexOffset };
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+
+		return true;
+	}
+
+	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex,
+		uint32_t vertexCount, uint32_t stride, VkDeviceSize& outOffset)
+	{
+		VkDeviceSize const bytes = static_cast<VkDeviceSize>(vertexCount) * stride;
+
+		// Alignment so the binding offset stays legal for the attributes.
+		VkDeviceSize const offset = (vertexUsed + 15u) & ~static_cast<VkDeviceSize>(15u);
+
+		if (offset + bytes > vertexSize)
+		{
+			LogNote("Vulkan: per-frame vertex buffer exhausted; dropping a draw of %u vertices.", vertexCount);
+			return false;
+		}
+
+		memcpy(static_cast<uint8_t*>(vertexMapped) + offset,
+			static_cast<uint8_t const*>(vertices) + static_cast<size_t>(firstVertex) * stride,
+			static_cast<size_t>(bytes));
+
+		vertexUsed = offset + bytes;
+		outOffset  = offset;
+		return true;
+	}
+
+	void VulkanBackend::DrawVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
+		void const* vertices, uint32_t firstVertex, uint32_t vertexCount)
+	{
+		VertexLayout const layout = DecodeVertexLayout(gdVertexFormat);
+		uint32_t const stride = layout.stride;
+
+		if (vertices == nullptr || vertexCount == 0 || stride == 0)
+		{
+			return;
+		}
+
+		VkPrimitiveTopology topology;
+		bool asQuads = false;
+
+		if (!MapTopology(gdPrimType, topology, asQuads) || !EnsureFrame())
+		{
+			return;
+		}
+
+		VkDeviceSize offset = 0;
+		if (!UploadVertices(vertices, firstVertex, vertexCount, stride, offset))
+		{
+			return;
+		}
+
+		if (!BindDrawState(gdVertexFormat, topology, offset))
+		{
+			return;
+		}
 
 		if (asQuads)
 		{
@@ -2107,6 +2198,136 @@ namespace scvk
 		{
 			vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
 		}
+	}
+
+	void VulkanBackend::DrawIndexedVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
+		void const* vertices, void const* indices, uint32_t indexCount, bool indicesAre32Bit)
+	{
+		VertexLayout const layout = DecodeVertexLayout(gdVertexFormat);
+		uint32_t const stride = layout.stride;
+
+		if (vertices == nullptr || indices == nullptr || indexCount == 0 || stride == 0)
+		{
+			return;
+		}
+
+		VkPrimitiveTopology topology;
+		bool asQuads = false;
+
+		if (!MapTopology(gdPrimType, topology, asQuads) || !EnsureFrame())
+		{
+			return;
+		}
+
+		// The indices are client memory and say nothing about how many vertices
+		// back them, so the range has to be measured before anything can be
+		// copied.
+		//
+		// Only the span actually referenced is taken, not everything from zero.
+		// The game indexes small windows of large shared arrays, and uploading
+		// each window's whole prefix exhausted the per-frame arena partway
+		// through a city frame, which dropped several hundred draws.
+		uint32_t lowest  = UINT32_MAX;
+		uint32_t highest = 0;
+
+		if (indicesAre32Bit)
+		{
+			uint32_t const* source = static_cast<uint32_t const*>(indices);
+			for (uint32_t i = 0; i < indexCount; i++)
+			{
+				if (source[i] < lowest)  { lowest  = source[i]; }
+				if (source[i] > highest) { highest = source[i]; }
+			}
+		}
+		else
+		{
+			uint16_t const* source = static_cast<uint16_t const*>(indices);
+			for (uint32_t i = 0; i < indexCount; i++)
+			{
+				if (source[i] < lowest)  { lowest  = source[i]; }
+				if (source[i] > highest) { highest = source[i]; }
+			}
+		}
+
+		uint32_t const vertexCount = highest - lowest + 1u;
+
+		VkDeviceSize vertexOffset = 0;
+		if (!UploadVertices(vertices, lowest, vertexCount, stride, vertexOffset))
+		{
+			return;
+		}
+
+		// Quads are expanded here rather than being drawn through the shared
+		// quad index buffer, because that buffer describes consecutive vertices
+		// and these do not have to be consecutive.
+		uint32_t const emitted = asQuads ? (indexCount / 4u) * 6u : indexCount;
+		if (emitted == 0)
+		{
+			return;
+		}
+
+		VkDeviceSize const indexBytes = static_cast<VkDeviceSize>(emitted) * sizeof(uint32_t);
+		VkDeviceSize const indexOffset = (indexUsed + 3u) & ~static_cast<VkDeviceSize>(3u);
+
+		if (indexOffset + indexBytes > indexBufferSize)
+		{
+			LogNote("Vulkan: per-frame index buffer exhausted; dropping a draw of %u indices.", indexCount);
+			return;
+		}
+
+		uint32_t* out = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(indexMapped) + indexOffset);
+
+		if (asQuads)
+		{
+			uint32_t const quads = indexCount / 4u;
+			for (uint32_t quad = 0; quad < quads; quad++)
+			{
+				uint32_t corner[4];
+				for (uint32_t c = 0; c < 4; c++)
+				{
+					uint32_t const at = quad * 4u + c;
+					corner[c] = indicesAre32Bit
+						? static_cast<uint32_t const*>(indices)[at]
+						: static_cast<uint32_t>(static_cast<uint16_t const*>(indices)[at]);
+				}
+
+				out[quad * 6u + 0] = corner[0];
+				out[quad * 6u + 1] = corner[1];
+				out[quad * 6u + 2] = corner[2];
+				out[quad * 6u + 3] = corner[0];
+				out[quad * 6u + 4] = corner[2];
+				out[quad * 6u + 5] = corner[3];
+			}
+		}
+		else if (indicesAre32Bit)
+		{
+			memcpy(out, indices, static_cast<size_t>(indexBytes));
+		}
+		else
+		{
+			// Widened rather than kept narrow, so one buffer and one index type
+			// serve every draw regardless of what the game sent.
+			uint16_t const* source = static_cast<uint16_t const*>(indices);
+			for (uint32_t i = 0; i < indexCount; i++)
+			{
+				out[i] = source[i];
+			}
+		}
+
+		indexUsed = indexOffset + indexBytes;
+
+		if (!BindDrawState(gdVertexFormat, topology, vertexOffset))
+		{
+			return;
+		}
+
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32);
+
+		// The indices went in unchanged, so they still count from the start of
+		// the game's array while the buffer holds only the slice from the
+		// lowest one onward. A negative vertex offset closes that gap, which is
+		// what the parameter is signed for.
+		vkCmdDrawIndexed(commandBuffer, emitted, 1, 0, -static_cast<int32_t>(lowest), 0);
 	}
 
 	bool VulkanBackend::CreateRenderPass(void)
@@ -2135,14 +2356,33 @@ namespace scvk
 		colourRef.attachment = 0;
 		colourRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+		// Depth loads and stores like the colour attachment, because the game
+		// clears it explicitly and may open and close several passes per frame.
+		VkAttachmentDescription depth{};
+		depth.format         = depthFormat;
+		depth.samples        = VK_SAMPLE_COUNT_1_BIT;
+		depth.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+		depth.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+		depth.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference depthRef{};
+		depthRef.attachment = 1;
+		depthRef.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
 		VkSubpassDescription subpass{};
-		subpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
-		subpass.colorAttachmentCount = 1;
-		subpass.pColorAttachments    = &colourRef;
+		subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount    = 1;
+		subpass.pColorAttachments       = &colourRef;
+		subpass.pDepthStencilAttachment = &depthRef;
+
+		VkAttachmentDescription attachments[] = { colour, depth };
 
 		VkRenderPassCreateInfo info{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-		info.attachmentCount = 1;
-		info.pAttachments    = &colour;
+		info.attachmentCount = 2;
+		info.pAttachments    = attachments;
 		info.subpassCount    = 1;
 		info.pSubpasses      = &subpass;
 
@@ -2154,6 +2394,523 @@ namespace scvk
 		}
 
 		return true;
+	}
+
+	bool VulkanBackend::CreateDepthResources(void)
+	{
+		// D32 first, falling back to the packed depth-stencil format. One or
+		// the other is guaranteed present, and the game only needs depth: its
+		// stencil calls are recorded but not yet honoured.
+		VkFormat const candidates[] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+
+		depthFormat = VK_FORMAT_UNDEFINED;
+		for (VkFormat candidate : candidates)
+		{
+			VkFormatProperties properties{};
+			vkGetPhysicalDeviceFormatProperties(physicalDevice, candidate, &properties);
+
+			if (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+			{
+				depthFormat = candidate;
+				break;
+			}
+		}
+
+		if (depthFormat == VK_FORMAT_UNDEFINED)
+		{
+			LogNote("Vulkan: no usable depth format; depth testing will be unavailable.");
+			return false;
+		}
+
+		VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+		imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+		imageInfo.format        = depthFormat;
+		imageInfo.extent        = { swapchainExtent.width, swapchainExtent.height, 1 };
+		imageInfo.mipLevels     = 1;
+		imageInfo.arrayLayers   = 1;
+		imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+		// TRANSFER_DST for the game's depth clears, TRANSFER_SRC because it
+		// also saves the depth buffer into a buffer region.
+		imageInfo.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+		                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VkResult result = vkCreateImage(device, &imageInfo, nullptr, &depthImage);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateImage (depth)", result);
+			return false;
+		}
+
+		VkMemoryRequirements requirements{};
+		vkGetImageMemoryRequirements(device, depthImage, &requirements);
+
+		uint32_t typeIndex = 0;
+		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		{
+			LogNote("Vulkan: no device-local memory for the depth buffer.");
+			return false;
+		}
+
+		VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocInfo.allocationSize  = requirements.size;
+		allocInfo.memoryTypeIndex = typeIndex;
+
+		result = vkAllocateMemory(device, &allocInfo, nullptr, &depthMemory);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateMemory (depth)", result);
+			return false;
+		}
+
+		vkBindImageMemory(device, depthImage, depthMemory, 0);
+
+		VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+		viewInfo.image    = depthImage;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format   = depthFormat;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+
+		result = vkCreateImageView(device, &viewInfo, nullptr, &depthView);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateImageView (depth)", result);
+			return false;
+		}
+
+		// The image is still UNDEFINED, and the render pass declares the
+		// attachment layout as its initial one. Whichever comes first, the next
+		// render pass or the game's next depth clear, moves it there; this only
+		// records that the move is still owed.
+		depthLayoutPending = true;
+
+		LogNote("Vulkan: depth buffer ready, %ux%u, format %d.",
+			swapchainExtent.width, swapchainExtent.height, static_cast<int>(depthFormat));
+		return true;
+	}
+
+	void VulkanBackend::DestroyDepthResources(void)
+	{
+		if (depthView != VK_NULL_HANDLE)   { vkDestroyImageView(device, depthView, nullptr);   depthView = VK_NULL_HANDLE; }
+		if (depthImage != VK_NULL_HANDLE)  { vkDestroyImage(device, depthImage, nullptr);      depthImage = VK_NULL_HANDLE; }
+		if (depthMemory != VK_NULL_HANDLE) { vkFreeMemory(device, depthMemory, nullptr);       depthMemory = VK_NULL_HANDLE; }
+	}
+
+	void VulkanBackend::SetDepthState(bool test, bool write, uint32_t comparison)
+	{
+		depthTest    = test;
+		depthWrite   = write;
+		depthCompare = static_cast<uint8_t>(comparison);
+	}
+
+	void VulkanBackend::ClearDepth(float depth)
+	{
+		if (!EnsureFrame() || depthImage == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
+		// A depth clear is a transfer operation, so it cannot run inside a
+		// render pass any more than a colour clear can.
+		EndRenderPassIfActive();
+
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		// Discarding the old contents is exactly what a clear does, so the
+		// still-UNDEFINED first clear needs no special handling beyond
+		// naming the layout the image is actually in.
+		barrier.oldLayout           = depthLayoutPending
+			? VK_IMAGE_LAYOUT_UNDEFINED
+			: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		barrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		depthLayoutPending          = false;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = depthImage;
+		barrier.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(commandBuffer,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkClearDepthStencilValue value{};
+		value.depth   = depth;
+		value.stencil = 0;
+
+		VkImageSubresourceRange range{};
+		range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		range.levelCount = 1;
+		range.layerCount = 1;
+
+		vkCmdClearDepthStencilImage(commandBuffer, depthImage,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+
+		barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		vkCmdPipelineBarrier(commandBuffer,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
+	void VulkanBackend::TransitionRegion(BufferRegion const& region, VkImageLayout from, VkImageLayout to)
+	{
+		VkAccessFlags        srcAccess = 0;
+		VkAccessFlags        dstAccess = 0;
+		VkPipelineStageFlags srcStage  = 0;
+		VkPipelineStageFlags dstStage  = 0;
+
+		LayoutAccess(from, srcAccess, srcStage);
+		LayoutAccess(to, dstAccess, dstStage);
+
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask       = srcAccess;
+		barrier.dstAccessMask       = dstAccess;
+		barrier.oldLayout           = from;
+		barrier.newLayout           = to;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = region.image;
+		barrier.subresourceRange.aspectMask = region.depth
+			? VK_IMAGE_ASPECT_DEPTH_BIT
+			: VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(commandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
+	uint32_t VulkanBackend::CreateBufferRegion(bool depth)
+	{
+		if (dead || device == VK_NULL_HANDLE || swapchainExtent.width == 0)
+		{
+			return 0;
+		}
+
+		if (depth && depthFormat == VK_FORMAT_UNDEFINED)
+		{
+			return 0;
+		}
+
+		BufferRegion region;
+		region.depth  = depth;
+		region.format = depth ? depthFormat : swapchainFormat;
+		region.width  = swapchainExtent.width;
+		region.height = swapchainExtent.height;
+
+		VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+		imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+		imageInfo.format        = region.format;
+		imageInfo.extent        = { region.width, region.height, 1 };
+		imageInfo.mipLevels     = 1;
+		imageInfo.arrayLayers   = 1;
+		imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VkResult result = vkCreateImage(device, &imageInfo, nullptr, &region.image);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateImage (buffer region)", result);
+			return 0;
+		}
+
+		VkMemoryRequirements requirements{};
+		vkGetImageMemoryRequirements(device, region.image, &requirements);
+
+		uint32_t typeIndex = 0;
+		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		{
+			vkDestroyImage(device, region.image, nullptr);
+			return 0;
+		}
+
+		VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocInfo.allocationSize  = requirements.size;
+		allocInfo.memoryTypeIndex = typeIndex;
+
+		result = vkAllocateMemory(device, &allocInfo, nullptr, &region.memory);
+		if (result != VK_SUCCESS)
+		{
+			// Not fatal, and not necessarily a bug: the game asks for regions
+			// speculatively and copes with being refused.
+			Fail("vkAllocateMemory (buffer region)", result);
+			vkDestroyImage(device, region.image, nullptr);
+			return 0;
+		}
+
+		vkBindImageMemory(device, region.image, region.memory, 0);
+		region.live = true;
+
+		// Reuse a dead slot before growing, so a game that cycles regions does
+		// not walk the handle space upward forever.
+		for (size_t i = 0; i < bufferRegions.size(); i++)
+		{
+			if (!bufferRegions[i].live)
+			{
+				bufferRegions[i] = region;
+				return static_cast<uint32_t>(i + 1);
+			}
+		}
+
+		bufferRegions.push_back(region);
+		return static_cast<uint32_t>(bufferRegions.size());
+	}
+
+	bool VulkanBackend::IsBufferRegion(uint32_t handle) const
+	{
+		return handle != 0 && handle <= bufferRegions.size() && bufferRegions[handle - 1].live;
+	}
+
+	bool VulkanBackend::SaveBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY,
+		int32_t width, int32_t height, int32_t screenX, int32_t screenY)
+	{
+		if (!IsBufferRegion(handle) || width <= 0 || height <= 0 || !EnsureFrame())
+		{
+			return false;
+		}
+
+		BufferRegion& region = bufferRegions[handle - 1];
+
+		// A copy is not a render pass operation, the same way a clear is not.
+		EndRenderPassIfActive();
+
+		// Both rectangles have to stay inside their image, and they share one
+		// extent, so the smaller of the two limits governs.
+		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
+
+		if (regionX < 0 || regionY < 0 || screenX < 0 || screenY < 0)
+		{
+			return false;
+		}
+
+		width  = std::min(width,  std::min(maxWidth  - screenX, static_cast<int32_t>(region.width)  - regionX));
+		height = std::min(height, std::min(maxHeight - screenY, static_cast<int32_t>(region.height) - regionY));
+
+		if (width <= 0 || height <= 0)
+		{
+			return false;
+		}
+
+		VkImage       source      = region.depth ? depthImage : swapchainImages[imageIndex];
+		VkImageLayout sourceLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+		if (region.depth)
+		{
+			if (depthImage == VK_NULL_HANDLE)
+			{
+				return false;
+			}
+
+			VkImageMemoryBarrier toSource{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			toSource.oldLayout           = depthLayoutPending
+				? VK_IMAGE_LAYOUT_UNDEFINED
+				: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			toSource.newLayout           = sourceLayout;
+			toSource.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toSource.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toSource.image               = depthImage;
+			toSource.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			toSource.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+			toSource.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			toSource.subresourceRange.levelCount = 1;
+			toSource.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &toSource);
+
+			depthLayoutPending = false;
+		}
+		else
+		{
+			TransitionTo(sourceLayout);
+		}
+
+		TransitionRegion(region,
+			region.written ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		VkImageCopy copy{};
+		copy.srcSubresource.aspectMask = region.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.layerCount = 1;
+		copy.srcOffset = { screenX, screenY, 0 };
+		copy.dstSubresource.aspectMask = copy.srcSubresource.aspectMask;
+		copy.dstSubresource.layerCount = 1;
+		copy.dstOffset = { regionX, regionY, 0 };
+		copy.extent    = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+
+		vkCmdCopyImage(commandBuffer,
+			source, sourceLayout,
+			region.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1, &copy);
+
+		// Left ready to be read, since restoring is the only thing that
+		// happens to a region after it has been saved.
+		TransitionRegion(region, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		region.written = true;
+
+		if (region.depth)
+		{
+			VkImageMemoryBarrier back{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			back.oldLayout           = sourceLayout;
+			back.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			back.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			back.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			back.image               = depthImage;
+			back.srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+			back.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			back.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			back.subresourceRange.levelCount = 1;
+			back.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &back);
+		}
+
+		return true;
+	}
+
+	bool VulkanBackend::RestoreBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY,
+		int32_t width, int32_t height, int32_t screenX, int32_t screenY)
+	{
+		if (!IsBufferRegion(handle) || width <= 0 || height <= 0 || !EnsureFrame())
+		{
+			return false;
+		}
+
+		BufferRegion& region = bufferRegions[handle - 1];
+
+		// Nothing has been saved yet, so there is nothing to put back. Copying
+		// anyway would paint uninitialised memory over the frame.
+		if (!region.written)
+		{
+			return false;
+		}
+
+		EndRenderPassIfActive();
+
+		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
+
+		if (regionX < 0 || regionY < 0 || screenX < 0 || screenY < 0)
+		{
+			return false;
+		}
+
+		width  = std::min(width,  std::min(maxWidth  - screenX, static_cast<int32_t>(region.width)  - regionX));
+		height = std::min(height, std::min(maxHeight - screenY, static_cast<int32_t>(region.height) - regionY));
+
+		if (width <= 0 || height <= 0)
+		{
+			return false;
+		}
+
+		VkImage destination = region.depth ? depthImage : swapchainImages[imageIndex];
+
+		if (region.depth)
+		{
+			if (depthImage == VK_NULL_HANDLE)
+			{
+				return false;
+			}
+
+			VkImageMemoryBarrier toDest{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			toDest.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+			toDest.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			toDest.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toDest.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			toDest.image               = depthImage;
+			toDest.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+			toDest.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			toDest.subresourceRange.levelCount = 1;
+			toDest.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &toDest);
+
+			depthLayoutPending = false;
+		}
+		else
+		{
+			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		}
+
+		VkImageCopy copy{};
+		copy.srcSubresource.aspectMask = region.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.layerCount = 1;
+		copy.srcOffset = { regionX, regionY, 0 };
+		copy.dstSubresource.aspectMask = copy.srcSubresource.aspectMask;
+		copy.dstSubresource.layerCount = 1;
+		copy.dstOffset = { screenX, screenY, 0 };
+		copy.extent    = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+
+		vkCmdCopyImage(commandBuffer,
+			region.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1, &copy);
+
+		if (region.depth)
+		{
+			VkImageMemoryBarrier back{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			back.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			back.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			back.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			back.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			back.image               = depthImage;
+			back.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+			back.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			back.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			back.subresourceRange.levelCount = 1;
+			back.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(commandBuffer,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				0, 0, nullptr, 0, nullptr, 1, &back);
+		}
+
+		return true;
+	}
+
+	void VulkanBackend::DestroyBufferRegion(uint32_t handle)
+	{
+		if (!IsBufferRegion(handle))
+		{
+			return;
+		}
+
+		BufferRegion& region = bufferRegions[handle - 1];
+
+		if (region.image != VK_NULL_HANDLE)  { vkDestroyImage(device, region.image, nullptr); }
+		if (region.memory != VK_NULL_HANDLE) { vkFreeMemory(device, region.memory, nullptr); }
+
+		region = BufferRegion{};
+	}
+
+	void VulkanBackend::DestroyAllBufferRegions(void)
+	{
+		for (uint32_t i = 1; i <= bufferRegions.size(); i++)
+		{
+			DestroyBufferRegion(i);
+		}
+
+		bufferRegions.clear();
 	}
 
 	bool VulkanBackend::CreateFramebuffers(void)
@@ -2180,10 +2937,12 @@ namespace scvk
 				return false;
 			}
 
+			VkImageView attachments[] = { swapchainImageViews[i], depthView };
+
 			VkFramebufferCreateInfo fbInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 			fbInfo.renderPass      = renderPass;
-			fbInfo.attachmentCount = 1;
-			fbInfo.pAttachments    = &swapchainImageViews[i];
+			fbInfo.attachmentCount = 2;
+			fbInfo.pAttachments    = attachments;
 			fbInfo.width           = swapchainExtent.width;
 			fbInfo.height          = swapchainExtent.height;
 			fbInfo.layers          = 1;
@@ -2364,6 +3123,13 @@ namespace scvk
 		VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 		multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+		depthStencil.depthTestEnable  = key.depthTest ? VK_TRUE : VK_FALSE;
+		depthStencil.depthWriteEnable = key.depthWrite ? VK_TRUE : VK_FALSE;
+		depthStencil.depthCompareOp   = MapCompareOp(key.depthCompare);
+		depthStencil.minDepthBounds   = 0.0f;
+		depthStencil.maxDepthBounds   = 1.0f;
+
 		VkPipelineColorBlendAttachmentState blendAttachment{};
 		blendAttachment.blendEnable         = key.blendEnable ? VK_TRUE : VK_FALSE;
 		blendAttachment.srcColorBlendFactor = MapBlendFactor(key.srcFactor);
@@ -2393,6 +3159,7 @@ namespace scvk
 		info.pViewportState      = &viewport;
 		info.pRasterizationState = &raster;
 		info.pMultisampleState   = &multisample;
+		info.pDepthStencilState  = &depthStencil;
 		info.pColorBlendState    = &blend;
 		info.pDynamicState       = &dynamic;
 		info.layout              = pipelineLayout;
@@ -2433,6 +3200,11 @@ namespace scvk
 		vkDeviceWaitIdle(device);
 
 		DestroyFramebuffers();
+		DestroyDepthResources();
+
+		// Regions are sized to the swapchain, so a resize invalidates them.
+		// The game reallocates on its own once its old handles stop working.
+		DestroyAllBufferRegions();
 
 		if (swapchain != VK_NULL_HANDLE)
 		{
@@ -2470,6 +3242,10 @@ namespace scvk
 			if (vertexMapped != nullptr) { vkUnmapMemory(device, vertexMemory); vertexMapped = nullptr; }
 			if (vertexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, vertexMemory, nullptr); vertexMemory = VK_NULL_HANDLE; }
 			if (vertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, vertexBuffer, nullptr); vertexBuffer = VK_NULL_HANDLE; }
+
+			if (indexMapped != nullptr) { vkUnmapMemory(device, indexMemory); indexMapped = nullptr; }
+			if (indexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, indexMemory, nullptr); indexMemory = VK_NULL_HANDLE; }
+			if (indexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, indexBuffer, nullptr); indexBuffer = VK_NULL_HANDLE; }
 
 			if (quadIndexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, quadIndexMemory, nullptr); quadIndexMemory = VK_NULL_HANDLE; }
 			if (quadIndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, quadIndexBuffer, nullptr); quadIndexBuffer = VK_NULL_HANDLE; }

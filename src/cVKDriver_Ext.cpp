@@ -20,17 +20,19 @@
 /*
  * The optional driver extensions.
  *
- * Buffer regions are declined at this stage. Advertising them opts the game
- * into an incremental redraw path where it saves and restores parts of the
- * framebuffer between frames instead of redrawing the scene; that is a real
- * performance feature worth having later, but it is the wrong thing to be
- * emulating while every draw call is still a stub.
+ * Buffer regions turned out not to be optional. They read as an incremental
+ * redraw optimisation, where the game saves part of the framebuffer and puts it
+ * back next frame rather than drawing it again, so they were declined while the
+ * draw path was still being built. But a city trace showed the game asking for
+ * a region 633 times, being refused every time, and simply never drawing the
+ * terrain: it renders the city once into a region and restores it from there
+ * every frame, and with nowhere to save to, it draws nothing at all. The UI
+ * still appeared because the UI is drawn directly.
  *
- * Note that declining is not as decisive as it looks. The first real trace
- * shows the game calling NewBufferRegion twice immediately after querying the
- * extension, without ever calling BufferRegionEnabled to ask whether it is
- * available. So this interface has to stay safe when called rather than merely
- * consistent, and returning 0 for a region handle is what makes that work.
+ * Note also that declining was never as decisive as it looked. The game calls
+ * NewBufferRegion straight after querying the extension without ever calling
+ * BufferRegionEnabled to ask whether it is available, so this interface has to
+ * stay safe when called rather than merely consistent.
  *
  * Lighting is present because the interface requires it, though SimCity 4 does
  * not appear to drive it directly - it expects a single directional light to
@@ -39,6 +41,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 
 namespace scvk
 {
@@ -49,54 +52,80 @@ namespace scvk
 	bool cVKDriver::BufferRegionEnabled(void)
 	{
 		SCVK_CALL("");
-		return false;
+		return true;
 	}
 
 	uint32_t cVKDriver::NewBufferRegion(int32_t gdBufferRegionType)
 	{
-		SCVK_CALL("%d  [UNEXPECTED: buffer regions are disabled]", gdBufferRegionType);
-		return 0;
+		SCVK_CALL("%d", gdBufferRegionType);
+
+		// Type 0 is the back colour buffer and type 1 is the depth buffer.
+		// Anything else is not something this interface can express.
+		if (gdBufferRegionType != 0 && gdBufferRegionType != 1)
+		{
+			return 0;
+		}
+
+		return vulkan->CreateBufferRegion(gdBufferRegionType == 1);
 	}
 
 	bool cVKDriver::DeleteBufferRegion(int32_t bufferRegion)
 	{
-		SCVK_CALL("%d  [UNEXPECTED: buffer regions are disabled]", bufferRegion);
-		return false;
+		SCVK_CALL("%d", bufferRegion);
+
+		if (bufferRegion <= 0)
+		{
+			return false;
+		}
+
+		vulkan->DestroyBufferRegion(static_cast<uint32_t>(bufferRegion));
+		return true;
 	}
 
 	bool cVKDriver::ReadBufferRegion(uint32_t region, int32_t x, int32_t y, int32_t width, int32_t height, int32_t destX, int32_t destY)
 	{
-		SCVK_CALL("%u, %d,%d %dx%d -> %d,%d  [UNEXPECTED]", region, x, y, width, height, destX, destY);
-		return false;
+		SCVK_CALL("%u, %d,%d %dx%d <- %d,%d", region, x, y, width, height, destX, destY);
+
+		// Saving: the framebuffer is the source. The first pair of coordinates
+		// addresses the region and the last pair addresses the screen, which is
+		// the convention the matching draw call uses in reverse.
+		return vulkan->SaveBufferRegion(region, x, y, width, height, destX, destY);
 	}
 
 	bool cVKDriver::DrawBufferRegion(uint32_t region, int32_t x, int32_t y, int32_t width, int32_t height, int32_t destX, int32_t destY)
 	{
-		SCVK_CALL("%u, %d,%d %dx%d -> %d,%d  [UNEXPECTED]", region, x, y, width, height, destX, destY);
-		return false;
+		SCVK_CALL("%u, %d,%d %dx%d -> %d,%d", region, x, y, width, height, destX, destY);
+
+		// Restoring: the region is the source, at the first pair of
+		// coordinates, and the screen is the destination, at the last pair.
+		return vulkan->RestoreBufferRegion(region, x, y, width, height, destX, destY);
 	}
 
 	bool cVKDriver::IsBufferRegion(uint32_t bufferRegion)
 	{
 		SCVK_CALL("%u", bufferRegion);
-		return false;
+		return vulkan->IsBufferRegion(bufferRegion);
 	}
 
 	bool cVKDriver::CanDoPartialRegionWrites(void)
 	{
 		SCVK_CALL("");
-		return false;
+
+		// A copy can address any sub-rectangle, so both of these are free.
+		return true;
 	}
 
 	bool cVKDriver::CanDoOffsetReads(void)
 	{
 		SCVK_CALL("");
-		return false;
+		return true;
 	}
 
 	bool cVKDriver::DeleteAllBufferRegions(void)
 	{
 		SCVK_CALL("");
+
+		vulkan->DestroyAllBufferRegions();
 		return true;
 	}
 

@@ -53,6 +53,7 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkGetPhysicalDeviceProperties)                \
 	X(vkGetPhysicalDeviceQueueFamilyProperties)     \
 	X(vkGetPhysicalDeviceMemoryProperties)          \
+	X(vkGetPhysicalDeviceFormatProperties)          \
 	X(vkGetPhysicalDeviceSurfaceSupportKHR)         \
 	X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)    \
 	X(vkGetPhysicalDeviceSurfaceFormatsKHR)         \
@@ -82,7 +83,9 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkResetCommandBuffer)              \
 	X(vkCmdPipelineBarrier)              \
 	X(vkCmdClearColorImage)              \
+	X(vkCmdClearDepthStencilImage)       \
 	X(vkCmdCopyBufferToImage)            \
+	X(vkCmdCopyImage)                    \
 	X(vkCmdCopyImageToBuffer)            \
 	X(vkCreateRenderPass)                \
 	X(vkDestroyRenderPass)               \

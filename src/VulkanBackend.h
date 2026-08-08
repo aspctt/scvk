@@ -127,6 +127,12 @@ namespace scvk
 		/** Selects the texture environment: false modulate, true replace. */
 		void SetTextureReplace(bool replace);
 
+		/** Sets depth testing, writing and the comparison, all pipeline state. */
+		void SetDepthState(bool test, bool write, uint32_t comparison);
+
+		/** Clears the depth attachment to the given value. */
+		void ClearDepth(float depth);
+
 		/**
 		 * Writes the next presented frame to a file, as a 32 bit BMP.
 		 *
@@ -151,6 +157,17 @@ namespace scvk
 			void const* vertices, uint32_t firstVertex, uint32_t vertexCount);
 
 		/**
+		 * Draws from client memory through a client index array.
+		 *
+		 * This is the path the city view is on: the terrain and everything
+		 * standing on it are indexed meshes, and a session inside a city issues
+		 * well over a million of these against a few hundred thousand of the
+		 * unindexed kind.
+		 */
+		void DrawIndexedVertices(uint32_t gdPrimType, uint32_t gdVertexFormat,
+			void const* vertices, void const* indices, uint32_t indexCount, bool indicesAre32Bit);
+
+		/**
 		 * Creates a texture and returns a handle, or 0 on failure.
 		 *
 		 * gdInternalFormat is the game's own enumeration: 0 to 4 are
@@ -167,6 +184,27 @@ namespace scvk
 		void SetTexture(uint32_t handle);
 
 		void DestroyTexture(uint32_t handle);
+
+		/**
+		 * Allocates an offscreen copy of the colour or depth buffer.
+		 *
+		 * Returns a handle, or 0 if one could not be made. Type 0 is the back
+		 * colour buffer and type 1 is the depth buffer, matching the two the
+		 * game asks for.
+		 */
+		uint32_t CreateBufferRegion(bool depth);
+
+		/** Copies a rectangle of the framebuffer into a region. */
+		bool SaveBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY,
+			int32_t width, int32_t height, int32_t screenX, int32_t screenY);
+
+		/** Copies a rectangle of a region back into the framebuffer. */
+		bool RestoreBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY,
+			int32_t width, int32_t height, int32_t screenX, int32_t screenY);
+
+		bool IsBufferRegion(uint32_t handle) const;
+		void DestroyBufferRegion(uint32_t handle);
+		void DestroyAllBufferRegions(void);
 
 	private:
 		/**
@@ -199,13 +237,22 @@ namespace scvk
 			uint8_t             srcFactor;
 			uint8_t             dstFactor;
 
+			// Depth state is pipeline state in Vulkan too, so it joins the key
+			// rather than being set per draw.
+			bool                depthTest;
+			bool                depthWrite;
+			uint8_t             depthCompare;
+
 			bool operator==(PipelineKey const& other) const
 			{
-				return format      == other.format
-					&& topology    == other.topology
-					&& blendEnable == other.blendEnable
-					&& srcFactor   == other.srcFactor
-					&& dstFactor   == other.dstFactor;
+				return format       == other.format
+					&& topology     == other.topology
+					&& blendEnable  == other.blendEnable
+					&& srcFactor    == other.srcFactor
+					&& dstFactor    == other.dstFactor
+					&& depthTest    == other.depthTest
+					&& depthWrite   == other.depthWrite
+					&& depthCompare == other.depthCompare;
 			}
 		};
 
@@ -240,6 +287,31 @@ namespace scvk
 			VkPipeline  pipeline;
 		};
 
+		/**
+		 * An offscreen copy of the colour or depth buffer.
+		 *
+		 * SimCity 4 draws the terrain and everything standing on it once, saves
+		 * the result here, and then restores it every frame instead of drawing
+		 * it again, redrawing only what moved. Without somewhere to save to the
+		 * game never draws the city at all, so this is not an optimisation:
+		 * it is the path the city view is on.
+		 */
+		struct BufferRegion
+		{
+			VkImage        image  = VK_NULL_HANDLE;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+			VkFormat       format = VK_FORMAT_UNDEFINED;
+			uint32_t       width  = 0;
+			uint32_t       height = 0;
+			bool           depth  = false;
+			bool           live   = false;
+
+			// Regions start UNDEFINED and only hold anything once the game has
+			// saved into them. Restoring from an empty one would be reading
+			// uninitialised memory, so it is skipped instead.
+			bool           written = false;
+		};
+
 	private:
 		bool PickPhysicalDevice(void);
 		bool CreateLogicalDevice(void);
@@ -249,6 +321,8 @@ namespace scvk
 
 		bool CreateRenderPass(void);
 		bool CreateFramebuffers(void);
+		bool CreateDepthResources(void);
+		void DestroyDepthResources(void);
 		void DestroyFramebuffers(void);
 		bool CreateShaderModules(void);
 		bool CreatePipelineLayout(void);
@@ -259,11 +333,24 @@ namespace scvk
 		bool CreateDefaultTexture(void);
 		void DestroyTextures(void);
 
+		/** Barriers a region image, which is not the tracked swapchain one. */
+		void TransitionRegion(BufferRegion const& region, VkImageLayout from, VkImageLayout to);
+
 		/** Runs a one-off command buffer to completion. Used for uploads. */
 		bool SubmitImmediate(void (*record)(VkCommandBuffer, void*), void* context);
 
 		/** Where a format's attributes live, from the game's packed encoding. */
 		static VertexLayout DecodeVertexLayout(uint32_t gdVertexFormat);
+
+		/** The game's primitive numbering to a Vulkan topology. */
+		static bool MapTopology(uint32_t gdPrimType, VkPrimitiveTopology& topology, bool& asQuads);
+
+		/** Copies a vertex range into the per-frame arena. */
+		bool UploadVertices(void const* vertices, uint32_t firstVertex,
+			uint32_t vertexCount, uint32_t stride, VkDeviceSize& outOffset);
+
+		/** Everything a draw needs bound, shared by the indexed and plain paths. */
+		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkDeviceSize vertexOffset);
 
 		VkPipeline GetPipeline(PipelineKey const& key);
 
@@ -325,6 +412,14 @@ namespace scvk
 		VkDeviceSize   vertexUsed   = 0;
 		void*          vertexMapped = nullptr;
 
+		// The same arrangement for indices the game hands over with a draw,
+		// which are client memory just as the vertices are.
+		VkBuffer       indexBuffer     = VK_NULL_HANDLE;
+		VkDeviceMemory indexMemory     = VK_NULL_HANDLE;
+		VkDeviceSize   indexBufferSize = 0;
+		VkDeviceSize   indexUsed       = 0;
+		void*          indexMapped     = nullptr;
+
 		// Static indices turning consecutive quads into triangle pairs.
 		VkBuffer       quadIndexBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory quadIndexMemory = VK_NULL_HANDLE;
@@ -352,6 +447,10 @@ namespace scvk
 		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence         uploadFence         = VK_NULL_HANDLE;
 
+		// Handle n is index n - 1, matching what the game is handed back, and
+		// leaving 0 free to mean failure.
+		std::vector<BufferRegion> bufferRegions;
+
 		VkImageLayout currentLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
 		bool          renderPassActive = false;
 
@@ -367,6 +466,20 @@ namespace scvk
 		// Sent to the shader alongside the transform: alpha comparison,
 		// reference, and the texture environment mode.
 		float fragmentState[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+
+		VkImage        depthImage  = VK_NULL_HANDLE;
+		VkDeviceMemory depthMemory = VK_NULL_HANDLE;
+		VkImageView    depthView   = VK_NULL_HANDLE;
+		VkFormat       depthFormat = VK_FORMAT_UNDEFINED;
+
+		// Set when the depth image has just been created and is still
+		// UNDEFINED. Cleared by whichever comes first, the next render pass or
+		// the game's next depth clear.
+		bool           depthLayoutPending = false;
+
+		bool    depthTest    = false;
+		bool    depthWrite   = true;
+		uint8_t depthCompare = 1;  // less
 
 		bool    blendEnable = false;
 		uint8_t blendSrc    = 1;  // one
