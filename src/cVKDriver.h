@@ -337,6 +337,18 @@ namespace scvk
 		int      dumpedDraws;
 		int      frameDumpsRemaining;
 
+		// A dump stays open over a window of frames, because the frame worth
+		// seeing is the sparse one that rebuilds the scene rather than any of
+		// the many that just restore it from a buffer region.
+		static constexpr int kDumpWindowFrames = 240;
+		static constexpr int kMaxDumpedDraws   = 4000;
+		int      dumpWindowRemaining;
+
+		// The texture on the second stage and the last texture matrix flags,
+		// kept so a dumped draw can report the state it ran under.
+		uint32_t stage1Texture;
+		uint32_t lastTexMatrixFlags;
+
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
 
@@ -345,6 +357,9 @@ namespace scvk
 
 		/** Forwards depth test, write and comparison. */
 		void PushDepthState(void);
+
+		/** Forwards the ambient tint that carries the day and night cycle. */
+		void PushSceneTint(void);
 
 		/** Forwards the alpha comparison, disabled when the capability is off. */
 		void PushAlphaTest(void);
@@ -397,6 +412,13 @@ namespace scvk
 		// both until the draw arrives.
 		// The texture last bound to stage 0, as a backend handle.
 		uint32_t     boundTexture;
+
+		// The global ambient light colour and the diffuse material alpha, plus
+		// whether the vertex colour feeds either. Together these are all the
+		// lighting SimCity 4 uses.
+		float colourMultiplier[4];
+		bool  vertexColourAmbient;
+		bool  vertexColourDiffuse;
 
 		uint32_t     vertexFormat;
 		uint32_t     vertexStride;

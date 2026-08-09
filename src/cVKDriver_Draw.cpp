@@ -301,11 +301,20 @@ namespace scvk
 					}
 				}
 
-				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f",
+				// Blend, alpha test and the second stage are all reported,
+				// because a draw that comes out a flat hard-edged block and a
+				// draw that comes out black are both questions about state
+				// rather than about geometry, and the rectangle alone cannot
+				// tell them apart.
+				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
+					"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) alpha %u@%.2f  stage1 %d texmat 0x%x",
 					dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
-					boundTexture, vertexFormat, gdPrimType, count,
+					boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
 					viewportX, viewportY, viewportWidth, viewportHeight,
-					uMin, uMax, vMin, vMax);
+					uMin, uMax, vMin, vMax,
+					enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
+					alphaFunc, alphaRef,
+					texStageEnabled[1] ? 1 : 0, lastTexMatrixFlags);
 			}
 			else
 			{

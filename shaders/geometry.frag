@@ -52,6 +52,14 @@ layout(push_constant) uniform Push
 
     // The environment colour, which a combiner may name as a source.
     vec4 constantColour;
+
+    // The global ambient light colour, and the diffuse material alpha in w.
+    //
+    // This is the whole of SimCity 4's lighting. It never configures a light
+    // source, so there is no diffuse term and the fixed function equation
+    // collapses to the ambient light times the ambient material, which colour
+    // material takes from the vertex colour. It is what carries day and night.
+    vec4 sceneTint;
 } push;
 
 layout(set = 0, binding = 0) uniform sampler2D texSampler0;
@@ -166,6 +174,7 @@ void main()
         result = runStage(push.combiner.z, push.combiner.w, texel1, result);
     }
 
+    result *= push.sceneTint;
     result = clamp(result, 0.0, 1.0);
 
     int  comparison = int(push.fragmentState.x);

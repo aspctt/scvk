@@ -198,6 +198,9 @@ namespace scvk
 		 */
 		void SetCombinerState(uint32_t stage, uint32_t packedRGB, uint32_t packedAlpha);
 
+		/** The global ambient tint applied to every lit draw. */
+		void SetSceneTint(float r, float g, float b, float a);
+
 		/** The environment colour a combiner may name as a source. */
 		void SetConstantColour(float r, float g, float b, float a);
 
@@ -481,6 +484,7 @@ namespace scvk
 		bool     stageEnabled[2] = { false, false };
 		uint32_t combinerState[4] = {};
 		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		float    sceneTint[4]      = { 1.0f, 1.0f, 1.0f, 1.0f };
 
 		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence         uploadFence         = VK_NULL_HANDLE;

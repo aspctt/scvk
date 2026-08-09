@@ -55,6 +55,9 @@ namespace scvk
 		projectionMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		activeMatrix(0),
 		boundTexture(0),
+		colourMultiplier{ 1.0f, 1.0f, 1.0f, 1.0f },
+		vertexColourAmbient(false),
+		vertexColourDiffuse(false),
 		vertexFormat(0),
 		vertexStride(0),
 		vertexPointer(nullptr),
@@ -77,6 +80,9 @@ namespace scvk
 		dumpFrame(false),
 		dumpedDraws(0),
 		frameDumpsRemaining(10),
+		dumpWindowRemaining(0),
+		stage1Texture(0),
+		lastTexMatrixFlags(0),
 		vulkan(std::make_unique<VulkanBackend>()),
 		windowHandle(nullptr)
 	{

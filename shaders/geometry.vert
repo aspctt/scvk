@@ -33,6 +33,7 @@ layout(push_constant) uniform Push
     vec4  fragmentState;
     uvec4 combiner;
     vec4  constantColour;
+    vec4  sceneTint;
 } push;
 
 layout(location = 0) in vec3 inPosition;

@@ -1888,6 +1888,14 @@ namespace scvk
 		combinerState[stage * 2 + 1] = packedAlpha;
 	}
 
+	void VulkanBackend::SetSceneTint(float r, float g, float b, float a)
+	{
+		sceneTint[0] = r;
+		sceneTint[1] = g;
+		sceneTint[2] = b;
+		sceneTint[3] = a;
+	}
+
 	void VulkanBackend::SetConstantColour(float r, float g, float b, float a)
 	{
 		constantColour[0] = r;
@@ -2184,6 +2192,10 @@ namespace scvk
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			sizeof(transform) + sizeof(fragmentState) + sizeof(combinerState),
 			sizeof(constantColour), constantColour);
+		vkCmdPushConstants(commandBuffer, pipelineLayout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			sizeof(transform) + sizeof(fragmentState) + sizeof(combinerState) + sizeof(constantColour),
+			sizeof(sceneTint), sceneTint);
 
 		// Slot 0 holds the 1x1 white texture, so an unset or deleted texture
 		// still binds something valid and multiplies by one. That is also what
@@ -3103,7 +3115,7 @@ namespace scvk
 		VkPushConstantRange range{};
 		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 		range.offset     = 0;
-		range.size       = sizeof(float) * 28;
+		range.size       = sizeof(float) * 32;
 
 		// One set per texture stage, both with the same single-sampler layout.
 		// Keeping them separate is what lets a descriptor set stay a property

@@ -179,16 +179,68 @@ namespace scvk
 	void cVKDriver::ColorMultiplier(float r, float g, float b)
 	{
 		SCVK_CALL("%.3f, %.3f, %.3f", r, g, b);
+
+		// The global ambient light colour, which is the whole of SimCity 4's
+		// lighting: it never touches the lighting extension, so no light source
+		// is ever configured and there is no diffuse term to compute. What is
+		// left of the fixed function equation is the ambient light times the
+		// ambient material, and with colour material on that material is the
+		// vertex colour. So this reduces to a scene tint, and it is what
+		// carries the day and night cycle.
+		colourMultiplier[0] = r;
+		colourMultiplier[1] = g;
+		colourMultiplier[2] = b;
+		PushSceneTint();
 	}
 
 	void cVKDriver::AlphaMultiplier(float a)
 	{
 		SCVK_CALL("%.3f", a);
+
+		colourMultiplier[3] = a;
+		PushSceneTint();
 	}
 
 	void cVKDriver::EnableVertexColors(bool ambient, bool diffuse)
 	{
 		SCVK_CALL("%d, %d", ambient, diffuse);
+
+		// Whether the vertex colour feeds the ambient and diffuse material
+		// terms. With both off the fixed function pipeline stops taking the
+		// material from the vertex colour, so the tint has nothing to scale and
+		// must not be applied: the interface is drawn that way and has no
+		// business dimming at night.
+		vertexColourAmbient = ambient;
+		vertexColourDiffuse = diffuse;
+		PushSceneTint();
+	}
+
+	void cVKDriver::PushSceneTint(void)
+	{
+		float const rgb   = vertexColourAmbient ? 1.0f : 0.0f;
+		float const alpha = vertexColourDiffuse ? 1.0f : 0.0f;
+
+		vulkan->SetSceneTint(
+			vertexColourAmbient ? colourMultiplier[0] : 1.0f,
+			vertexColourAmbient ? colourMultiplier[1] : 1.0f,
+			vertexColourAmbient ? colourMultiplier[2] : 1.0f,
+			vertexColourDiffuse ? colourMultiplier[3] : 1.0f);
+
+		// Quantised, so the day and night cycle reports as a handful of steps
+		// rather than once per frame, and a constant value reports once.
+		uint32_t const key =
+			(static_cast<uint32_t>(colourMultiplier[0] * 8.0f) & 0xff)
+			| ((static_cast<uint32_t>(colourMultiplier[1] * 8.0f) & 0xff) << 8)
+			| ((static_cast<uint32_t>(colourMultiplier[2] * 8.0f) & 0xff) << 16)
+			| ((static_cast<uint32_t>(rgb) & 1u) << 24)
+			| ((static_cast<uint32_t>(alpha) & 1u) << 25);
+
+		if (NoteOnce(8, key))
+		{
+			LogNote("  TINT rgb %.3f %.3f %.3f alpha %.3f (vertex colours: ambient %d, diffuse %d)",
+				colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
+				vertexColourAmbient ? 1 : 0, vertexColourDiffuse ? 1 : 0);
+		}
 	}
 
 	void cVKDriver::MatrixMode(uint32_t gdMatrixTarget)

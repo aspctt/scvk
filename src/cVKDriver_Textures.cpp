@@ -280,6 +280,8 @@ namespace scvk
 	{
 		SCVK_CALL("%p, %u, %u, 0x%x", matrix, unknown0, unknown1, gdTexMatFlags);
 
+		lastTexMatrixFlags = gdTexMatFlags;
+
 		// Logged once per distinct flag value. The game drives this over a
 		// million times a session, and a texture matrix that scales texture
 		// coordinates would magnify whatever it samples, which is one of the
@@ -343,6 +345,7 @@ namespace scvk
 		}
 		else if (texUnit == 1)
 		{
+			stage1Texture = texture;
 			vulkan->SetTexture1(texture);
 		}
 	}

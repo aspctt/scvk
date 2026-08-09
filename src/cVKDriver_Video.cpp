@@ -381,8 +381,22 @@ namespace scvk
 
 		if (dumpFrame)
 		{
-			LogNote("=== end of frame dump, %d draws ===", dumpedDraws);
-			dumpFrame = false;
+			// Held open across a window of frames rather than one.
+			//
+			// A single frame is almost never the one worth seeing. The city
+			// draws its terrain once into a buffer region and restores it every
+			// frame after, so an arbitrary frame holds nothing but interface:
+			// the first attempt at this caught 38 draws, all of them toolbar.
+			// The redraws that actually build the scene are sparse, so the
+			// window stays open until one of them turns up.
+			dumpWindowRemaining--;
+
+			if (dumpWindowRemaining <= 0 || dumpedDraws >= kMaxDumpedDraws)
+			{
+				LogNote("=== end of frame dump, %d draws over %d frames ===",
+					dumpedDraws, kDumpWindowFrames - dumpWindowRemaining);
+				dumpFrame = false;
+			}
 		}
 
 		frameCounter++;
@@ -398,10 +412,11 @@ namespace scvk
 		// whatever the game is actually showing later.
 		if (frameCounter % 2000u == 0u && frameDumpsRemaining > 0)
 		{
-			LogNote("=== dumping every draw of frame %u ===", frameCounter);
+			LogNote("=== dumping every draw from frame %u ===", frameCounter);
 			frameDumpsRemaining--;
-			dumpFrame   = true;
-			dumpedDraws = 0;
+			dumpFrame           = true;
+			dumpedDraws         = 0;
+			dumpWindowRemaining = kDumpWindowFrames;
 
 			// A picture of the same frame the dump describes, so the
 			// rectangles in the log can be checked against actual pixels
