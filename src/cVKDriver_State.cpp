@@ -220,19 +220,16 @@ namespace scvk
 		float const rgb   = vertexColourAmbient ? 1.0f : 0.0f;
 		float const alpha = vertexColourDiffuse ? 1.0f : 0.0f;
 
-		// Only the colour is tinted. The alpha multiplier sets the diffuse
-		// material alpha, which colour material overrides as soon as the vertex
-		// colour supplies diffuse, and which means nothing at all with no light
-		// enabled. Scaling the fragment alpha by it destroys the one thing the
-		// cloud shadow pass depends on: it draws the terrain again under a near
-		// black tint and takes its soft edge entirely from the texture alpha, so
-		// forcing that alpha leaves the shadow either invisible or a hard opaque
-		// block, which is what it was.
+		// The alpha multiplier is the fade, and it is not gated the way the
+		// colour is. It sits at 1 for everything opaque and ramps only while
+		// clouds and their shadows fade in and out, so gating it on the vertex
+		// colour state substituted 1 for the ramp and made both appear and
+		// vanish abruptly.
 		vulkan->SetSceneTint(
 			vertexColourAmbient ? colourMultiplier[0] : 1.0f,
 			vertexColourAmbient ? colourMultiplier[1] : 1.0f,
 			vertexColourAmbient ? colourMultiplier[2] : 1.0f,
-			1.0f);
+			colourMultiplier[3]);
 
 		// Quantised, so the day and night cycle reports as a handful of steps
 		// rather than once per frame, and a constant value reports once.

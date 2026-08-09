@@ -180,6 +180,16 @@ namespace scvk
 			int32_t xoffset, int32_t yoffset, uint32_t width, uint32_t height,
 			uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
 
+		/**
+		 * Sets the filter and wrap parameters for subsequent draws.
+		 *
+		 * The game drives these as global state applied to whatever is bound,
+		 * not as a property of a texture, so they select a sampler per draw
+		 * rather than being baked into a texture's descriptor.
+		 */
+		void SetTextureParameters(uint32_t magFilter, uint32_t minFilter,
+			uint32_t wrapS, uint32_t wrapT);
+
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
 
@@ -478,8 +488,27 @@ namespace scvk
 		std::vector<PipelineEntry> pipelines;
 
 		VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
+		VkDescriptorSetLayout samplerLayout    = VK_NULL_HANDLE;
 		VkDescriptorPool      descriptorPool   = VK_NULL_HANDLE;
-		VkSampler             sampler          = VK_NULL_HANDLE;
+
+		/** A sampler and its set, keyed on the parameters that produced it. */
+		struct SamplerEntry
+		{
+			uint32_t        key     = 0;
+			VkSampler       sampler = VK_NULL_HANDLE;
+			VkDescriptorSet set     = VK_NULL_HANDLE;
+		};
+
+		static constexpr size_t kMaxSamplers = 64;
+
+		std::vector<SamplerEntry> samplers;
+
+		// Mag filter, min filter, wrap S, wrap T, in the game's own encoding.
+		// Linear with repeat is the fixed function default.
+		uint32_t textureParameters[4] = { 1, 1, 3, 3 };
+
+		/** The set for the current parameters, created on first use. */
+		VkDescriptorSet GetSamplerSet(void);
 
 		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by
 		// one instead of needing its own shader and pipeline.

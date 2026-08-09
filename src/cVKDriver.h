@@ -324,6 +324,9 @@ namespace scvk
 		// coordinate. Only that stage generates, so only that one is kept.
 		float    texStageMatrix[16];
 
+		// Magnification filter, minification filter, wrap S, wrap T.
+		uint32_t textureParameters[4];
+
 		/** Recomputes and forwards the generated coordinate rows. */
 		void PushTexGen(void);
 

@@ -71,8 +71,12 @@ layout(push_constant) uniform Push
     vec4 sceneTint;
 } push;
 
-layout(set = 0, binding = 0) uniform sampler2D texSampler0;
-layout(set = 1, binding = 0) uniform sampler2D texSampler1;
+// Image and sampler are separate objects here. The game drives filter and
+// wrap as global state applied to whatever is bound, so the sampler has to be
+// free to change per draw while a texture's descriptor stays fixed.
+layout(set = 0, binding = 0) uniform texture2D texImage0;
+layout(set = 1, binding = 0) uniform texture2D texImage1;
+layout(set = 2, binding = 0) uniform sampler   texSampler;
 
 layout(location = 0) in vec4 fragColour;
 layout(location = 1) in vec2 fragTexCoord0;
@@ -162,7 +166,7 @@ vec4 runStage(uint packedRGB, uint packedAlpha, vec4 texel, vec4 previous)
 
 void main()
 {
-    vec4 texel0 = texture(texSampler0, fragTexCoord0);
+    vec4 texel0 = texture(sampler2D(texImage0, texSampler), fragTexCoord0);
     vec4 result;
 
     if (push.fragmentState.w < 1.5 || push.fragmentState.w > 2.5)
@@ -175,7 +179,7 @@ void main()
     }
     else
     {
-        vec4 texel1 = texture(texSampler1, fragTexCoord1);
+        vec4 texel1 = texture(sampler2D(texImage1, texSampler), fragTexCoord1);
 
         // The first stage has no predecessor, so the primary colour stands in
         // as "previous", which is what the fixed function pipeline defines.

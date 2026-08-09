@@ -1412,7 +1412,7 @@ namespace scvk
 
 		VkDescriptorSetLayoutBinding binding{};
 		binding.binding         = 0;
-		binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		binding.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		binding.descriptorCount = 1;
 		binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -1433,14 +1433,22 @@ namespace scvk
 		constexpr uint32_t kMaxTextures = 4096;
 
 		VkDescriptorPoolSize poolSize{};
-		poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		poolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		poolSize.descriptorCount = kMaxTextures;
+
+		// Samplers are their own descriptor type and their own sets, one per
+		// distinct filter and wrap combination the game asks for.
+		VkDescriptorPoolSize samplerPoolSize{};
+		samplerPoolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLER;
+		samplerPoolSize.descriptorCount = kMaxSamplers;
+
+		VkDescriptorPoolSize const poolSizes[] = { poolSize, samplerPoolSize };
 
 		VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		poolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-		poolInfo.maxSets       = kMaxTextures;
-		poolInfo.poolSizeCount = 1;
-		poolInfo.pPoolSizes    = &poolSize;
+		poolInfo.maxSets       = kMaxTextures + kMaxSamplers;
+		poolInfo.poolSizeCount = _countof(poolSizes);
+		poolInfo.pPoolSizes    = poolSizes;
 
 		result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
 		if (result != VK_SUCCESS)
@@ -1449,22 +1457,21 @@ namespace scvk
 			return false;
 		}
 
-		// A single sampler for now. TexParameter carries per-texture filter and
-		// wrap settings which are not honoured yet; repeat plus linear is the
-		// common case and wrong only at the edges of clamped textures.
-		VkSamplerCreateInfo samplerInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-		samplerInfo.magFilter    = VK_FILTER_LINEAR;
-		samplerInfo.minFilter    = VK_FILTER_LINEAR;
-		samplerInfo.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.maxLod       = VK_LOD_CLAMP_NONE;
+		// The sampler layout, whose sets carry nothing but a sampler.
+		VkDescriptorSetLayoutBinding samplerBinding{};
+		samplerBinding.binding         = 0;
+		samplerBinding.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+		samplerBinding.descriptorCount = 1;
+		samplerBinding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-		result = vkCreateSampler(device, &samplerInfo, nullptr, &sampler);
+		VkDescriptorSetLayoutCreateInfo samplerLayoutInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+		samplerLayoutInfo.bindingCount = 1;
+		samplerLayoutInfo.pBindings    = &samplerBinding;
+
+		result = vkCreateDescriptorSetLayout(device, &samplerLayoutInfo, nullptr, &samplerLayout);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateSampler", result);
+			Fail("vkCreateDescriptorSetLayout (sampler)", result);
 			return false;
 		}
 
@@ -1519,6 +1526,114 @@ namespace scvk
 		textures[handle] = Texture{};
 
 		return true;
+	}
+
+	void VulkanBackend::SetTextureParameters(uint32_t magFilter, uint32_t minFilter,
+		uint32_t wrapS, uint32_t wrapT)
+	{
+		textureParameters[0] = magFilter;
+		textureParameters[1] = minFilter;
+		textureParameters[2] = wrapS;
+		textureParameters[3] = wrapT;
+	}
+
+	VkDescriptorSet VulkanBackend::GetSamplerSet(void)
+	{
+		uint32_t const key = (textureParameters[0] & 0xff)
+			| ((textureParameters[1] & 0xff) << 8)
+			| ((textureParameters[2] & 0xff) << 16)
+			| ((textureParameters[3] & 0xff) << 24);
+
+		for (SamplerEntry const& entry : samplers)
+		{
+			if (entry.key == key)
+			{
+				return entry.set;
+			}
+		}
+
+		if (samplers.size() >= kMaxSamplers)
+		{
+			return samplers.empty() ? VK_NULL_HANDLE : samplers[0].set;
+		}
+
+		// The game's parameter values, from its own translation table:
+		// 0 nearest, 1 linear, 2 clamp, 3 repeat, then the four mipmapped
+		// minification filters in the order nearest/linear crossed with
+		// nearest/linear.
+		auto const mapFilter = [](uint32_t value)
+		{
+			return (value == 0 || value == 4 || value == 6)
+				? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+		};
+
+		auto const mapAddress = [](uint32_t value)
+		{
+			// GL_CLAMP, not CLAMP_TO_EDGE: it clamps to the border rather than
+			// smearing the edge texel outward. That distinction is the whole
+			// point here, since a projected cloud shadow needs nothing outside
+			// its own footprint, and a transparent border gives exactly that.
+			return (value == 2)
+				? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER
+				: VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		};
+
+		// Only values 4 to 7 select a mipmapped minification filter. The
+		// unmipmapped ones must not reach past the base level, which also keeps
+		// a texture whose upper levels were never uploaded from being sampled.
+		bool const mipmapped = textureParameters[1] >= 4;
+
+		VkSamplerCreateInfo info{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+		info.magFilter    = mapFilter(textureParameters[0]);
+		info.minFilter    = mapFilter(textureParameters[1]);
+		info.mipmapMode   = (textureParameters[1] == 6 || textureParameters[1] == 7)
+			? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		info.addressModeU = mapAddress(textureParameters[2]);
+		info.addressModeV = mapAddress(textureParameters[3]);
+		info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		info.borderColor  = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+		info.maxLod       = mipmapped ? VK_LOD_CLAMP_NONE : 0.25f;
+
+		SamplerEntry entry;
+		entry.key = key;
+
+		VkResult result = vkCreateSampler(device, &info, nullptr, &entry.sampler);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateSampler", result);
+			return samplers.empty() ? VK_NULL_HANDLE : samplers[0].set;
+		}
+
+		VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+		allocInfo.descriptorPool     = descriptorPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts        = &samplerLayout;
+
+		result = vkAllocateDescriptorSets(device, &allocInfo, &entry.set);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateDescriptorSets (sampler)", result);
+			vkDestroySampler(device, entry.sampler, nullptr);
+			return samplers.empty() ? VK_NULL_HANDLE : samplers[0].set;
+		}
+
+		VkDescriptorImageInfo imageInfo{};
+		imageInfo.sampler = entry.sampler;
+
+		VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		write.dstSet          = entry.set;
+		write.dstBinding      = 0;
+		write.descriptorCount = 1;
+		write.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+		write.pImageInfo      = &imageInfo;
+
+		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+		LogNote("Vulkan: created sampler for mag %u, min %u, wrap %u/%u.",
+			textureParameters[0], textureParameters[1], textureParameters[2], textureParameters[3]);
+
+		samplers.push_back(entry);
+		return entry.set;
 	}
 
 	uint32_t VulkanBackend::CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
@@ -1607,7 +1722,7 @@ namespace scvk
 		}
 
 		VkDescriptorImageInfo imageBinding{};
-		imageBinding.sampler     = sampler;
+		imageBinding.sampler     = VK_NULL_HANDLE;
 		imageBinding.imageView   = texture.view;
 		imageBinding.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1615,7 +1730,7 @@ namespace scvk
 		write.dstSet          = texture.descriptor;
 		write.dstBinding      = 0;
 		write.descriptorCount = 1;
-		write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		write.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		write.pImageInfo      = &imageBinding;
 
 		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
@@ -2235,7 +2350,7 @@ namespace scvk
 		uint32_t const bound1 = (twoStages && currentTexture1 < textures.size() && textures[currentTexture1].live)
 			? currentTexture1 : 0;
 
-		VkDescriptorSet const sets[] = { textures[bound].descriptor, textures[bound1].descriptor };
+		VkDescriptorSet const sets[] = { textures[bound].descriptor, textures[bound1].descriptor, GetSamplerSet() };
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
 			0, _countof(sets), sets, 0, nullptr);
@@ -3146,11 +3261,11 @@ namespace scvk
 		range.offset     = 0;
 		range.size       = sizeof(float) * 32;
 
-		// One set per texture stage, both with the same single-sampler layout.
+		// One set per texture stage, plus a third for the sampler.
 		// Keeping them separate is what lets a descriptor set stay a property
 		// of one texture: a single set with two bindings would need a set per
 		// pair of textures instead, and the pairs multiply.
-		VkDescriptorSetLayout const setLayouts[] = { descriptorLayout, descriptorLayout };
+		VkDescriptorSetLayout const setLayouts[] = { descriptorLayout, descriptorLayout, samplerLayout };
 
 		VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 		info.setLayoutCount         = _countof(setLayouts);
@@ -3362,7 +3477,13 @@ namespace scvk
 			DestroyTextures();
 
 			if (uploadFence != VK_NULL_HANDLE) { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
-			if (sampler != VK_NULL_HANDLE) { vkDestroySampler(device, sampler, nullptr); sampler = VK_NULL_HANDLE; }
+			for (SamplerEntry const& entry : samplers)
+			{
+				if (entry.sampler != VK_NULL_HANDLE) { vkDestroySampler(device, entry.sampler, nullptr); }
+			}
+			samplers.clear();
+
+			if (samplerLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, samplerLayout, nullptr); samplerLayout = VK_NULL_HANDLE; }
 			if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
 			if (descriptorLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, descriptorLayout, nullptr); descriptorLayout = VK_NULL_HANDLE; }
 			for (VkShaderModule& m : vertModules) { if (m != VK_NULL_HANDLE) { vkDestroyShaderModule(device, m, nullptr); m = VK_NULL_HANDLE; } }

@@ -195,14 +195,22 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %u, %d", gdTextureTarget, gdTextureParamType, gdTextureParam);
 
-		// Filters, wrap modes and the level clamp all arrive here, and all of
-		// them are currently ignored. Which of them the game actually sets
-		// decides how much that costs.
+		// Parameter type 0 is the magnification filter, 1 the minification
+		// filter, 2 the wrap in S and 3 the wrap in T. The game sets both clamp
+		// and repeat, and treats these as global state rather than per texture,
+		// which is how the OpenGL driver applies them too.
 		if (NoteOnce(6, gdTextureTarget | (gdTextureParamType << 8) |
 				(static_cast<uint32_t>(gdTextureParam & 0xffff) << 16)))
 		{
 			LogNote("  TEXPARAM target %u, param type %u, value %d",
 				gdTextureTarget, gdTextureParamType, gdTextureParam);
+		}
+
+		if (gdTextureParamType < 4 && gdTextureParam >= 0)
+		{
+			textureParameters[gdTextureParamType] = static_cast<uint32_t>(gdTextureParam);
+			vulkan->SetTextureParameters(textureParameters[0], textureParameters[1],
+				textureParameters[2], textureParameters[3]);
 		}
 	}
 
