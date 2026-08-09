@@ -2370,7 +2370,14 @@ namespace scvk
 		// still binds something valid and multiplies by one. That is also what
 		// the second stage gets when it is idle, since the fragment shader
 		// samples both unconditionally.
-		uint32_t const bound = (currentTexture < textures.size() && textures[currentTexture].live)
+		//
+		// A stage with texturing switched off gets it too. Geometry that
+		// carries no texture coordinates still leaves a texture bound, and
+		// sampling it at coordinate zero multiplies the vertex colour by
+		// whatever happens to sit in that texel. The water side faces are drawn
+		// exactly that way, eight untextured colour-only draws, and the texel
+		// they landed on took them to black.
+		uint32_t const bound = (stageEnabled[0] && currentTexture < textures.size() && textures[currentTexture].live)
 			? currentTexture : 0;
 		uint32_t const bound1 = (twoStages && currentTexture1 < textures.size() && textures[currentTexture1].live)
 			? currentTexture1 : 0;
