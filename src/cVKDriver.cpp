@@ -84,6 +84,7 @@ namespace scvk
 		dumpedDraws(0),
 		frameDumpsRemaining(10),
 		dumpWindowRemaining(0),
+		dumpArmed(false),
 		stage1Texture(0),
 		lastTexMatrixFlags(0),
 		vulkan(std::make_unique<VulkanBackend>()),

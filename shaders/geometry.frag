@@ -164,8 +164,29 @@ vec4 runStage(uint packedRGB, uint packedAlpha, vec4 texel, vec4 previous)
     return vec4(rgb * scaleFactor(packedRGB), alpha * scaleFactor(packedAlpha));
 }
 
+// Flat identifying colours, one per blend configuration, used only when the
+// driver asks for them. A pass that cannot be found by reasoning about state
+// can be found by looking at which colour lands on the pixels in question.
+vec3 passColour(int pass)
+{
+    if (pass == 0) { return vec3(1.0, 0.0, 0.0); }  // opaque, one/zero
+    if (pass == 1) { return vec3(0.0, 1.0, 0.0); }  // opaque, one/one
+    if (pass == 2) { return vec3(0.0, 0.4, 1.0); }  // additive, srcalpha/one
+    if (pass == 3) { return vec3(1.0, 1.0, 0.0); }  // alpha blended
+    if (pass == 4) { return vec3(1.0, 0.0, 1.0); }  // other, blend off
+    return vec3(0.0, 1.0, 1.0);                     // other, blend on
+}
+
 void main()
 {
+    // Pass identification overrides everything, including the alpha test, so
+    // that a pass cannot hide by discarding.
+    if (push.fragmentState.w > 9.5)
+    {
+        outColour = vec4(passColour(int(push.fragmentState.w) - 10), 1.0);
+        return;
+    }
+
     vec4 texel0 = texture(sampler2D(texImage0, texSampler), fragTexCoord0);
     vec4 result;
 

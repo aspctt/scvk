@@ -217,6 +217,9 @@ namespace scvk
 		 */
 		void SetTexGen(bool active, float const* rowS, float const* rowT);
 
+		/** Replaces draw colours with a flat colour per blend configuration. */
+		void SetDebugPassColours(bool enabled);
+
 		/** The global ambient tint applied to every lit draw. */
 		void SetSceneTint(float r, float g, float b, float a);
 
@@ -527,6 +530,7 @@ namespace scvk
 		// Generated texture coordinates, which the cloud shadows are drawn
 		// with. The two rows share push constant space with the combiner,
 		// since a pass never needs both.
+		bool     debugPassColours  = false;
 		bool     texGenActive      = false;
 		float    texGenRows[8]     = {};
 

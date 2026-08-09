@@ -2014,6 +2014,12 @@ namespace scvk
 		}
 	}
 
+	void VulkanBackend::SetDebugPassColours(bool enabled)
+	{
+		debugPassColours = enabled;
+		LogNote("Vulkan: pass identification colours are %s.", enabled ? "on" : "off");
+	}
+
 	void VulkanBackend::SetSceneTint(float r, float g, float b, float a)
 	{
 		sceneTint[0] = r;
@@ -2309,6 +2315,25 @@ namespace scvk
 		bool const generating = texGenActive && !twoStages;
 
 		fragmentState[3] = generating ? 3.0f : (twoStages ? 2.0f : 1.0f);
+
+		// Pass identification, opt in. Replaces the draw's colour with a flat
+		// one chosen by its blend configuration, so a capture says directly
+		// which pass owns a given region of the picture.
+		if (debugPassColours)
+		{
+			int pass;
+
+			if (!blendEnable)
+			{
+				pass = (blendSrc == 1 && blendDst == 0) ? 0 : ((blendSrc == 1 && blendDst == 1) ? 1 : 4);
+			}
+			else
+			{
+				pass = (blendSrc == 4 && blendDst == 1) ? 2 : ((blendSrc == 4 && blendDst == 5) ? 3 : 5);
+			}
+
+			fragmentState[3] = 10.0f + static_cast<float>(pass);
+		}
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdPushConstants(commandBuffer, pipelineLayout,

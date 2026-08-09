@@ -173,6 +173,178 @@ namespace scvk
 		vulkan->SetTexGen(true, rowS, rowT);
 	}
 
+	void cVKDriver::MaybeArmDump(void)
+	{
+		// The base terrain pass arms the dump, which then runs for the rest of
+		// that frame so the whole scene build is captured together.
+		//
+		// Two coordinate sets alone is not enough to identify it. The cloud
+		// shadows carry two as well and redraw every frame over the restored
+		// buffer region, so arming on those caught a frame holding nothing but
+		// shadows and interface, with the terrain and water already saved.
+		//
+		// The shadows are the pass that generates its coordinates, so requiring
+		// vertex coordinates separates the two. The second texture stage does
+		// not: the game leaves it bound but disabled, and the terrain draws
+		// single stage.
+		if (!dumpArmed || dumpFrame ||
+			(texCoordSource[0] & ~7u) == 0x10u ||
+			RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) < 2)
+		{
+			return;
+		}
+
+		dumpArmed   = false;
+		dumpFrame   = true;
+		dumpedDraws = 0;
+		LogNote("=== dumping the terrain pass of frame %u ===", frameCounter);
+	}
+
+	void cVKDriver::DumpDraw(uint32_t gdPrimType, int32_t count, int32_t first,
+		void const* indices, bool indicesAre32Bit)
+	{
+		// Records every draw of one frame with the pixel rectangle it lands on,
+		// so the frame can be reconstructed from the log and compared against
+		// the capture of that same frame.
+		//
+		// Reached from both draw paths. It used to live in DrawArrays alone,
+		// which made it structurally blind to the terrain: that goes through
+		// DrawElements, so no dump ever contained a single terrain draw however
+		// long the window was left open.
+		if (!dumpFrame || count <= 0 || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		if (dumpedDraws >= kMaxDumpedDraws)
+		{
+			return;
+		}
+
+		if (NoteOnce(11, boundTexture))
+		{
+			vulkan->LogTextureInfo(boundTexture, "terrain pass");
+		}
+
+		int const sampled = (count < 8) ? count : 8;
+
+		auto const vertexAt = [&](int i) -> uint8_t const*
+		{
+			size_t index;
+
+			if (indices == nullptr)
+			{
+				index = static_cast<size_t>(first + i);
+			}
+			else if (indicesAre32Bit)
+			{
+				index = static_cast<uint32_t const*>(indices)[i];
+			}
+			else
+			{
+				index = static_cast<uint16_t const*>(indices)[i];
+			}
+
+			return static_cast<uint8_t const*>(vertexPointer) + index * vertexStride;
+		};
+
+		float minX = 1e30f, maxX = -1e30f;
+		float minY = 1e30f, maxY = -1e30f;
+		bool  usable = true;
+
+		for (int i = 0; i < sampled; i++)
+		{
+			float const* p = reinterpret_cast<float const*>(vertexAt(i));
+
+			float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			for (int row = 0; row < 4; row++)
+			{
+				float sum = 0.0f;
+				for (int k = 0; k < 4; k++)
+				{
+					sum += modelViewMatrix[k * 4 + row] * ((k < 3) ? p[k] : 1.0f);
+				}
+				eye[row] = sum;
+			}
+
+			float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			for (int row = 0; row < 4; row++)
+			{
+				float sum = 0.0f;
+				for (int k = 0; k < 4; k++)
+				{
+					sum += projectionMatrix[k * 4 + row] * eye[k];
+				}
+				clip[row] = sum;
+			}
+
+			if (clip[3] > -1e-6f && clip[3] < 1e-6f) { usable = false; break; }
+
+			float const x = clip[0] / clip[3];
+			float const y = clip[1] / clip[3];
+
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+
+		if (!usable)
+		{
+			LogNote("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d",
+				dumpedDraws++, boundTexture, vertexFormat, gdPrimType, count);
+			return;
+		}
+
+		int const vpW = (viewportWidth  > 0) ? viewportWidth  : windowWidth;
+		int const vpH = (viewportHeight > 0) ? viewportHeight : windowHeight;
+		int const vpX = (viewportWidth  > 0) ? viewportX : 0;
+
+		// The stored viewport y is bottom-origin, as OpenGL has it.
+		int const vpTop = (viewportHeight > 0)
+			? (windowHeight - viewportY - viewportHeight) : 0;
+
+		// Clip space y runs the other way from screen y.
+		float const left   = vpX   + (minX + 1.0f) * 0.5f * vpW;
+		float const right  = vpX   + (maxX + 1.0f) * 0.5f * vpW;
+		float const top    = vpTop + (1.0f - maxY) * 0.5f * vpH;
+		float const bottom = vpTop + (1.0f - minY) * 0.5f * vpH;
+
+		float uMin = 0.0f, uMax = 0.0f, vMin = 0.0f, vMax = 0.0f;
+
+		if (RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0)
+		{
+			uint32_t const uvOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
+			uMin = vMin = 1e30f;
+			uMax = vMax = -1e30f;
+
+			for (int i = 0; i < sampled; i++)
+			{
+				float const* uv = reinterpret_cast<float const*>(vertexAt(i) + uvOffset);
+
+				if (uv[0] < uMin) uMin = uv[0];
+				if (uv[0] > uMax) uMax = uv[0];
+				if (uv[1] < vMin) vMin = uv[1];
+				if (uv[1] > vMax) vMax = uv[1];
+			}
+		}
+
+		// Blend, alpha test and the second stage are all reported, because a
+		// draw that comes out a flat block and a draw that comes out black are
+		// both questions about state rather than geometry, and the rectangle
+		// alone cannot tell them apart.
+		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
+			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  stage1 %d texmat 0x%x",
+			dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
+			boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
+			viewportX, viewportY, viewportWidth, viewportHeight,
+			uMin, uMax, vMin, vMax,
+			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
+			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
+			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,
+			texStageEnabled[1] ? 1 : 0, lastTexMatrixFlags);
+	}
+
 	void cVKDriver::UpdateTransform(void)
 	{
 		// Column-major, matching both the game and GLSL: result = P * M, so
@@ -282,124 +454,8 @@ namespace scvk
 			}
 		}
 
-		// Dump one entire frame, as screen rectangles.
-		//
-		// Sampling has repeatedly answered the wrong question: it shows which
-		// contexts exist, not what the finished picture is made of. This
-		// records every draw of a single frame with the pixel rectangle it
-		// lands on, so the frame can be reconstructed and compared against a
-		// screenshot directly. One frame is a few hundred lines, which is
-		// affordable exactly once.
-		if (dumpFrame)
-		{
-			float minX = 1e30f, maxX = -1e30f;
-			float minY = 1e30f, maxY = -1e30f;
-			bool  usable = true;
-
-			int const sampled = (count < 8) ? count : 8;
-			for (int i = 0; i < sampled; i++)
-			{
-				float const* p = reinterpret_cast<float const*>(
-					static_cast<uint8_t const*>(vertexPointer) +
-					static_cast<size_t>(first + i) * vertexStride);
-
-				float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-				for (int row = 0; row < 4; row++)
-				{
-					float sum = 0.0f;
-					for (int k = 0; k < 4; k++)
-					{
-						sum += modelViewMatrix[k * 4 + row] * ((k < 3) ? p[k] : 1.0f);
-					}
-					eye[row] = sum;
-				}
-
-				float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-				for (int row = 0; row < 4; row++)
-				{
-					float sum = 0.0f;
-					for (int k = 0; k < 4; k++)
-					{
-						sum += projectionMatrix[k * 4 + row] * eye[k];
-					}
-					clip[row] = sum;
-				}
-
-				if (clip[3] > -1e-6f && clip[3] < 1e-6f) { usable = false; break; }
-
-				float const x = clip[0] / clip[3];
-				float const y = clip[1] / clip[3];
-
-				if (x < minX) minX = x;
-				if (x > maxX) maxX = x;
-				if (y < minY) minY = y;
-				if (y > maxY) maxY = y;
-			}
-
-			if (usable)
-			{
-				int const vpW = (viewportWidth  > 0) ? viewportWidth  : windowWidth;
-				int const vpH = (viewportHeight > 0) ? viewportHeight : windowHeight;
-				int const vpX = (viewportWidth  > 0) ? viewportX : 0;
-
-				// The stored viewport y is bottom-origin, as OpenGL has it.
-				int const vpTop = (viewportHeight > 0)
-					? (windowHeight - viewportY - viewportHeight) : 0;
-
-				// Clip space y runs the other way from screen y.
-				float const left   = vpX   + (minX + 1.0f) * 0.5f * vpW;
-				float const right  = vpX   + (maxX + 1.0f) * 0.5f * vpW;
-				float const top    = vpTop + (1.0f - maxY) * 0.5f * vpH;
-				float const bottom = vpTop + (1.0f - minY) * 0.5f * vpH;
-
-				// Texture coordinate range as well as the screen rectangle.
-				// The interface textures turn out to be atlases holding
-				// several elements, so a draw that samples the whole 0..1
-				// range is showing the entire atlas stretched across its quad
-				// instead of the one element it wanted.
-				float uMin = 0.0f, uMax = 0.0f, vMin = 0.0f, vMax = 0.0f;
-				bool  haveUv = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0;
-
-				if (haveUv)
-				{
-					uint32_t const uvOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
-					uMin = vMin = 1e30f;
-					uMax = vMax = -1e30f;
-
-					for (int i = 0; i < sampled; i++)
-					{
-						float const* uv = reinterpret_cast<float const*>(
-							static_cast<uint8_t const*>(vertexPointer) +
-							static_cast<size_t>(first + i) * vertexStride + uvOffset);
-
-						if (uv[0] < uMin) uMin = uv[0];
-						if (uv[0] > uMax) uMax = uv[0];
-						if (uv[1] < vMin) vMin = uv[1];
-						if (uv[1] > vMax) vMax = uv[1];
-					}
-				}
-
-				// Blend, alpha test and the second stage are all reported,
-				// because a draw that comes out a flat hard-edged block and a
-				// draw that comes out black are both questions about state
-				// rather than about geometry, and the rectangle alone cannot
-				// tell them apart.
-				LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
-					"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) alpha %u@%.2f  stage1 %d texmat 0x%x",
-					dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
-					boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
-					viewportX, viewportY, viewportWidth, viewportHeight,
-					uMin, uMax, vMin, vMax,
-					enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
-					alphaFunc, alphaRef,
-					texStageEnabled[1] ? 1 : 0, lastTexMatrixFlags);
-			}
-			else
-			{
-				LogNote("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d",
-					dumpedDraws++, boundTexture, vertexFormat, gdPrimType, count);
-			}
-		}
+		MaybeArmDump();
+		DumpDraw(gdPrimType, count, first, nullptr, false);
 
 		// Measure how much of its viewport a draw actually covers.
 		//
@@ -555,6 +611,8 @@ namespace scvk
 
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimType, count);
+		MaybeArmDump();
+		DumpDraw(gdPrimType, count, 0, indices, indicesAre32Bit);
 		PushTexGen();
 		UpdateTransform();
 		vulkan->DrawIndexedVertices(gdPrimType, vertexFormat, vertexPointer,

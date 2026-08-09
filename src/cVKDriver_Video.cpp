@@ -69,6 +69,28 @@ namespace scvk
 		driverInfo.append("UnknownCardVersion\n");
 		driverInfo.append(vulkan->DeviceName()).append("\n");
 
+		// Pass identification, enabled by dropping a marker file next to the
+		// driver. A diagnostic that replaces every colour on screen has no
+		// business being reachable by accident, and this keeps it out of the
+		// build rather than behind a constant somebody forgets to flip back.
+		{
+			char marker[MAX_PATH];
+			if (LogDirectory(marker, sizeof(marker)))
+			{
+				char const* const name = "scvk-debug-passes";
+
+				if (strlen(marker) + strlen(name) < sizeof(marker))
+				{
+					strcat_s(marker, sizeof(marker), name);
+
+					if (GetFileAttributesA(marker) != INVALID_FILE_ATTRIBUTES)
+					{
+						vulkan->SetDebugPassColours(true);
+					}
+				}
+			}
+		}
+
 		int modes = EnumerateVideoModes();
 		if (modes == 0)
 		{
@@ -389,14 +411,13 @@ namespace scvk
 			// the first attempt at this caught 38 draws, all of them toolbar.
 			// The redraws that actually build the scene are sparse, so the
 			// window stays open until one of them turns up.
-			dumpWindowRemaining--;
+			LogNote("=== end of frame dump, %d draws ===", dumpedDraws);
+			dumpFrame = false;
+		}
 
-			if (dumpWindowRemaining <= 0 || dumpedDraws >= kMaxDumpedDraws)
-			{
-				LogNote("=== end of frame dump, %d draws over %d frames ===",
-					dumpedDraws, kDumpWindowFrames - dumpWindowRemaining);
-				dumpFrame = false;
-			}
+		if (dumpArmed && --dumpWindowRemaining <= 0)
+		{
+			dumpArmed = false;
 		}
 
 		frameCounter++;
@@ -412,10 +433,8 @@ namespace scvk
 		// whatever the game is actually showing later.
 		if (frameCounter % 2000u == 0u && frameDumpsRemaining > 0)
 		{
-			LogNote("=== dumping every draw from frame %u ===", frameCounter);
 			frameDumpsRemaining--;
-			dumpFrame           = true;
-			dumpedDraws         = 0;
+			dumpArmed           = true;
 			dumpWindowRemaining = kDumpWindowFrames;
 
 			// A picture of the same frame the dump describes, so the

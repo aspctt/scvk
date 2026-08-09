@@ -340,6 +340,13 @@ namespace scvk
 		// rather than a search of everything already seen.
 		uint32_t lastMultitexKey;
 
+		/** Arms the dump when the terrain pass starts. */
+		void MaybeArmDump(void);
+
+		/** Records one draw of a dumped frame, from either draw path. */
+		void DumpDraw(uint32_t gdPrimType, int32_t count, int32_t first,
+			void const* indices, bool indicesAre32Bit);
+
 		/** Reports the state of draws made under a near black ambient tint. */
 		void NoteDarkTintedDraw(uint32_t gdPrimType, int32_t count);
 
@@ -359,6 +366,12 @@ namespace scvk
 		static constexpr int kDumpWindowFrames = 240;
 		static constexpr int kMaxDumpedDraws   = 4000;
 		int      dumpWindowRemaining;
+
+		// A dump waits for the terrain pass rather than starting on a frame
+		// boundary. Most frames restore the scene from a buffer region and
+		// contain nothing but interface, and those were filling the budget
+		// before a redraw ever arrived.
+		bool     dumpArmed;
 
 		// The texture on the second stage and the last texture matrix flags,
 		// kept so a dumped draw can report the state it ran under.
