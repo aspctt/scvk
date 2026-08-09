@@ -534,6 +534,20 @@ namespace scvk
 		bool     texGenActive      = false;
 		float    texGenRows[8]     = {};
 
+		/** A deleted texture's objects, waiting for the GPU to finish with them. */
+		struct RetiredTexture
+		{
+			VkImage         image      = VK_NULL_HANDLE;
+			VkDeviceMemory  memory     = VK_NULL_HANDLE;
+			VkImageView     view       = VK_NULL_HANDLE;
+			VkDescriptorSet descriptor = VK_NULL_HANDLE;
+		};
+
+		std::vector<RetiredTexture> retiredTextures;
+
+		/** Destroys everything retired since the last frame. */
+		void FlushRetiredTextures(void);
+
 		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence         uploadFence         = VK_NULL_HANDLE;
 

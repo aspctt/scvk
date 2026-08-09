@@ -233,6 +233,19 @@ namespace scvk
 	void cVKDriver::DeleteTextures(int32_t count, uint32_t const* textures)
 	{
 		SCVK_CALL("%d, %p", count, textures);
+
+		// These are the handles CreateTexture returned. The interface also has
+		// GenTextures, which hands out names from a separate space, but the game
+		// never calls it, so there is only one kind of value arriving here.
+		if (textures == nullptr || count <= 0)
+		{
+			return;
+		}
+
+		for (int32_t i = 0; i < count; i++)
+		{
+			vulkan->DestroyTexture(textures[i]);
+		}
 	}
 
 	bool cVKDriver::IsTexture(uint32_t texture)

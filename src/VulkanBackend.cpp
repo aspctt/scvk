@@ -723,6 +723,9 @@ namespace scvk
 			return false;
 		}
 
+		// Safe here: the fence wait above means the previous submit is done.
+		FlushRetiredTextures();
+
 		frameActive = true;
 		stagingUsed = 0;
 		vertexUsed  = 0;
@@ -2043,13 +2046,23 @@ namespace scvk
 			return;
 		}
 
-		vkDeviceWaitIdle(device);
-
 		Texture& texture = textures[handle];
 
-		if (texture.view != VK_NULL_HANDLE)   vkDestroyImageView(device, texture.view, nullptr);
-		if (texture.image != VK_NULL_HANDLE)  vkDestroyImage(device, texture.image, nullptr);
-		if (texture.memory != VK_NULL_HANDLE) vkFreeMemory(device, texture.memory, nullptr);
+		// Retired rather than destroyed here. The frame in progress may already
+		// have recorded commands that sample this texture, and those have not
+		// been submitted yet, so the objects have to outlive it. Waiting for the
+		// device instead would be correct but costs a full stall, and the game
+		// deletes textures hundreds of times a session.
+		//
+		// The slot itself is freed immediately, so it can be handed out again
+		// straight away.
+		RetiredTexture retired;
+		retired.image      = texture.image;
+		retired.memory     = texture.memory;
+		retired.view       = texture.view;
+		retired.descriptor = texture.descriptor;
+
+		retiredTextures.push_back(retired);
 
 		texture = Texture{};
 
@@ -2057,10 +2070,38 @@ namespace scvk
 		{
 			currentTexture = 0;
 		}
+
+		if (currentTexture1 == handle)
+		{
+			currentTexture1 = 0;
+		}
+	}
+
+	void VulkanBackend::FlushRetiredTextures(void)
+	{
+		// Called once a frame's fence has been waited on, which means every
+		// command that could still have been reading these has completed.
+		for (RetiredTexture const& retired : retiredTextures)
+		{
+			if (retired.view != VK_NULL_HANDLE)   { vkDestroyImageView(device, retired.view, nullptr); }
+			if (retired.image != VK_NULL_HANDLE)  { vkDestroyImage(device, retired.image, nullptr); }
+			if (retired.memory != VK_NULL_HANDLE) { vkFreeMemory(device, retired.memory, nullptr); }
+
+			// The descriptor set matters as much as the image. Its pool is
+			// capped, and leaking sets exhausts it long before memory runs out.
+			if (retired.descriptor != VK_NULL_HANDLE)
+			{
+				vkFreeDescriptorSets(device, descriptorPool, 1, &retired.descriptor);
+			}
+		}
+
+		retiredTextures.clear();
 	}
 
 	void VulkanBackend::DestroyTextures(void)
 	{
+		FlushRetiredTextures();
+
 		for (Texture& texture : textures)
 		{
 			if (texture.view != VK_NULL_HANDLE)   vkDestroyImageView(device, texture.view, nullptr);
