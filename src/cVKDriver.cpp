@@ -75,6 +75,8 @@ namespace scvk
 		texEnvMode{ kGDTextureEnvParam_Modulate, kGDTextureEnvParam_Modulate },
 		activeTexStage(0),
 		texStageEnabled{ false, false },
+		texCoordSource{ 0, 1 },
+		texStageMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		lastMultitexKey(0xffffffffu),
 		frameCounter(0),
 		dumpFrame(false),

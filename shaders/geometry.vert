@@ -30,9 +30,23 @@ layout(push_constant) uniform Push
 
     // Used only by the fragment stage, declared here to keep the blocks
     // identical.
+    // w selects how the two aliased slots below are read:
+    //   1 one texture stage, coordinates from the vertex
+    //   2 two texture stages, coordinates from the vertex
+    //   3 one texture stage, coordinates generated from the eye-space position
     vec4  fragmentState;
-    uvec4 combiner;
-    vec4  constantColour;
+
+    // Two slots with two meanings, because the push constant block is at the
+    // 128 byte guaranteed minimum and both meanings will not fit side by side.
+    //
+    // Mode 2 reads them as the combiner network and the environment colour.
+    // Mode 3 reads them as the two rows of the texture generation matrix that
+    // matter for a 2D sample. The two are mutually exclusive in the interface:
+    // generated coordinates arrive on a single stage pass, and the combiner
+    // only means anything when a second stage is live.
+    vec4  aliasA;
+    vec4  aliasB;
+
     vec4  sceneTint;
 } push;
 
@@ -72,6 +86,20 @@ void main()
     // texture, so any coordinate gives the same result.
     fragTexCoord0 = vec2(0.0);
 #endif
+
+    // Coordinates generated from the camera-space position, which is what the
+    // cloud shadows are drawn with: the shadow texture is projected across the
+    // terrain and scrolled by the texture matrix rather than following the
+    // terrain's own coordinates. Reading the vertex set instead stamps the
+    // texture once per terrain cell, which is why the shadows were square.
+    //
+    // The two rows arrive already multiplied through the modelview, so the
+    // object position is all that is needed here.
+    if (push.fragmentState.w > 2.5)
+    {
+        vec4 position = vec4(inPosition, 1.0);
+        fragTexCoord0 = vec2(dot(push.aliasA, position), dot(push.aliasB, position));
+    }
 
 #if SCVK_TEXCOORD_SETS >= 2
     fragTexCoord1 = inTexCoord1;

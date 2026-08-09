@@ -317,6 +317,16 @@ namespace scvk
 		uint32_t activeTexStage;
 		bool     texStageEnabled[2];
 
+		// Which coordinate source each stage was last told to sample with.
+		uint32_t texCoordSource[2];
+
+		// The first stage's texture matrix, which transforms the generated
+		// coordinate. Only that stage generates, so only that one is kept.
+		float    texStageMatrix[16];
+
+		/** Recomputes and forwards the generated coordinate rows. */
+		void PushTexGen(void);
+
 		/** Applies a texture enable to the stage TexStage last selected. */
 		void SetTextureStageEnabled(bool enabled);
 
@@ -326,6 +336,9 @@ namespace scvk
 		// The last configuration reported, so an unchanged one costs a compare
 		// rather than a search of everything already seen.
 		uint32_t lastMultitexKey;
+
+		/** Reports the state of draws made under a near black ambient tint. */
+		void NoteDarkTintedDraw(uint32_t gdPrimType, int32_t count);
 
 		/** Reports the combiner in force, once per distinct multitextured draw. */
 		void NoteMultitexturedDraw(uint32_t gdVertexFormat);

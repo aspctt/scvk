@@ -37,21 +37,30 @@ layout(push_constant) uniform Push
     //    6 gequal, 7 always. Negative means the test is disabled.
     // y: reference value.
     // z: 0 for modulate, 1 for replace. Used only by the single stage path.
-    // w: how many texture stages are live, 1 or 2.
+    // w: which mode this draw is in.
+    //    1 one texture stage, coordinates from the vertex
+    //    2 two texture stages, coordinates from the vertex
+    //    3 one texture stage, coordinates generated from the eye-space position
     vec4 fragmentState;
 
-    // The combiner network, one packed word per stage per channel:
-    // x stage 0 rgb, y stage 0 alpha, z stage 1 rgb, w stage 1 alpha.
+    // Two slots with two meanings. See the vertex stage for why they share.
+    //
+    // Mode 3 reads them as texture generation rows, which only the vertex
+    // stage needs, so this stage ignores them entirely.
+    //
+    // Mode 2 reads aliasA as the combiner network, carried as raw bits, one
+    // packed word per stage per channel: x stage 0 rgb, y stage 0 alpha,
+    // z stage 1 rgb, w stage 1 alpha. Within a word:
     //
     //   bits 0..2   combine mode
     //   bits 3..4   source 0      bits 5..7    operand 0
     //   bits 8..9   source 1      bits 10..12  operand 1
     //   bits 13..14 source 2      bits 15..17  operand 2
     //   bits 18..19 output scale, 0 for x1, 1 for x2, 2 for x4
-    uvec4 combiner;
-
-    // The environment colour, which a combiner may name as a source.
-    vec4 constantColour;
+    //
+    // and aliasB as the environment colour a combiner may name as a source.
+    vec4 aliasA;
+    vec4 aliasB;
 
     // The global ambient light colour, and the diffuse material alpha in w.
     //
@@ -76,7 +85,7 @@ vec4 combinerSource(uint source, vec4 texel, vec4 previous)
 {
     if (source == 0u) { return texel; }
     if (source == 1u) { return previous; }
-    if (source == 2u) { return push.constantColour; }
+    if (source == 2u) { return push.aliasB; }
     return fragColour;
 }
 
@@ -156,7 +165,7 @@ void main()
     vec4 texel0 = texture(texSampler0, fragTexCoord0);
     vec4 result;
 
-    if (push.fragmentState.w < 1.5)
+    if (push.fragmentState.w < 1.5 || push.fragmentState.w > 2.5)
     {
         // One stage, driven by the texture environment rather than the
         // combiner network. This is the path everything but the terrain is on,
@@ -170,8 +179,9 @@ void main()
 
         // The first stage has no predecessor, so the primary colour stands in
         // as "previous", which is what the fixed function pipeline defines.
-        result = runStage(push.combiner.x, push.combiner.y, texel0, fragColour);
-        result = runStage(push.combiner.z, push.combiner.w, texel1, result);
+        uvec4 combiner = floatBitsToUint(push.aliasA);
+        result = runStage(combiner.x, combiner.y, texel0, fragColour);
+        result = runStage(combiner.z, combiner.w, texel1, result);
     }
 
     result *= push.sceneTint;

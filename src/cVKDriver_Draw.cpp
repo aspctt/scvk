@@ -63,6 +63,45 @@ namespace scvk
 		return true;
 	}
 
+	void cVKDriver::NoteDarkTintedDraw(uint32_t gdPrimType, int32_t count)
+	{
+		// The cloud shadow pass names itself by its tint.
+		//
+		// Shadows are the only thing drawn with a near black ambient colour,
+		// so this catches them wherever in the frame they happen to be, which
+		// the frame dump cannot: the shadows move every frame while the terrain
+		// under them is restored from a buffer region, so the two are almost
+		// never in the same dumped frame.
+		if (colourMultiplier[0] > 0.35f || colourMultiplier[1] > 0.35f || colourMultiplier[2] > 0.35f)
+		{
+			return;
+		}
+
+		uint32_t const key = (vertexFormat << 12)
+			^ (gdPrimType << 8)
+			^ (enabledCapabilities[kGDCapability_Blend] ? 0x80u : 0u)
+			^ (blendSrcFactor << 4)
+			^ blendDstFactor
+			^ (enabledCapabilities[kGDCapability_AlphaTest] ? 0x40000u : 0u)
+			^ (alphaFunc << 20);
+
+		if (NoteOnce(9, key))
+		{
+			LogNote("  SHADOW fmt 0x%x prim %u n=%d  tex %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.2f  "
+				"tint %.3f %.3f %.3f a %.3f  env %d  depth test %d write %d  stage1 on %d  coordsrc %u/%u",
+				vertexFormat, gdPrimType, count,
+				boundTexture, stage1Texture,
+				enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
+				enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
+				colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
+				texEnvMode[0],
+				enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,
+				texStageEnabled[1] ? 1 : 0, texCoordSource[0], texCoordSource[1]);
+
+			vulkan->LogTextureInfo(boundTexture, "shadow stage 0");
+		}
+	}
+
 	void cVKDriver::NoteMultitexturedDraw(uint32_t gdVertexFormat)
 	{
 		if (RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord) < 2)
@@ -93,6 +132,45 @@ namespace scvk
 				packedCombiner[0], packedCombiner[1],
 				packedCombiner[2], packedCombiner[3]);
 		}
+	}
+
+	void cVKDriver::PushTexGen(void)
+	{
+		// Source 16 is D3DTSS_TCI_CAMERASPACEPOSITION: the coordinate comes
+		// from the vertex position in eye space rather than from a coordinate
+		// set. The low three bits carry which set the result lands in, which
+		// does not matter while only one stage generates.
+		bool const generating = (texCoordSource[0] & ~7u) == 0x10u;
+
+		if (!generating)
+		{
+			vulkan->SetTexGen(false, nullptr, nullptr);
+			return;
+		}
+
+		// texcoord = textureMatrix * modelview * position, so the two are
+		// combined here and the shader is left with one dot product per
+		// component. Column major throughout, matching the game and GLSL:
+		// M[col * 4 + row].
+		float rowS[4];
+		float rowT[4];
+
+		for (int col = 0; col < 4; col++)
+		{
+			float s = 0.0f;
+			float t = 0.0f;
+
+			for (int k = 0; k < 4; k++)
+			{
+				s += texStageMatrix[k * 4 + 0] * modelViewMatrix[col * 4 + k];
+				t += texStageMatrix[k * 4 + 1] * modelViewMatrix[col * 4 + k];
+			}
+
+			rowS[col] = s;
+			rowT[col] = t;
+		}
+
+		vulkan->SetTexGen(true, rowS, rowT);
 	}
 
 	void cVKDriver::UpdateTransform(void)
@@ -439,6 +517,8 @@ namespace scvk
 		}
 
 		NoteMultitexturedDraw(vertexFormat);
+		NoteDarkTintedDraw(gdPrimType, count);
+		PushTexGen();
 		UpdateTransform();
 		vulkan->DrawVertices(gdPrimType, vertexFormat, vertexPointer,
 			static_cast<uint32_t>(first), static_cast<uint32_t>(count));
@@ -474,6 +554,8 @@ namespace scvk
 		}
 
 		NoteMultitexturedDraw(vertexFormat);
+		NoteDarkTintedDraw(gdPrimType, count);
+		PushTexGen();
 		UpdateTransform();
 		vulkan->DrawIndexedVertices(gdPrimType, vertexFormat, vertexPointer,
 			indices, static_cast<uint32_t>(count), indicesAre32Bit);

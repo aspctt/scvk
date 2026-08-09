@@ -274,6 +274,17 @@ namespace scvk
 	void cVKDriver::TexStageCoord(uint32_t gdTexCoordSource)
 	{
 		SCVK_CALL("%u", gdTexCoordSource);
+
+		// Which coordinate set, or generated source, feeds the active stage.
+		// Ignored so far, on the assumption that stage n samples set n. If the
+		// shadow pass asks stage 0 for the second set, that assumption is what
+		// squares off its edges.
+		texCoordSource[activeTexStage] = gdTexCoordSource;
+
+		if (NoteOnce(10, activeTexStage | (gdTexCoordSource << 8)))
+		{
+			LogNote("  TEXCOORDSRC stage %u source %u", activeTexStage, gdTexCoordSource);
+		}
 	}
 
 	void cVKDriver::TexStageMatrix(float const* matrix, uint32_t unknown0, uint32_t unknown1, uint32_t gdTexMatFlags)
@@ -281,6 +292,25 @@ namespace scvk
 		SCVK_CALL("%p, %u, %u, 0x%x", matrix, unknown0, unknown1, gdTexMatFlags);
 
 		lastTexMatrixFlags = gdTexMatFlags;
+
+		// Kept for the first stage only, since that is the one that generates
+		// coordinates. A null matrix means identity.
+		//
+		// The flag cases the OpenGL driver distinguishes all rewrite rows 2 and
+		// 3 of the matrix and leave rows 0 and 1 alone. A 2D sample uses only
+		// those first two rows, so none of that distinction reaches here.
+		if (activeTexStage == 0)
+		{
+			if (matrix != nullptr)
+			{
+				memcpy(texStageMatrix, matrix, sizeof(texStageMatrix));
+			}
+			else
+			{
+				float const identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+				memcpy(texStageMatrix, identity, sizeof(texStageMatrix));
+			}
+		}
 
 		// Logged once per distinct flag value. The game drives this over a
 		// million times a session, and a texture matrix that scales texture

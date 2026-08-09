@@ -198,6 +198,15 @@ namespace scvk
 		 */
 		void SetCombinerState(uint32_t stage, uint32_t packedRGB, uint32_t packedAlpha);
 
+		/**
+		 * Sets coordinates generated from the eye-space position.
+		 *
+		 * Takes the two rows of the texture generation matrix a 2D sample
+		 * needs, already multiplied through the modelview. Passing false turns
+		 * generation off and returns the stage to the vertex coordinates.
+		 */
+		void SetTexGen(bool active, float const* rowS, float const* rowT);
+
 		/** The global ambient tint applied to every lit draw. */
 		void SetSceneTint(float r, float g, float b, float a);
 
@@ -485,6 +494,12 @@ namespace scvk
 		uint32_t combinerState[4] = {};
 		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		float    sceneTint[4]      = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+		// Generated texture coordinates, which the cloud shadows are drawn
+		// with. The two rows share push constant space with the combiner,
+		// since a pass never needs both.
+		bool     texGenActive      = false;
+		float    texGenRows[8]     = {};
 
 		VkCommandBuffer uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence         uploadFence         = VK_NULL_HANDLE;

@@ -1888,6 +1888,17 @@ namespace scvk
 		combinerState[stage * 2 + 1] = packedAlpha;
 	}
 
+	void VulkanBackend::SetTexGen(bool active, float const* rowS, float const* rowT)
+	{
+		texGenActive = active;
+
+		if (active && rowS != nullptr && rowT != nullptr)
+		{
+			memcpy(texGenRows,     rowS, sizeof(float) * 4);
+			memcpy(texGenRows + 4, rowT, sizeof(float) * 4);
+		}
+	}
+
 	void VulkanBackend::SetSceneTint(float r, float g, float b, float a)
 	{
 		sceneTint[0] = r;
@@ -2176,7 +2187,13 @@ namespace scvk
 		// Everything else keeps the texture environment path, which is already
 		// correct and has no business being rewritten in terms of combiners.
 		bool const twoStages = texCoordSets >= 2 && currentTexture1 != 0 && stageEnabled[1];
-		fragmentState[3] = twoStages ? 2.0f : 1.0f;
+
+		// Generated coordinates take the aliased slots when the second stage is
+		// not using them. The interface keeps these apart on its own: the cloud
+		// shadow pass that generates coordinates runs on a single stage.
+		bool const generating = texGenActive && !twoStages;
+
+		fragmentState[3] = generating ? 3.0f : (twoStages ? 2.0f : 1.0f);
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
@@ -2185,16 +2202,28 @@ namespace scvk
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 			sizeof(transform), sizeof(fragmentState), fragmentState);
+		// The two aliased slots, 32 bytes, filled according to the mode.
+		VkDeviceSize const aliasOffset = sizeof(transform) + sizeof(fragmentState);
+
+		if (generating)
+		{
+			vkCmdPushConstants(commandBuffer, pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				static_cast<uint32_t>(aliasOffset), sizeof(texGenRows), texGenRows);
+		}
+		else
+		{
+			vkCmdPushConstants(commandBuffer, pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				static_cast<uint32_t>(aliasOffset), sizeof(combinerState), combinerState);
+			vkCmdPushConstants(commandBuffer, pipelineLayout,
+				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+				static_cast<uint32_t>(aliasOffset) + sizeof(combinerState),
+				sizeof(constantColour), constantColour);
+		}
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			sizeof(transform) + sizeof(fragmentState), sizeof(combinerState), combinerState);
-		vkCmdPushConstants(commandBuffer, pipelineLayout,
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			sizeof(transform) + sizeof(fragmentState) + sizeof(combinerState),
-			sizeof(constantColour), constantColour);
-		vkCmdPushConstants(commandBuffer, pipelineLayout,
-			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			sizeof(transform) + sizeof(fragmentState) + sizeof(combinerState) + sizeof(constantColour),
+			static_cast<uint32_t>(aliasOffset) + sizeof(combinerState) + sizeof(constantColour),
 			sizeof(sceneTint), sceneTint);
 
 		// Slot 0 holds the 1x1 white texture, so an unset or deleted texture
