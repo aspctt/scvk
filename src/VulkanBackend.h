@@ -193,6 +193,13 @@ namespace scvk
 		void SetTextureParameters(uint32_t magFilter, uint32_t minFilter,
 			uint32_t wrapS, uint32_t wrapT);
 
+		/**
+		 * Copies the current parameters onto a texture if it has been bound
+		 * since the last time, which is what the game's driver does when it
+		 * applies its texture stages before a draw.
+		 */
+		void RefreshTextureParameters(uint32_t handle);
+
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
 
@@ -224,7 +231,7 @@ namespace scvk
 		void SetDebugPassColours(bool enabled);
 
 		/** The global ambient tint applied to every lit draw. */
-		void SetSceneTint(float r, float g, float b, float a);
+		void SetSceneTint(float r, float g, float b, float a, bool alphaFromVertex);
 
 		/** The environment colour a combiner may name as a source. */
 		void SetConstantColour(float r, float g, float b, float a);
@@ -326,6 +333,14 @@ namespace scvk
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
+			// Filter and wrap, in the game's own numbering, the same one
+			// SetTextureParameters takes. Refreshed from the current values at
+			// the first draw after this texture is bound, which is when the
+			// game's driver pushes them onto the texture object, and kept
+			// until it is bound again.
+			uint32_t            parameters[4] = { 1, 1, 3, 3 };
+			bool                parametersStale = true;
+
 			VkImage         image      = VK_NULL_HANDLE;
 			VkDeviceMemory  memory     = VK_NULL_HANDLE;
 			VkImageView     view       = VK_NULL_HANDLE;
@@ -533,7 +548,16 @@ namespace scvk
 		uint32_t textureParameters[4] = { 1, 1, 3, 3 };
 
 		/** The set for the current parameters, created on first use. */
-		VkDescriptorSet GetSamplerSet(void);
+		/**
+		 * The sampler for one texture's own parameters.
+		 *
+		 * OpenGL keeps filter and wrap on the texture object. The game's
+		 * driver pushes the current values onto a texture when it applies the
+		 * stages for the first draw after a bind, so a texture samples with
+		 * the values current at that draw and keeps them afterwards, even if
+		 * the game sets different ones without binding again.
+		 */
+		VkDescriptorSet GetSamplerSet(uint32_t handle);
 
 		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by
 		// one instead of needing its own shader and pipeline.
@@ -553,6 +577,8 @@ namespace scvk
 		// with. The two rows share push constant space with the combiner,
 		// since a pass never needs both.
 		bool     debugPassColours  = false;
+		bool     alphaFromVertex   = true;
+		uint32_t textureEnvMode    = 1;
 		bool     colourWrite       = true;
 		bool     texGenActive      = false;
 		float    texGenRows[8]     = {};

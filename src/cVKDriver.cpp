@@ -59,6 +59,7 @@ namespace scvk
 		colourMultiplier{ 1.0f, 1.0f, 1.0f, 1.0f },
 		vertexColourAmbient(false),
 		vertexColourDiffuse(false),
+		diffuseLightFactor(0.0f),
 		vertexFormat(0),
 		vertexStride(0),
 		vertexPointer(nullptr),

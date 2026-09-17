@@ -438,8 +438,11 @@ namespace scvk
 		/** Forwards depth test, write and comparison. */
 		void PushDepthState(void);
 
-		/** Forwards the ambient tint that carries the day and night cycle. */
+		/** Forwards the tint, and logs the day and night cycle. */
 		void PushSceneTint(void);
+
+		/** Forwards the lighting weight and the alpha source. */
+		void PushLighting(void);
 
 		/** Forwards the alpha comparison, disabled when the capability is off. */
 		void PushAlphaTest(void);
@@ -500,6 +503,11 @@ namespace scvk
 		float colourMultiplier[4];
 		bool  vertexColourAmbient;
 		bool  vertexColourDiffuse;
+
+		// The diffuse light term for the current modelview. The light is
+		// directional and fixed, the geometry carries no normals, so this is
+		// one number per transform rather than per vertex.
+		float diffuseLightFactor;
 
 		uint32_t     vertexFormat;
 		uint32_t     vertexStride;

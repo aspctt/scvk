@@ -65,6 +65,13 @@ layout(location = 0) out vec4 fragColour;
 layout(location = 1) out vec2 fragTexCoord0;
 layout(location = 2) out vec2 fragTexCoord1;
 
+// The terrain is drawn in several passes over the same geometry, each on its
+// own pipeline, and each later pass depth tests against the first. OpenGL's
+// fixed function transform is invariant across such passes; a shader output
+// is only guaranteed to be when declared so. Without it a later pass can land
+// a hair behind the first and fail the test, leaving the first pass showing.
+invariant gl_Position;
+
 void main()
 {
     gl_Position = push.mvp * vec4(inPosition, 1.0);
@@ -74,10 +81,20 @@ void main()
     // requires the vertex_array_bgra extension. The attribute is declared
     // R8G8B8A8 because that format is universally supported for vertex
     // buffers, so the swizzle happens here instead.
-    fragColour = inColour.bgra;
+    vec4 vertexColour = inColour.bgra;
 #else
-    fragColour = vec4(1.0);
+    // Geometry with no colour takes the fixed function current colour, which
+    // the game never sets and which starts white.
+    vec4 vertexColour = vec4(1.0);
 #endif
+
+    // The primary colour, which is the lit colour the texture environment
+    // consumes. sceneTint.rgb is the light weight the driver collapsed the
+    // ambient and diffuse terms into; the alpha comes from the vertex when
+    // colour material maps it onto the diffuse material, and from the alpha
+    // multiplier when it does not.
+    fragColour = vec4(vertexColour.rgb * push.sceneTint.rgb,
+        (push.fragmentState.z >= 7.5) ? vertexColour.a : push.sceneTint.a);
 
 #if SCVK_TEXCOORD_SETS >= 1
     fragTexCoord0 = inTexCoord0;

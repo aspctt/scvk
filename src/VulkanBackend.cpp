@@ -898,7 +898,7 @@ namespace scvk
 	{
 		// The game's own order: 0 replace, 1 modulate, 2 decal. Anything else
 		// falls back to modulate, which is the fixed function default.
-		fragmentState[2] = (mode <= 2u) ? static_cast<float>(mode) : 1.0f;
+		textureEnvMode = (mode <= 2u) ? mode : 1u;
 	}
 
 	void VulkanBackend::SetColourWrite(bool enabled)
@@ -1283,7 +1283,6 @@ namespace scvk
 		// the last draw and the transition for presenting, so it sees exactly
 		// what the user sees.
 		bool capturingThisFrame = false;
-
 		if (captureRequested)
 		{
 			VkDeviceSize const needed =
@@ -1624,12 +1623,32 @@ namespace scvk
 		textureParameters[3] = wrapT;
 	}
 
-	VkDescriptorSet VulkanBackend::GetSamplerSet(void)
+	void VulkanBackend::RefreshTextureParameters(uint32_t handle)
 	{
-		uint32_t const key = (textureParameters[0] & 0xff)
-			| ((textureParameters[1] & 0xff) << 8)
-			| ((textureParameters[2] & 0xff) << 16)
-			| ((textureParameters[3] & 0xff) << 24);
+		if (handle == 0 || handle >= textures.size() || !textures[handle].live ||
+			!textures[handle].parametersStale)
+		{
+			return;
+		}
+
+		for (int i = 0; i < 4; i++)
+		{
+			textures[handle].parameters[i] = textureParameters[i];
+		}
+
+		textures[handle].parametersStale = false;
+	}
+
+	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t handle)
+	{
+		uint32_t const* const parameters = (handle < textures.size() && textures[handle].live)
+			? textures[handle].parameters
+			: textureParameters;
+
+		uint32_t const key = (parameters[0] & 0xff)
+			| ((parameters[1] & 0xff) << 8)
+			| ((parameters[2] & 0xff) << 16)
+			| ((parameters[3] & 0xff) << 24);
 
 		for (SamplerEntry const& entry : samplers)
 		{
@@ -1668,15 +1687,15 @@ namespace scvk
 		// Only values 4 to 7 select a mipmapped minification filter. The
 		// unmipmapped ones must not reach past the base level, which also keeps
 		// a texture whose upper levels were never uploaded from being sampled.
-		bool const mipmapped = textureParameters[1] >= 4;
+		bool const mipmapped = parameters[1] >= 4;
 
 		VkSamplerCreateInfo info{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-		info.magFilter    = mapFilter(textureParameters[0]);
-		info.minFilter    = mapFilter(textureParameters[1]);
-		info.mipmapMode   = (textureParameters[1] == 6 || textureParameters[1] == 7)
+		info.magFilter    = mapFilter(parameters[0]);
+		info.minFilter    = mapFilter(parameters[1]);
+		info.mipmapMode   = (parameters[1] == 6 || parameters[1] == 7)
 			? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-		info.addressModeU = mapAddress(textureParameters[2]);
-		info.addressModeV = mapAddress(textureParameters[3]);
+		info.addressModeU = mapAddress(parameters[2]);
+		info.addressModeV = mapAddress(parameters[3]);
 		info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		info.borderColor  = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
 		info.maxLod       = mipmapped ? VK_LOD_CLAMP_NONE : 0.25f;
@@ -2087,6 +2106,13 @@ namespace scvk
 	void VulkanBackend::SetTexture(uint32_t handle)
 	{
 		currentTexture = (handle < textures.size() && textures[handle].live) ? handle : 0;
+
+		// The bind only marks the texture as needing the parameters. They are
+		// read at the next draw, which is when the game's driver applies them.
+		if (currentTexture != 0 && currentTexture < textures.size())
+		{
+			textures[currentTexture].parametersStale = true;
+		}
 	}
 
 	void VulkanBackend::LogTextureInfo(uint32_t handle, char const* why)
@@ -2107,6 +2133,11 @@ namespace scvk
 	void VulkanBackend::SetTexture1(uint32_t handle)
 	{
 		currentTexture1 = (handle < textures.size() && textures[handle].live) ? handle : 0;
+
+		if (currentTexture1 != 0 && currentTexture1 < textures.size())
+		{
+			textures[currentTexture1].parametersStale = true;
+		}
 	}
 
 	void VulkanBackend::SetTextureStageEnabled(uint32_t stage, bool enabled)
@@ -2145,12 +2176,14 @@ namespace scvk
 		LogNote("Vulkan: pass identification colours are %s.", enabled ? "on" : "off");
 	}
 
-	void VulkanBackend::SetSceneTint(float r, float g, float b, float a)
+	void VulkanBackend::SetSceneTint(float r, float g, float b, float a, bool alphaFromVertexColour)
 	{
 		sceneTint[0] = r;
 		sceneTint[1] = g;
 		sceneTint[2] = b;
 		sceneTint[3] = a;
+
+		alphaFromVertex = alphaFromVertexColour;
 	}
 
 	void VulkanBackend::SetConstantColour(float r, float g, float b, float a)
@@ -2479,6 +2512,32 @@ namespace scvk
 
 		fragmentState[3] = generating ? 3.0f : (twoStages ? 2.0f : 1.0f);
 
+		// A stage with texturing off passes the primary colour through
+		// untouched, whatever its environment mode or combiner says. The white
+		// texture bound in its place does that under modulate, so the stage is
+		// pushed as modulate rather than as the game left it: replace or decal
+		// would otherwise turn it white, and a combiner could turn it anything.
+		// Copies, because the game's own settings must survive for the next
+		// draw that has the stage on.
+		float    drawFragmentState[4];
+		uint32_t drawCombinerState[4];
+		memcpy(drawFragmentState, fragmentState, sizeof(drawFragmentState));
+		memcpy(drawCombinerState, combinerState, sizeof(drawCombinerState));
+
+		// The environment mode, with the alpha source in a higher digit: the
+		// push constant block is full at the guaranteed 128 bytes and both are
+		// small enough to share one slot.
+		drawFragmentState[2] = static_cast<float>(textureEnvMode) + (alphaFromVertex ? 8.0f : 0.0f);
+
+		if (!stageEnabled[0])
+		{
+			constexpr uint32_t kModulateWithPrevious = 1u | (0u << 3) | (1u << 8);
+
+			drawFragmentState[2] = 1.0f + (alphaFromVertex ? 8.0f : 0.0f);
+			drawCombinerState[0] = kModulateWithPrevious;
+			drawCombinerState[1] = kModulateWithPrevious;
+		}
+
 		// Pass identification, opt in. Replaces the draw's colour with a flat
 		// one chosen by its blend configuration, so a capture says directly
 		// which pass owns a given region of the picture.
@@ -2495,7 +2554,7 @@ namespace scvk
 				pass = (blendSrc == 4 && blendDst == 1) ? 2 : ((blendSrc == 4 && blendDst == 5) ? 3 : 5);
 			}
 
-			fragmentState[3] = 10.0f + static_cast<float>(pass);
+			drawFragmentState[3] = 10.0f + static_cast<float>(pass);
 		}
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -2504,7 +2563,7 @@ namespace scvk
 			0, sizeof(transform), transform);
 		vkCmdPushConstants(commandBuffer, pipelineLayout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			sizeof(transform), sizeof(fragmentState), fragmentState);
+			sizeof(transform), sizeof(drawFragmentState), drawFragmentState);
 		// The two aliased slots, 32 bytes, filled according to the mode.
 		VkDeviceSize const aliasOffset = sizeof(transform) + sizeof(fragmentState);
 
@@ -2518,7 +2577,7 @@ namespace scvk
 		{
 			vkCmdPushConstants(commandBuffer, pipelineLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-				static_cast<uint32_t>(aliasOffset), sizeof(combinerState), combinerState);
+				static_cast<uint32_t>(aliasOffset), sizeof(drawCombinerState), drawCombinerState);
 			vkCmdPushConstants(commandBuffer, pipelineLayout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
 				static_cast<uint32_t>(aliasOffset) + sizeof(combinerState),
@@ -2545,7 +2604,20 @@ namespace scvk
 		uint32_t const bound1 = (twoStages && currentTexture1 < textures.size() && textures[currentTexture1].live)
 			? currentTexture1 : 0;
 
-		VkDescriptorSet const sets[] = { textures[bound].descriptor, textures[bound1].descriptor, GetSamplerSet() };
+		// Only a stage that is on gets its parameters applied, as in the
+		// game's own driver, and only the first draw after a bind reads them.
+		if (stageEnabled[0]) { RefreshTextureParameters(bound); }
+		if (twoStages)       { RefreshTextureParameters(bound1); }
+
+		// One sampler serves both stages, taken from the first stage's texture.
+		// The two stages only ever run together on the terrain, which uses the
+		// same parameters for both.
+		VkDescriptorSet const sets[] =
+		{
+			textures[bound].descriptor,
+			textures[bound1].descriptor,
+			GetSamplerSet(bound),
+		};
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
 			0, _countof(sets), sets, 0, nullptr);

@@ -101,6 +101,10 @@ namespace scvk
 			constexpr uint32_t kFromTexture  = 0u << 3;
 			constexpr uint32_t kFromPrevious = 1u << 8;
 
+			// Replace reads argument 0, so passing the previous value through
+			// needs it there rather than in argument 1.
+			constexpr uint32_t kPreviousAsArg0 = 1u << 3;
+
 			switch (envMode)
 			{
 			case kGDTextureEnvParam_Replace:
@@ -112,7 +116,7 @@ namespace scvk
 				// alpha passes through untouched.
 				if (alphaChannel)
 				{
-					return 0u | kFromPrevious;
+					return 0u | kPreviousAsArg0;
 				}
 
 				return 4u

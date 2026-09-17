@@ -228,21 +228,42 @@ namespace scvk
 		PushSceneTint();
 	}
 
+	void cVKDriver::PushLighting(void)
+	{
+		// The whole of the game's lighting, as its OpenGL driver sets it up:
+		// lighting on, one directional light 45 degrees above the x and y axes
+		// with a white diffuse and no ambient, a black ambient material, and
+		// colour material mapping the vertex colour onto the ambient term, the
+		// diffuse term, both or neither.
+		//
+		// The fixed function equation then reduces to two scales of the vertex
+		// colour, because every material the vertex colour does not replace is
+		// black:
+		//
+		//   rgb   = ambient light * vertex colour, when ambient is mapped
+		//         + N.L          * vertex colour, when diffuse is mapped
+		//   alpha = the diffuse material's alpha, which is the vertex alpha
+		//           when diffuse is mapped and the alpha multiplier otherwise
+		//
+		// Both scales are per draw, so they collapse into one weight for the
+		// vertex stage to multiply the colour by.
+		float weight[3];
+		for (int i = 0; i < 3; i++)
+		{
+			weight[i] = (vertexColourAmbient ? colourMultiplier[i] : 0.0f)
+				+ (vertexColourDiffuse ? diffuseLightFactor : 0.0f);
+		}
+
+		vulkan->SetSceneTint(weight[0], weight[1], weight[2],
+			colourMultiplier[3], vertexColourDiffuse);
+	}
+
 	void cVKDriver::PushSceneTint(void)
 	{
 		float const rgb   = vertexColourAmbient ? 1.0f : 0.0f;
 		float const alpha = vertexColourDiffuse ? 1.0f : 0.0f;
 
-		// The alpha multiplier is the fade, and it is not gated the way the
-		// colour is. It sits at 1 for everything opaque and ramps only while
-		// clouds and their shadows fade in and out, so gating it on the vertex
-		// colour state substituted 1 for the ramp and made both appear and
-		// vanish abruptly.
-		vulkan->SetSceneTint(
-			vertexColourAmbient ? colourMultiplier[0] : 1.0f,
-			vertexColourAmbient ? colourMultiplier[1] : 1.0f,
-			vertexColourAmbient ? colourMultiplier[2] : 1.0f,
-			colourMultiplier[3]);
+		PushLighting();
 
 		// Quantised, so the day and night cycle reports as a handful of steps
 		// rather than once per frame, and a constant value reports once.

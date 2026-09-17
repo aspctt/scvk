@@ -366,6 +366,51 @@ namespace scvk
 		}
 
 		vulkan->SetTransform(mvp);
+
+		// The light is directional, so its contribution depends only on the
+		// normal, and the game supplies none: the default normal is (0,0,1) in
+		// object space, which reaches eye space through the inverse transpose
+		// of the modelview. That makes the whole diffuse term one number per
+		// transform, computed here rather than per vertex.
+		//
+		// Left unnormalised, as the fixed function pipeline leaves it with
+		// GL_NORMALIZE off, so a scale in the modelview scales the light.
+		float const* const m = modelViewMatrix;
+
+		// The third row of the inverse is the third column of cofactors over
+		// the determinant. The light has no z component, so the cofactor that
+		// would feed it is not computed.
+		float const c0 = m[1 * 4 + 0] * m[2 * 4 + 1] - m[2 * 4 + 0] * m[1 * 4 + 1];
+		float const c1 = m[2 * 4 + 0] * m[0 * 4 + 1] - m[0 * 4 + 0] * m[2 * 4 + 1];
+
+		float const determinant =
+			  m[0 * 4 + 0] * (m[1 * 4 + 1] * m[2 * 4 + 2] - m[2 * 4 + 1] * m[1 * 4 + 2])
+			- m[1 * 4 + 0] * (m[0 * 4 + 1] * m[2 * 4 + 2] - m[2 * 4 + 1] * m[0 * 4 + 2])
+			+ m[2 * 4 + 0] * (m[0 * 4 + 1] * m[1 * 4 + 2] - m[1 * 4 + 1] * m[0 * 4 + 2]);
+
+		float factor = 0.0f;
+
+		if (determinant > 1e-12f || determinant < -1e-12f)
+		{
+			// The light sits at (1,1,0) with w zero, which the fixed function
+			// pipeline reads as a direction and normalises.
+			constexpr float kLightX = 0.70710678f;
+			constexpr float kLightY = 0.70710678f;
+
+			float const inverse = 1.0f / determinant;
+			factor = (c0 * inverse) * kLightX + (c1 * inverse) * kLightY;
+
+			if (factor < 0.0f)
+			{
+				factor = 0.0f;
+			}
+		}
+
+		if (factor != diffuseLightFactor)
+		{
+			diffuseLightFactor = factor;
+			PushLighting();
+		}
 	}
 
 	void cVKDriver::DrawArrays(uint32_t gdPrimType, int32_t first, int32_t count)

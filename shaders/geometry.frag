@@ -37,11 +37,14 @@ layout(push_constant) uniform Push
     //    6 gequal, 7 always. Negative means the test is disabled.
     // y: reference value.
     // z: texture environment mode in the game's own order, 0 replace,
-    //    1 modulate, 2 decal. Used only by the single stage path.
+    //    1 modulate, 2 decal, plus 8 when the primary colour's alpha comes
+    //    from the vertex rather than from the alpha multiplier. The vertex
+    //    stage reads that flag; this one reads the mode.
     // w: which mode this draw is in.
     //    1 one texture stage, coordinates from the vertex
     //    2 two texture stages, coordinates from the vertex
     //    3 one texture stage, coordinates generated from the eye-space position
+    //    10 and up: a diagnostic, see passColour
     vec4 fragmentState;
 
     // Two slots with two meanings. See the vertex stage for why they share.
@@ -63,12 +66,12 @@ layout(push_constant) uniform Push
     vec4 aliasA;
     vec4 aliasB;
 
-    // The global ambient light colour, and the diffuse material alpha in w.
+    // The light weight the ambient and diffuse terms collapsed into, and the
+    // diffuse material's alpha in w. Both are consumed by the vertex stage,
+    // which builds the primary colour from them, so this stage ignores them.
     //
-    // This is the whole of SimCity 4's lighting. It never configures a light
-    // source, so there is no diffuse term and the fixed function equation
-    // collapses to the ambient light times the ambient material, which colour
-    // material takes from the vertex colour. It is what carries day and night.
+    // This is the whole of SimCity 4's lighting: one fixed directional light
+    // and an ambient colour that carries day and night.
     vec4 sceneTint;
 } push;
 
@@ -189,6 +192,7 @@ void main()
     }
 
     vec4 texel0 = texture(sampler2D(texImage0, texSampler), fragTexCoord0);
+
     vec4 result;
 
     if (push.fragmentState.w < 1.5 || push.fragmentState.w > 2.5)
@@ -197,11 +201,14 @@ void main()
         // combiner network. This is the path everything but the terrain is on.
         // The game's own order, which is not the obvious one: replace comes
         // first, then modulate, then decal.
-        if (push.fragmentState.z < 0.5)
+        float mode = push.fragmentState.z;
+        if (mode >= 7.5) { mode -= 8.0; }
+
+        if (mode < 0.5)
         {
             result = texel0;                                    // replace
         }
-        else if (push.fragmentState.z < 1.5)
+        else if (mode < 1.5)
         {
             result = texel0 * fragColour;                       // modulate
         }
@@ -223,7 +230,6 @@ void main()
         result = runStage(combiner.z, combiner.w, texel1, result);
     }
 
-    result *= push.sceneTint;
     result = clamp(result, 0.0, 1.0);
 
     int  comparison = int(push.fragmentState.x);
