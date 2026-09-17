@@ -334,7 +334,7 @@ namespace scvk
 		// both questions about state rather than geometry, and the rectangle
 		// alone cannot tell them apart.
 		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
-			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  stage1 %d texmat 0x%x",
+			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x",
 			dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
 			boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
 			viewportX, viewportY, viewportWidth, viewportHeight,
@@ -342,6 +342,7 @@ namespace scvk
 			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
 			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
 			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,
+			texEnvMode[0],
 			texStageEnabled[1] ? 1 : 0, lastTexMatrixFlags);
 	}
 

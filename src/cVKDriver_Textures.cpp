@@ -94,7 +94,7 @@ namespace scvk
 		 * Translating the mode into the same encoding keeps one path in the
 		 * shader rather than two.
 		 */
-		uint32_t SynthesiseEnvCombiner(int32_t envMode)
+		uint32_t SynthesiseEnvCombiner(int32_t envMode, bool alphaChannel)
 		{
 			// Source 0 is the texture and source 1 is what the previous stage
 			// produced, which for the first stage is the primary colour.
@@ -106,10 +106,23 @@ namespace scvk
 			case kGDTextureEnvParam_Replace:
 				return 0u | kFromTexture;
 
-			// Decal and Blend need the environment colour and an interpolation
-			// against the texture alpha. Neither has been seen from the game,
-			// and guessing at them would repeat the mistake above, so they fall
-			// through to the default rather than being invented.
+			case kGDTextureEnvParam_Decal:
+				// Colour is interpolated between what came before and the
+				// texture, using the texture's own alpha as the weight, and the
+				// alpha passes through untouched.
+				if (alphaChannel)
+				{
+					return 0u | kFromPrevious;
+				}
+
+				return 4u
+					| kFromTexture                  // arg0, the texture colour
+					| kFromPrevious                 // arg1, what came before
+					| (0u << 13) | (2u << 15);      // arg2, the texture alpha
+
+			// Blend needs the environment colour, which the game has not been
+			// seen setting, so it stays on the default rather than being
+			// invented.
 			case kGDTextureEnvParam_Modulate:
 			default:
 				return 1u | kFromTexture | kFromPrevious;
@@ -145,14 +158,20 @@ namespace scvk
 		}
 
 		// Parameter type 0 is the mode, whose values start Replace, Modulate.
-		if (gdTextureEnvParamType == kGDTextureEnvParamType_Mode && gdTextureEnvTarget < 2)
+		//
+		// The target is not a stage index. It is the equivalent of OpenGL's
+		// GL_TEXTURE_ENV and is always zero; the stage is whichever one TexStage
+		// last selected. Indexing by the target instead put every mode on stage
+		// 0, including the ones meant for stage 1, which turned the whole city
+		// white once decal was implemented.
+		if (gdTextureEnvParamType == kGDTextureEnvParamType_Mode)
 		{
-			texEnvMode[gdTextureEnvTarget] = gdTextureEnvModeParam;
+			texEnvMode[activeTexStage] = gdTextureEnvModeParam;
 			PushCombinerState();
 
-			if (gdTextureEnvTarget == 0)
+			if (activeTexStage == 0)
 			{
-				vulkan->SetTextureReplace(gdTextureEnvModeParam == kGDTextureEnvParam_Replace);
+				vulkan->SetTextureEnvMode(static_cast<uint32_t>(gdTextureEnvModeParam));
 			}
 		}
 	}
@@ -166,10 +185,10 @@ namespace scvk
 
 			uint32_t const rgb = combining
 				? rawCombiner[stage * 2 + 0]
-				: SynthesiseEnvCombiner(texEnvMode[stage]);
+				: SynthesiseEnvCombiner(texEnvMode[stage], false);
 			uint32_t const alpha = combining
 				? rawCombiner[stage * 2 + 1]
-				: SynthesiseEnvCombiner(texEnvMode[stage]);
+				: SynthesiseEnvCombiner(texEnvMode[stage], true);
 
 			packedCombiner[stage * 2 + 0] = rgb;
 			packedCombiner[stage * 2 + 1] = alpha;

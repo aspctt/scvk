@@ -124,8 +124,8 @@ namespace scvk
 		 */
 		void SetAlphaTest(int comparison, float reference);
 
-		/** Selects the texture environment: false modulate, true replace. */
-		void SetTextureReplace(bool replace);
+		/** Selects the texture environment: 0 replace, 1 modulate, 2 decal. */
+		void SetTextureEnvMode(uint32_t mode);
 
 		/** Sets depth testing, writing and the comparison, all pipeline state. */
 		void SetDepthState(bool test, bool write, uint32_t comparison);

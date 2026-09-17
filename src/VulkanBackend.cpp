@@ -894,9 +894,11 @@ namespace scvk
 		fragmentState[1] = reference;
 	}
 
-	void VulkanBackend::SetTextureReplace(bool replace)
+	void VulkanBackend::SetTextureEnvMode(uint32_t mode)
 	{
-		fragmentState[2] = replace ? 1.0f : 0.0f;
+		// The game's own order: 0 replace, 1 modulate, 2 decal. Anything else
+		// falls back to modulate, which is the fixed function default.
+		fragmentState[2] = (mode <= 2u) ? static_cast<float>(mode) : 1.0f;
 	}
 
 	void VulkanBackend::ApplyViewport(void)

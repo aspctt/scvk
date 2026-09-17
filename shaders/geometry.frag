@@ -36,7 +36,8 @@ layout(push_constant) uniform Push
     //    0 never, 1 less, 2 equal, 3 lequal, 4 greater, 5 notequal,
     //    6 gequal, 7 always. Negative means the test is disabled.
     // y: reference value.
-    // z: 0 for modulate, 1 for replace. Used only by the single stage path.
+    // z: texture environment mode in the game's own order, 0 replace,
+    //    1 modulate, 2 decal. Used only by the single stage path.
     // w: which mode this draw is in.
     //    1 one texture stage, coordinates from the vertex
     //    2 two texture stages, coordinates from the vertex
@@ -193,10 +194,23 @@ void main()
     if (push.fragmentState.w < 1.5 || push.fragmentState.w > 2.5)
     {
         // One stage, driven by the texture environment rather than the
-        // combiner network. This is the path everything but the terrain is on,
-        // and it is left exactly as it was: replace takes the texture alone,
-        // modulate scales it by the vertex colour.
-        result = mix(texel0 * fragColour, texel0, push.fragmentState.z);
+        // combiner network. This is the path everything but the terrain is on.
+        // The game's own order, which is not the obvious one: replace comes
+        // first, then modulate, then decal.
+        if (push.fragmentState.z < 0.5)
+        {
+            result = texel0;                                    // replace
+        }
+        else if (push.fragmentState.z < 1.5)
+        {
+            result = texel0 * fragColour;                       // modulate
+        }
+        else
+        {
+            // Decal: the texture's own alpha weighs it against what came
+            // before, and the alpha passes through untouched.
+            result = vec4(mix(fragColour.rgb, texel0.rgb, texel0.a), fragColour.a);
+        }
     }
     else
     {
