@@ -40,6 +40,8 @@
 
 #include <VertexFormatUtils.h>
 
+#include <cstring>
+
 namespace scvk
 {
 	bool cVKDriver::NoteOnce(uint32_t bucket, uint32_t key)
@@ -194,10 +196,23 @@ namespace scvk
 			return;
 		}
 
+		// A partial update is the interesting case now, and it is recognised by
+		// drawing under a sub-viewport in a frame that already restored the
+		// whole scene. Waiting for one costs nothing: the dump stays armed.
+		bool const partialUpdate = regionFrameRestored &&
+			(viewportX != 0 || viewportY != 0 ||
+			 viewportWidth != windowWidth || viewportHeight != windowHeight);
+
+		if (!partialUpdate)
+		{
+			return;
+		}
+
 		dumpArmed   = false;
 		dumpFrame   = true;
 		dumpedDraws = 0;
-		LogNote("=== dumping the terrain pass of frame %u ===", frameCounter);
+		LogNote("=== dumping the partial update of frame %u, sub-viewport %d,%d %dx%d ===",
+			frameCounter, viewportX, viewportY, viewportWidth, viewportHeight);
 	}
 
 	void cVKDriver::DumpDraw(uint32_t gdPrimType, int32_t count, int32_t first,
@@ -329,16 +344,34 @@ namespace scvk
 			}
 		}
 
+		// The vertex colour of the first sampled vertex, which is the primary
+		// colour the texture environment starts from. A draw that comes out
+		// black has either a black input or a state that discards the input,
+		// and the two are told apart here.
+		uint32_t colourBytes = 0xffffffffu;
+
+		if (RZVertexFormatNumElements(vertexFormat, kGDElementType_Color) != 0)
+		{
+			uint32_t const offset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_Color, 0);
+			memcpy(&colourBytes, vertexAt(0) + offset, sizeof(colourBytes));
+		}
+
 		// Blend, alpha test and the second stage are all reported, because a
 		// draw that comes out a flat block and a draw that comes out black are
 		// both questions about state rather than geometry, and the rectangle
 		// alone cannot tell them apart.
 		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
-			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x",
+			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  weight %.2f %.2f %.2f a%.2f (vc %d%d)  "
+			"blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x",
 			dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
 			boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
 			viewportX, viewportY, viewportWidth, viewportHeight,
 			uMin, uMax, vMin, vMax,
+			(colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu,
+			(vertexColourAmbient ? colourMultiplier[0] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
+			(vertexColourAmbient ? colourMultiplier[1] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
+			(vertexColourAmbient ? colourMultiplier[2] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
+			colourMultiplier[3], vertexColourAmbient ? 1 : 0, vertexColourDiffuse ? 1 : 0,
 			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
 			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
 			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,

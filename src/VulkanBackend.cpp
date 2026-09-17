@@ -1197,6 +1197,17 @@ namespace scvk
 		capturePath      = path;
 	}
 
+	void VulkanBackend::RequestRegionCapture(char const* path)
+	{
+		if (dead || path == nullptr)
+		{
+			return;
+		}
+
+		regionCaptureRequested = true;
+		regionCapturePath      = path;
+	}
+
 	namespace
 	{
 		/**
@@ -1283,6 +1294,63 @@ namespace scvk
 		// the last draw and the transition for presenting, so it sees exactly
 		// what the user sees.
 		bool capturingThisFrame = false;
+		bool capturingRegion    = false;
+		uint32_t regionWidth    = 0;
+		uint32_t regionHeight   = 0;
+
+		if (regionCaptureRequested && !captureRequested)
+		{
+			regionCaptureRequested = false;
+
+			// The first live colour region, which is the one the game keeps
+			// the scene in. A region that has never been written holds
+			// nothing worth reading.
+			for (BufferRegion const& region : bufferRegions)
+			{
+				if (!region.live || region.depth || !region.written)
+				{
+					continue;
+				}
+
+				VkDeviceSize const needed =
+					static_cast<VkDeviceSize>(region.width) * region.height * 4u;
+
+				if (readbackSize < needed)
+				{
+					if (readbackMapped != nullptr) { vkUnmapMemory(device, readbackMemory); readbackMapped = nullptr; }
+					if (readbackMemory != VK_NULL_HANDLE) { vkFreeMemory(device, readbackMemory, nullptr); readbackMemory = VK_NULL_HANDLE; }
+					if (readbackBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, readbackBuffer, nullptr); readbackBuffer = VK_NULL_HANDLE; }
+
+					if (CreateHostBuffer(needed, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+							readbackBuffer, readbackMemory, readbackMapped))
+					{
+						readbackSize = needed;
+					}
+				}
+
+				if (readbackSize < needed)
+				{
+					break;
+				}
+
+				VkBufferImageCopy copy{};
+				copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				copy.imageSubresource.layerCount = 1;
+				copy.imageExtent = { region.width, region.height, 1 };
+
+				// Saved regions are left in the transfer source layout, ready
+				// to be restored, which is also what a read needs.
+				vkCmdCopyImageToBuffer(commandBuffer, region.image,
+					VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+
+				capturingThisFrame = true;
+				capturingRegion    = true;
+				regionWidth        = region.width;
+				regionHeight       = region.height;
+				break;
+			}
+		}
+
 		if (captureRequested)
 		{
 			VkDeviceSize const needed =
@@ -1361,9 +1429,28 @@ namespace scvk
 			// GPU is still writing.
 			vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX);
 
+			if (capturingRegion)
+			{
+				if (WriteBmp(regionCapturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
+						regionWidth, regionHeight, regionWidth * 4u))
+				{
+					LogNote("Vulkan: wrote the saved region to %s (%ux%u)",
+						regionCapturePath.c_str(), regionWidth, regionHeight);
+				}
+				else
+				{
+					LogNote("Vulkan: could not write the region capture to %s", regionCapturePath.c_str());
+				}
+			}
+
 			uint32_t const rowPitch = swapchainExtent.width * 4u;
 
-			if (WriteBmp(capturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
+			if (capturingRegion)
+			{
+				// One readback buffer, so a region capture and a frame capture
+				// never share a frame.
+			}
+			else if (WriteBmp(capturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
 					swapchainExtent.width, swapchainExtent.height, rowPitch))
 			{
 				LogNote("Vulkan: captured frame %llu to %s (%ux%u)",
@@ -2170,6 +2257,11 @@ namespace scvk
 		}
 	}
 
+	void VulkanBackend::SetDebugChannel(int channel)
+	{
+		debugChannel = channel;
+	}
+
 	void VulkanBackend::SetDebugPassColours(bool enabled)
 	{
 		debugPassColours = enabled;
@@ -2555,6 +2647,11 @@ namespace scvk
 			}
 
 			drawFragmentState[3] = 10.0f + static_cast<float>(pass);
+		}
+
+		if (debugChannel >= 0)
+		{
+			drawFragmentState[3] = 20.0f + static_cast<float>(debugChannel);
 		}
 
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

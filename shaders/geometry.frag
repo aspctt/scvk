@@ -44,7 +44,7 @@ layout(push_constant) uniform Push
     //    1 one texture stage, coordinates from the vertex
     //    2 two texture stages, coordinates from the vertex
     //    3 one texture stage, coordinates generated from the eye-space position
-    //    10 and up: a diagnostic, see passColour
+    //    10 and up: a diagnostic, see passColour and the channel modes below
     vec4 fragmentState;
 
     // Two slots with two meanings. See the vertex stage for why they share.
@@ -185,13 +185,28 @@ void main()
 {
     // Pass identification overrides everything, including the alpha test, so
     // that a pass cannot hide by discarding.
-    if (push.fragmentState.w > 9.5)
+    if (push.fragmentState.w > 9.5 && push.fragmentState.w < 19.5)
     {
         outColour = vec4(passColour(int(push.fragmentState.w) - 10), 1.0);
         return;
     }
 
     vec4 texel0 = texture(sampler2D(texImage0, texSampler), fragTexCoord0);
+
+    // One input channel on its own, so a capture says which input carries a
+    // wrong value. Opaque, so that an alpha blended pass overwrites rather
+    // than mixing, and ahead of the alpha test so nothing can hide.
+    if (push.fragmentState.w > 19.5)
+    {
+        int channel = int(push.fragmentState.w) - 20;
+
+        if      (channel == 0) { outColour = vec4(texel0.rgb, 1.0); }
+        else if (channel == 1) { outColour = vec4(vec3(texel0.a), 1.0); }
+        else if (channel == 2) { outColour = vec4(fragColour.rgb, 1.0); }
+        else                   { outColour = vec4(vec3(fragColour.a), 1.0); }
+
+        return;
+    }
 
     vec4 result;
 

@@ -69,24 +69,48 @@ namespace scvk
 		driverInfo.append("UnknownCardVersion\n");
 		driverInfo.append(vulkan->DeviceName()).append("\n");
 
-		// Pass identification, enabled by dropping a marker file next to the
-		// driver. A diagnostic that replaces every colour on screen has no
-		// business being reachable by accident, and this keeps it out of the
-		// build rather than behind a constant somebody forgets to flip back.
+		// Diagnostics that replace every colour on screen, each enabled by
+		// dropping a marker file next to the driver. Keeping them out of the
+		// build beats a constant somebody forgets to flip back.
+		//
+		// scvk-debug-passes names each pass by its blend configuration.
+		// The channel markers show one shader input on its own, which says
+		// whether a wrong colour arrived or was computed.
 		{
-			char marker[MAX_PATH];
-			if (LogDirectory(marker, sizeof(marker)))
+			auto const marked = [](char const* name) -> bool
 			{
-				char const* const name = "scvk-debug-passes";
+				char path[MAX_PATH];
 
-				if (strlen(marker) + strlen(name) < sizeof(marker))
+				if (!LogDirectory(path, sizeof(path)) ||
+					strlen(path) + strlen(name) >= sizeof(path))
 				{
-					strcat_s(marker, sizeof(marker), name);
+					return false;
+				}
 
-					if (GetFileAttributesA(marker) != INVALID_FILE_ATTRIBUTES)
-					{
-						vulkan->SetDebugPassColours(true);
-					}
+				strcat_s(path, sizeof(path), name);
+				return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+			};
+
+			if (marked("scvk-debug-passes"))
+			{
+				vulkan->SetDebugPassColours(true);
+			}
+
+			char const* const channelMarkers[] =
+			{
+				"scvk-debug-texture-colour",
+				"scvk-debug-texture-alpha",
+				"scvk-debug-vertex-colour",
+				"scvk-debug-vertex-alpha",
+			};
+
+			for (int i = 0; i < _countof(channelMarkers); i++)
+			{
+				if (marked(channelMarkers[i]))
+				{
+					LogNote("Diagnostic: drawing %s only.", channelMarkers[i] + 12);
+					vulkan->SetDebugChannel(i);
+					break;
 				}
 			}
 		}
@@ -451,6 +475,24 @@ namespace scvk
 				{
 					strcat_s(path, sizeof(path), name);
 					vulkan->RequestCapture(path);
+				}
+			}
+		}
+
+		// The saved scene, halfway between the frame captures, so a patch that
+		// is baked into it can be told from one drawn over it each frame.
+		if (frameCounter % 2000u == 1000u && frameDumpsRemaining > 0)
+		{
+			char path[MAX_PATH];
+			if (LogDirectory(path, sizeof(path)))
+			{
+				char name[64];
+				sprintf_s(name, sizeof(name), "scvk-region-%u.bmp", frameCounter);
+
+				if (strlen(path) + strlen(name) < sizeof(path))
+				{
+					strcat_s(path, sizeof(path), name);
+					vulkan->RequestRegionCapture(path);
 				}
 			}
 		}

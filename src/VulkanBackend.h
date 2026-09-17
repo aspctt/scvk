@@ -150,6 +150,14 @@ namespace scvk
 		void RequestCapture(char const* path);
 
 		/**
+		 * Writes the saved colour buffer region to a file after the next
+		 * present. That is the copy of the scene the game restores every
+		 * frame, so it answers whether something wrong was saved into it or
+		 * only drawn over it afterwards.
+		 */
+		void RequestRegionCapture(char const* path);
+
+		/**
 		 * Draws from client memory.
 		 *
 		 * The interface hands over a plain pointer and a stride, so the data
@@ -229,6 +237,13 @@ namespace scvk
 
 		/** Replaces draw colours with a flat colour per blend configuration. */
 		void SetDebugPassColours(bool enabled);
+
+		/**
+		 * Replaces every draw's colour with one of its inputs: 0 the texture
+		 * colour, 1 the texture alpha, 2 the vertex colour, 3 the vertex
+		 * alpha. Negative leaves the picture alone.
+		 */
+		void SetDebugChannel(int channel);
 
 		/** The global ambient tint applied to every lit draw. */
 		void SetSceneTint(float r, float g, float b, float a, bool alphaFromVertex);
@@ -579,6 +594,7 @@ namespace scvk
 		bool     debugPassColours  = false;
 		bool     alphaFromVertex   = true;
 		uint32_t textureEnvMode    = 1;
+		int      debugChannel      = -1;
 		bool     colourWrite       = true;
 		bool     texGenActive      = false;
 		float    texGenRows[8]     = {};
@@ -664,6 +680,8 @@ namespace scvk
 		VkDeviceSize   readbackSize   = 0;
 		int            textureDumpsRemaining = 8;
 		bool           captureRequested = false;
+		bool           regionCaptureRequested = false;
+		std::string    regionCapturePath;
 		std::string    capturePath;
 
 		std::string deviceName;
