@@ -1810,43 +1810,81 @@ namespace scvk
 		}
 		else
 		{
-			// The game's format enumeration: 1 is RGBA, 3 is BGRA. Only
-			// 8-bit-per-channel input has ever been observed.
-			bool const isBgra = (gdFormat == 3);
-			bool const isRgba = (gdFormat == 1);
+			// The game's format enumeration: 0 RGB, 1 RGBA, 2 BGR, 3 BGRA. Texels
+			// arrive either as one byte per component, or as one native-order
+			// 16-bit word with four bits per component.
+			bool const reversed   = (gdFormat == 2 || gdFormat == 3);
+			bool const hasAlpha   = (gdFormat == 1 || gdFormat == 3);
+			bool const knownOrder = (gdFormat <= 3);
 
-			if ((!isBgra && !isRgba) || gdType != 1)
+			// Type 1 is GL_UNSIGNED_BYTE, 8 is GL_UNSIGNED_SHORT_4_4_4_4 and 13 is
+			// GL_UNSIGNED_SHORT_4_4_4_4_REV.
+			bool const packed4444    = (gdType == 8);
+			bool const packed4444Rev = (gdType == 13);
+
+			// The packed types only exist for four-component formats.
+			if (!knownOrder || (gdType != 1 && !((packed4444 || packed4444Rev) && hasAlpha)))
 			{
-				LogNote("Vulkan: texture upload format %u type %u is not handled; skipping.", gdFormat, gdType);
+				LogNote("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.",
+					gdFormat, gdType, width, height);
 				return;
 			}
 
-			uint32_t const srcStride = (rowLength != 0) ? rowLength : width;
+			uint32_t const srcStride     = (rowLength != 0) ? rowLength : width;
+			uint32_t const bytesPerTexel = (gdType != 1) ? 2u : (hasAlpha ? 4u : 3u);
+
+			// Rows are padded to the unpack alignment, which the game leaves at
+			// OpenGL's default of 4 bytes. That only changes anything for 16-bit
+			// or 24-bit texels, such as on an odd width.
+			size_t const srcRowBytes = (static_cast<size_t>(srcStride) * bytesPerTexel + 3u) & ~static_cast<size_t>(3u);
 
 			staged.resize(static_cast<size_t>(width) * height * 4u);
 
 			uint8_t const* src = static_cast<uint8_t const*>(pixels);
 			for (uint32_t y = 0; y < height; y++)
 			{
-				uint8_t const* srcRow = src + static_cast<size_t>(y) * srcStride * 4u;
+				uint8_t const* srcRow = src + static_cast<size_t>(y) * srcRowBytes;
 				uint8_t*       dstRow = staged.data() + static_cast<size_t>(y) * width * 4u;
 
-				if (isRgba)
+				if (gdType == 1 && gdFormat == 1)
 				{
 					memcpy(dstRow, srcRow, static_cast<size_t>(width) * 4u);
+					continue;
 				}
-				else
+
+				for (uint32_t x = 0; x < width; x++)
 				{
-					// BGRA to RGBA. Done here rather than by choosing a BGRA
-					// image format, so every uncompressed texture ends up in
-					// one predictable layout.
-					for (uint32_t x = 0; x < width; x++)
+					// Components in the order the format names them.
+					uint8_t c[4];
+
+					if (gdType == 1)
 					{
-						dstRow[x * 4 + 0] = srcRow[x * 4 + 2];
-						dstRow[x * 4 + 1] = srcRow[x * 4 + 1];
-						dstRow[x * 4 + 2] = srcRow[x * 4 + 0];
-						dstRow[x * 4 + 3] = srcRow[x * 4 + 3];
+						// A format without alpha reads as fully opaque.
+						c[3] = 255u;
+						memcpy(c, srcRow + x * bytesPerTexel, bytesPerTexel);
 					}
+					else
+					{
+						uint16_t word;
+						memcpy(&word, srcRow + x * 2u, 2u);
+
+						// The plain type packs the first component into the most
+						// significant bits, the reversed one into the least. A
+						// 4-bit value times 17 is its exact 8-bit equivalent.
+						for (uint32_t i = 0; i < 4; i++)
+						{
+							uint32_t const shift = packed4444Rev ? (i * 4u) : (12u - i * 4u);
+							c[i] = static_cast<uint8_t>(((word >> shift) & 0xFu) * 17u);
+						}
+					}
+
+					// Blue first to red first. Done here rather than by choosing a
+					// BGRA image format, so every uncompressed texture ends up in
+					// one predictable layout.
+					dstRow[x * 4 + 0] = reversed ? c[2] : c[0];
+					dstRow[x * 4 + 1] = c[1];
+					dstRow[x * 4 + 2] = reversed ? c[0] : c[2];
+					dstRow[x * 4 + 3] = c[3];
 				}
 			}
 		}
@@ -1863,7 +1901,7 @@ namespace scvk
 		// tiles, which were dumped and turned out to be perfectly correct, so
 		// they answer nothing. The interesting textures are the interface ones
 		// uploaded later.
-		if (textureDumpsRemaining > 0 && !texture.compressed && presentedFrames > 1000)
+		if (textureDumpsRemaining > 0 && !texture.compressed && gdType == 1 && gdFormat == 3 && presentedFrames > 1000)
 		{
 			textureDumpsRemaining--;
 
