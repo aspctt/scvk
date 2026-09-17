@@ -913,32 +913,18 @@ namespace scvk
 			return;
 		}
 
-		int32_t x = 0;
-		int32_t y = 0;
-		int32_t width  = static_cast<int32_t>(swapchainExtent.width);
-		int32_t height = static_cast<int32_t>(swapchainExtent.height);
+		VkRect2D rect{};
+		ViewportRect(rect);
 
-		if (viewportWidth > 0 && viewportHeight > 0)
+		if (rect.extent.width == 0 || rect.extent.height == 0)
 		{
-			x = viewportX;
-			width  = viewportWidth;
-			height = viewportHeight;
-
-			// OpenGL measures the viewport from the bottom of the window and
-			// Vulkan from the top, so the origin has to be reflected.
-			y = static_cast<int32_t>(swapchainExtent.height) - viewportY - viewportHeight;
+			return;
 		}
 
-		// Clamped because a viewport outside the framebuffer is invalid, and
-		// the game can name one while the window is being resized.
-		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
-		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
-
-		if (x < 0) { width += x; x = 0; }
-		if (y < 0) { height += y; y = 0; }
-		if (x + width  > maxWidth)  { width  = maxWidth  - x; }
-		if (y + height > maxHeight) { height = maxHeight - y; }
-		if (width <= 0 || height <= 0) { return; }
+		int32_t const x      = rect.offset.x;
+		int32_t const y      = rect.offset.y;
+		int32_t const width  = static_cast<int32_t>(rect.extent.width);
+		int32_t const height = static_cast<int32_t>(rect.extent.height);
 
 		VkViewport viewport{};
 		viewport.x        = static_cast<float>(x);
@@ -949,13 +935,10 @@ namespace scvk
 		viewport.maxDepth = 1.0f;
 		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-		// Scissor follows the viewport. OpenGL treats them separately and the
-		// game enables scissoring only for sub-rectangles, but Vulkan always
-		// scissors, and matching the viewport gives the same result.
-		VkRect2D scissor{};
-		scissor.offset = { x, y };
-		scissor.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
-		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+		// Scissor follows the viewport. The game's OpenGL driver enables its
+		// scissor test with the same rectangle for every sub-viewport, and
+		// Vulkan always scissors, so matching the viewport is the same thing.
+		vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 
 		// What actually reached Vulkan, as opposed to what the driver believes
 		// it asked for. The arithmetic in the frame dump says these rectangles
@@ -976,6 +959,74 @@ namespace scvk
 				viewportX, viewportY, viewportWidth, viewportHeight,
 				swapchainExtent.width, swapchainExtent.height);
 		}
+	}
+
+	bool VulkanBackend::ViewportRect(VkRect2D& rect) const
+	{
+		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
+
+		int32_t x = 0;
+		int32_t y = 0;
+		int32_t width  = maxWidth;
+		int32_t height = maxHeight;
+
+		bool const sub = viewportWidth > 0 && viewportHeight > 0;
+
+		if (sub)
+		{
+			x = viewportX;
+			width  = viewportWidth;
+			height = viewportHeight;
+
+			// OpenGL measures the viewport from the bottom of the window and
+			// Vulkan from the top, so the origin has to be reflected.
+			y = maxHeight - viewportY - viewportHeight;
+		}
+
+		// Clamped because a viewport outside the framebuffer is invalid, and
+		// the game can name one while the window is being resized.
+		if (x < 0) { width += x; x = 0; }
+		if (y < 0) { height += y; y = 0; }
+		if (x + width  > maxWidth)  { width  = maxWidth  - x; }
+		if (y + height > maxHeight) { height = maxHeight - y; }
+		if (width < 0)  { width = 0; }
+		if (height < 0) { height = 0; }
+
+		rect.offset = { x, y };
+		rect.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
+		return sub;
+	}
+
+	bool VulkanBackend::ClipToScissor(int32_t& srcX, int32_t& srcY, int32_t& dstX, int32_t& dstY,
+		int32_t& width, int32_t& height) const
+	{
+		VkRect2D scissor{};
+		if (!ViewportRect(scissor))
+		{
+			return width > 0 && height > 0;
+		}
+
+		// The scissor test is one of only two fragment operations that apply
+		// to glBlitFramebuffer, which is how the game's OpenGL driver copies
+		// regions, so only the part of the destination inside it is written.
+		int32_t const left   = std::max(dstX, scissor.offset.x);
+		int32_t const top    = std::max(dstY, scissor.offset.y);
+		int32_t const right  = std::min(dstX + width,  scissor.offset.x + static_cast<int32_t>(scissor.extent.width));
+		int32_t const bottom = std::min(dstY + height, scissor.offset.y + static_cast<int32_t>(scissor.extent.height));
+
+		if (right <= left || bottom <= top)
+		{
+			return false;
+		}
+
+		srcX  += left - dstX;
+		srcY  += top - dstY;
+		dstX   = left;
+		dstY   = top;
+		width  = right - left;
+		height = bottom - top;
+		return true;
 	}
 
 	void VulkanBackend::EndRenderPassIfActive(void)
@@ -1010,6 +1061,32 @@ namespace scvk
 		colour.float32[1] = g;
 		colour.float32[2] = b;
 		colour.float32[3] = a;
+
+		// Under a sub-viewport the game's OpenGL driver has its scissor test
+		// on, and glClear honours it, so only that rectangle is cleared. An
+		// image clear has no rectangle, so this goes through the render pass.
+		VkRect2D scissor{};
+		if (ViewportRect(scissor))
+		{
+			if (scissor.extent.width == 0 || scissor.extent.height == 0)
+			{
+				return;
+			}
+
+			BeginRenderPassIfNeeded();
+
+			VkClearAttachment attachment{};
+			attachment.aspectMask       = VK_IMAGE_ASPECT_COLOR_BIT;
+			attachment.colorAttachment  = 0;
+			attachment.clearValue.color = colour;
+
+			VkClearRect clearRect{};
+			clearRect.rect       = scissor;
+			clearRect.layerCount = 1;
+
+			vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRect);
+			return;
+		}
 
 		VkImageSubresourceRange range{};
 		range.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -2872,8 +2949,32 @@ namespace scvk
 			return;
 		}
 
-		// A depth clear is a transfer operation, so it cannot run inside a
-		// render pass any more than a colour clear can.
+		// Scissored the same way as the colour clear.
+		VkRect2D scissor{};
+		if (ViewportRect(scissor))
+		{
+			if (scissor.extent.width == 0 || scissor.extent.height == 0)
+			{
+				return;
+			}
+
+			BeginRenderPassIfNeeded();
+
+			VkClearAttachment attachment{};
+			attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+			attachment.clearValue.depthStencil.depth   = depth;
+			attachment.clearValue.depthStencil.stencil = 0;
+
+			VkClearRect clearRect{};
+			clearRect.rect       = scissor;
+			clearRect.layerCount = 1;
+
+			vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRect);
+			return;
+		}
+
+		// A whole-image depth clear is a transfer operation, so it cannot run
+		// inside a render pass any more than a colour clear can.
 		EndRenderPassIfActive();
 
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -3056,9 +3157,11 @@ namespace scvk
 		width  = std::min(width,  std::min(maxWidth  - screenX, static_cast<int32_t>(region.width)  - regionX));
 		height = std::min(height, std::min(maxHeight - screenY, static_cast<int32_t>(region.height) - regionY));
 
-		if (width <= 0 || height <= 0)
+		// The region is the destination here, and it shares the window's
+		// coordinates, so the scissor applies to it directly.
+		if (!ClipToScissor(screenX, screenY, regionX, regionY, width, height))
 		{
-			return false;
+			return true;
 		}
 
 		VkImage       source      = region.depth ? depthImage : swapchainImages[imageIndex];
@@ -3172,9 +3275,9 @@ namespace scvk
 		width  = std::min(width,  std::min(maxWidth  - screenX, static_cast<int32_t>(region.width)  - regionX));
 		height = std::min(height, std::min(maxHeight - screenY, static_cast<int32_t>(region.height) - regionY));
 
-		if (width <= 0 || height <= 0)
+		if (!ClipToScissor(regionX, regionY, screenX, screenY, width, height))
 		{
-			return false;
+			return true;
 		}
 
 		VkImage destination = region.depth ? depthImage : swapchainImages[imageIndex];
@@ -3186,12 +3289,17 @@ namespace scvk
 				return false;
 			}
 
+			// From the layout the image is really in. UNDEFINED would let the
+			// driver discard the depth outside the rectangle being restored.
 			VkImageMemoryBarrier toDest{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-			toDest.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+			toDest.oldLayout           = depthLayoutPending
+				? VK_IMAGE_LAYOUT_UNDEFINED
+				: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			toDest.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			toDest.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			toDest.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			toDest.image               = depthImage;
+			toDest.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 			toDest.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
 			toDest.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 			toDest.subresourceRange.levelCount = 1;

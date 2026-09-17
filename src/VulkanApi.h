@@ -84,6 +84,7 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkCmdPipelineBarrier)              \
 	X(vkCmdClearColorImage)              \
 	X(vkCmdClearDepthStencilImage)       \
+	X(vkCmdClearAttachments)             \
 	X(vkCmdCopyBufferToImage)            \
 	X(vkCmdCopyImage)                    \
 	X(vkFreeDescriptorSets)              \

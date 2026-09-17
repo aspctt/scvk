@@ -422,6 +422,20 @@ namespace scvk
 
 		void BeginRenderPassIfNeeded(void);
 		void ApplyViewport(void);
+
+		/**
+		 * The viewport in framebuffer coordinates, clamped to the swapchain.
+		 * Returns whether a sub-viewport is in force, which is when the game's
+		 * OpenGL driver enables its scissor test with the same rectangle.
+		 */
+		bool ViewportRect(VkRect2D& rect) const;
+
+		/**
+		 * Clips a copy's destination to the scissor, moving the source with it.
+		 * Returns false when nothing is left to copy.
+		 */
+		bool ClipToScissor(int32_t& srcX, int32_t& srcY, int32_t& dstX, int32_t& dstY,
+			int32_t& width, int32_t& height) const;
 		void EndRenderPassIfActive(void);
 
 		/** Barriers the swapchain image into a layout, tracking where it was. */
