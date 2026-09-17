@@ -573,6 +573,7 @@ namespace scvk
 			}
 		}
 
+		NoteRegionDraw(gdPrimType, count, first, nullptr, false);
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimType, count);
 		PushTexGen();
@@ -610,6 +611,7 @@ namespace scvk
 			return;
 		}
 
+		NoteRegionDraw(gdPrimType, count, 0, indices, indicesAre32Bit);
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimType, count);
 		MaybeArmDump();

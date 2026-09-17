@@ -420,6 +420,7 @@ namespace scvk
 			dumpArmed = false;
 		}
 
+		FlushRegionTrace();
 		frameCounter++;
 
 		// Late enough that the interface has settled, early enough to be
@@ -477,6 +478,8 @@ namespace scvk
 		viewportY      = y;
 		viewportWidth  = width;
 		viewportHeight = height;
+
+		NoteRegionSubViewport();
 
 		// The game pairs each sub-viewport with a projection matched to it.
 		// Dropping this on the floor was what stretched a 667 pixel wide

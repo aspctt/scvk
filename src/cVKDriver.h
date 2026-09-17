@@ -367,6 +367,57 @@ namespace scvk
 		static constexpr int kMaxDumpedDraws   = 4000;
 		int      dumpWindowRemaining;
 
+		// The partial update trace. Region copies and clears are buffered per
+		// frame, with the draws and sub-viewport between them, and written out
+		// only for frames that save part of the scene. Every city frame
+		// restores the whole scene, so logging all of them would bury the few
+		// that matter.
+		static constexpr int kRegionTraceFrames   = 40;
+		static constexpr int kRegionLinesPerFrame = 400;
+		static constexpr int kRegionLineLength    = 200;
+		static constexpr int kRegionPendingDraws  = 40;
+		char     regionLines[kRegionLinesPerFrame][kRegionLineLength];
+		int      regionLineCount;
+		int      regionLinesDropped;
+		int      regionTraceFrames;
+		bool     regionFrameInteresting;
+		bool     regionFrameRestored;
+		uint32_t regionDrawsSinceOp;
+
+		// The first draws under the current sub-viewport, attached to the next
+		// save so a partial update shows what it drew. A new sub-viewport
+		// discards them, which keeps the interface's many small ones out.
+		char     regionPending[kRegionPendingDraws][kRegionLineLength];
+		int      regionPendingCount;
+		int      regionPendingTotal;
+
+		// The last sub-viewport set since the previous step, zero width when
+		// none was.
+		int      regionSubViewport[4];
+
+		/** Buffers one step, preceded by the draws since the last one. */
+		void NoteRegionOp(char const* fmt, ...);
+
+		/** Buffers the draw count line, if any draws happened since the last step. */
+		void AppendRegionDrawCount(void);
+
+		/** Moves the pending sub-viewport draws into the frame's steps. */
+		void AttachRegionPending(void);
+
+		/** Counts a draw, and records it while a sub-viewport is in force. */
+		void NoteRegionDraw(uint32_t gdPrimType, int32_t count, int32_t first,
+			void const* indices, bool indicesAre32Bit);
+
+		/** Called for every sub-viewport the game sets. */
+		void NoteRegionSubViewport(void);
+
+		/** Writes out the frame's steps if it saved part of the scene. */
+		void FlushRegionTrace(void);
+
+		/** Whether a copy covers the whole window at the origin. */
+		bool IsFullWindowCopy(int32_t x, int32_t y, int32_t width, int32_t height,
+			int32_t screenX, int32_t screenY) const;
+
 		// A dump waits for the terrain pass rather than starting on a frame
 		// boundary. Most frames restore the scene from a buffer region and
 		// contain nothing but interface, and those were filling the budget

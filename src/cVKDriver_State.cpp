@@ -65,6 +65,14 @@ namespace scvk
 	void cVKDriver::Clear(uint32_t mask)
 	{
 		SCVK_CALL("0x%x", mask);
+		// A clear in a frame that restored the scene is rare enough to be worth
+		// the whole frame's steps.
+		if (regionFrameRestored)
+		{
+			regionFrameInteresting = true;
+		}
+
+		NoteRegionOp("clear 0x%x (colour write %d, depth write %d)", mask, colourWrite ? 1 : 0, depthWrite ? 1 : 0);
 
 		// The write masks apply to clears as they do to draws, so a buffer
 		// masked off is left alone. There is no stencil attachment to clear.

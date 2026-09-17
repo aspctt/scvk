@@ -43,6 +43,10 @@
 #include "Logger.h"
 #include "VulkanBackend.h"
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+
 namespace scvk
 {
 	// -------------------------------------------------------------------
@@ -86,6 +90,14 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %d,%d %dx%d <- %d,%d", region, x, y, width, height, destX, destY);
 
+		if (!IsFullWindowCopy(x, y, width, height, destX, destY))
+		{
+			regionFrameInteresting = true;
+		}
+
+		AttachRegionPending();
+		NoteRegionOp("save r%u region %d,%d %dx%d <- screen %d,%d", region, x, y, width, height, destX, destY);
+
 		// Saving: the framebuffer is the source. The first pair of coordinates
 		// addresses the region and the last pair addresses the screen, which is
 		// the convention the matching draw call uses in reverse.
@@ -96,9 +108,234 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %d,%d %dx%d -> %d,%d", region, x, y, width, height, destX, destY);
 
+		regionFrameRestored = true;
+		NoteRegionOp("restore r%u region %d,%d %dx%d -> screen %d,%d", region, x, y, width, height, destX, destY);
+
 		// Restoring: the region is the source, at the first pair of
 		// coordinates, and the screen is the destination, at the last pair.
 		return vulkan->RestoreBufferRegion(region, x, y, width, height, destX, destY);
+	}
+
+	bool cVKDriver::IsFullWindowCopy(int32_t x, int32_t y, int32_t width, int32_t height,
+		int32_t screenX, int32_t screenY) const
+	{
+		return x == 0 && y == 0 && screenX == 0 && screenY == 0 &&
+			width == windowWidth && height == windowHeight;
+	}
+
+	void cVKDriver::NoteRegionOp(char const* fmt, ...)
+	{
+		if (regionTraceFrames <= 0)
+		{
+			return;
+		}
+
+		AppendRegionDrawCount();
+
+		if (regionLineCount + 1 > kRegionLinesPerFrame)
+		{
+			regionLinesDropped++;
+			return;
+		}
+
+		char step[kRegionLineLength];
+		va_list args;
+		va_start(args, fmt);
+		vsnprintf(step, sizeof(step), fmt, args);
+		va_end(args);
+
+		sprintf_s(regionLines[regionLineCount++], kRegionLineLength,
+			"  %s  (viewport %d,%d %dx%d)", step, viewportX, viewportY, viewportWidth, viewportHeight);
+	}
+
+	void cVKDriver::AppendRegionDrawCount(void)
+	{
+		if (regionDrawsSinceOp == 0)
+		{
+			return;
+		}
+
+		if (regionLineCount + 1 > kRegionLinesPerFrame)
+		{
+			regionLinesDropped++;
+		}
+		else if (regionSubViewport[2] > 0)
+		{
+			sprintf_s(regionLines[regionLineCount++], kRegionLineLength,
+				"    %u draws, last sub-viewport %d,%d %dx%d", regionDrawsSinceOp,
+				regionSubViewport[0], regionSubViewport[1], regionSubViewport[2], regionSubViewport[3]);
+		}
+		else
+		{
+			sprintf_s(regionLines[regionLineCount++], kRegionLineLength,
+				"    %u draws, no sub-viewport", regionDrawsSinceOp);
+		}
+
+		regionDrawsSinceOp   = 0;
+		regionSubViewport[2] = 0;
+	}
+
+	void cVKDriver::AttachRegionPending(void)
+	{
+		if (regionTraceFrames <= 0 || regionPendingCount == 0)
+		{
+			return;
+		}
+
+		AppendRegionDrawCount();
+
+		if (regionLineCount + 1 <= kRegionLinesPerFrame)
+		{
+			sprintf_s(regionLines[regionLineCount++], kRegionLineLength,
+				"      first %d of %d draws under that sub-viewport:", regionPendingCount, regionPendingTotal);
+		}
+
+		for (int i = 0; i < regionPendingCount; i++)
+		{
+			if (regionLineCount + 1 > kRegionLinesPerFrame)
+			{
+				regionLinesDropped++;
+				break;
+			}
+
+			memcpy(regionLines[regionLineCount++], regionPending[i], kRegionLineLength);
+		}
+
+		regionPendingCount = 0;
+		regionPendingTotal = 0;
+	}
+
+	void cVKDriver::NoteRegionSubViewport(void)
+	{
+		regionPendingCount = 0;
+		regionPendingTotal = 0;
+	}
+
+	void cVKDriver::NoteRegionDraw(uint32_t gdPrimType, int32_t count, int32_t first,
+		void const* indices, bool indicesAre32Bit)
+	{
+		if (regionTraceFrames <= 0)
+		{
+			return;
+		}
+
+		regionDrawsSinceOp++;
+
+		bool const sub = viewportX != 0 || viewportY != 0 ||
+			viewportWidth != windowWidth || viewportHeight != windowHeight;
+
+		if (!sub)
+		{
+			return;
+		}
+
+		regionSubViewport[0] = viewportX;
+		regionSubViewport[1] = viewportY;
+		regionSubViewport[2] = viewportWidth;
+		regionSubViewport[3] = viewportHeight;
+
+		regionPendingTotal++;
+
+		if (!regionFrameRestored || regionPendingCount >= kRegionPendingDraws)
+		{
+			return;
+		}
+
+		// Window depth of the first few vertices, as OpenGL would compute it
+		// with the default depth range.
+		float zMin = 2.0f;
+		float zMax = -2.0f;
+		int const sampled = (count < 8) ? count : 8;
+
+		for (int i = 0; i < sampled; i++)
+		{
+			size_t index;
+
+			if (indices == nullptr)
+			{
+				index = static_cast<size_t>(first + i);
+			}
+			else if (indicesAre32Bit)
+			{
+				index = static_cast<uint32_t const*>(indices)[i];
+			}
+			else
+			{
+				index = static_cast<uint16_t const*>(indices)[i];
+			}
+
+			float const* p = reinterpret_cast<float const*>(
+				static_cast<uint8_t const*>(vertexPointer) + index * vertexStride);
+
+			float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			for (int row = 0; row < 4; row++)
+			{
+				for (int k = 0; k < 4; k++)
+				{
+					eye[row] += modelViewMatrix[k * 4 + row] * ((k < 3) ? p[k] : 1.0f);
+				}
+			}
+
+			float clipZ = 0.0f;
+			float clipW = 0.0f;
+			for (int k = 0; k < 4; k++)
+			{
+				clipZ += projectionMatrix[k * 4 + 2] * eye[k];
+				clipW += projectionMatrix[k * 4 + 3] * eye[k];
+			}
+
+			if (clipW > -1e-6f && clipW < 1e-6f)
+			{
+				continue;
+			}
+
+			float const window = (clipZ / clipW + 1.0f) * 0.5f;
+			if (window < zMin) { zMin = window; }
+			if (window > zMax) { zMax = window; }
+		}
+
+		sprintf_s(regionPending[regionPendingCount++], kRegionLineLength,
+			"        fmt 0x%x prim %u n=%d  tex %u%s / %u%s  blend %d(%u,%u)  atest %d %u@%.2f  depth %d/%d func %u  cw %d  "
+			"env %d/%d  tint %.2f %.2f %.2f a %.2f  z %.6f..%.6f",
+			vertexFormat, gdPrimType, count,
+			boundTexture, texStageEnabled[0] ? "" : " (off)",
+			stage1Texture, texStageEnabled[1] ? "" : " (off)",
+			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
+			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
+			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0, depthCompare,
+			colourWrite ? 1 : 0, texEnvMode[0], texEnvMode[1],
+			colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
+			zMin, zMax);
+	}
+
+	void cVKDriver::FlushRegionTrace(void)
+	{
+		if (regionTraceFrames > 0 && regionFrameInteresting)
+		{
+			regionTraceFrames--;
+
+			LogNote("  REGION frame %u, %d steps%s:", frameCounter, regionLineCount,
+				regionLinesDropped > 0 ? " (some dropped)" : "");
+
+			for (int i = 0; i < regionLineCount; i++)
+			{
+				LogNote("  REGION %s", regionLines[i]);
+			}
+
+			if (regionDrawsSinceOp > 0)
+			{
+				LogNote("  REGION     %u draws before the frame ended", regionDrawsSinceOp);
+			}
+		}
+
+		regionLineCount        = 0;
+		regionLinesDropped     = 0;
+		regionFrameInteresting = false;
+		regionFrameRestored    = false;
+		regionDrawsSinceOp     = 0;
+		regionSubViewport[2]   = 0;
+		regionPendingCount     = 0;
+		regionPendingTotal     = 0;
 	}
 
 	bool cVKDriver::IsBufferRegion(uint32_t bufferRegion)
