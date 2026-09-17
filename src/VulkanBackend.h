@@ -127,6 +127,9 @@ namespace scvk
 		/** Selects the texture environment: 0 replace, 1 modulate, 2 decal. */
 		void SetTextureEnvMode(uint32_t mode);
 
+		/** Whether colour is written at all. Pipeline state in Vulkan. */
+		void SetColourWrite(bool enabled);
+
 		/** Sets depth testing, writing and the comparison, all pipeline state. */
 		void SetDepthState(bool test, bool write, uint32_t comparison);
 
@@ -289,6 +292,10 @@ namespace scvk
 			bool                depthWrite;
 			uint8_t             depthCompare;
 
+			// Whether colour is written. Vulkan makes this a pipeline field
+			// too, so a pass drawn with writes off needs its own pipeline.
+			bool                colourWrite;
+
 			bool operator==(PipelineKey const& other) const
 			{
 				return format       == other.format
@@ -298,7 +305,8 @@ namespace scvk
 					&& dstFactor    == other.dstFactor
 					&& depthTest    == other.depthTest
 					&& depthWrite   == other.depthWrite
-					&& depthCompare == other.depthCompare;
+					&& depthCompare == other.depthCompare
+					&& colourWrite  == other.colourWrite;
 			}
 		};
 
@@ -531,6 +539,7 @@ namespace scvk
 		// with. The two rows share push constant space with the combiner,
 		// since a pass never needs both.
 		bool     debugPassColours  = false;
+		bool     colourWrite       = true;
 		bool     texGenActive      = false;
 		float    texGenRows[8]     = {};
 

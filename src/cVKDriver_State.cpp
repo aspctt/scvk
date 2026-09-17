@@ -66,14 +66,14 @@ namespace scvk
 	{
 		SCVK_CALL("0x%x", mask);
 
-		// Only the colour buffer for now. There is no depth or stencil
-		// attachment yet, because nothing renders through a pipeline.
-		if ((mask & kClearColour) != 0)
+		// The write masks apply to clears as they do to draws, so a buffer
+		// masked off is left alone. There is no stencil attachment to clear.
+		if ((mask & kClearColour) != 0 && colourWrite)
 		{
 			vulkan->Clear(clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
 		}
 
-		if ((mask & kClearDepth) != 0)
+		if ((mask & kClearDepth) != 0 && depthWrite)
 		{
 			vulkan->ClearDepth(clearDepthValue);
 		}
@@ -107,6 +107,11 @@ namespace scvk
 	void cVKDriver::ColorMask(bool flag)
 	{
 		SCVK_CALL("%d", flag);
+
+		// One flag for all four channels. A pass drawn with it off would
+		// otherwise paint whatever it carries over the scene.
+		colourWrite = flag;
+		vulkan->SetColourWrite(flag);
 	}
 
 	void cVKDriver::DepthFunc(uint32_t gdTestFunc)

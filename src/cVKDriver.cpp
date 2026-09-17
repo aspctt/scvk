@@ -50,6 +50,7 @@ namespace scvk
 		alphaRef(0.0f),
 		depthCompare(1),
 		depthWrite(true),
+		colourWrite(true),
 		clearDepthValue(1.0f),
 		modelViewMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		projectionMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },

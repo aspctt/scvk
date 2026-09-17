@@ -427,6 +427,7 @@ namespace scvk
 		float    alphaRef;
 		uint32_t depthCompare;
 		bool     depthWrite;
+		bool     colourWrite;
 		float    clearDepthValue;
 
 		// The fixed function matrix stack, reduced to what the game uses: it

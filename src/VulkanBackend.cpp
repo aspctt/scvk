@@ -901,6 +901,11 @@ namespace scvk
 		fragmentState[2] = (mode <= 2u) ? static_cast<float>(mode) : 1.0f;
 	}
 
+	void VulkanBackend::SetColourWrite(bool enabled)
+	{
+		colourWrite = enabled;
+	}
+
 	void VulkanBackend::ApplyViewport(void)
 	{
 		if (!renderPassActive)
@@ -2361,7 +2366,7 @@ namespace scvk
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
 		VkDeviceSize vertexOffset, uint32_t texCoordSets)
 	{
-		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst, depthTest, depthWrite, depthCompare };
+		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst, depthTest, depthWrite, depthCompare, colourWrite };
 		VkPipeline pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -3499,9 +3504,10 @@ namespace scvk
 		blendAttachment.srcAlphaBlendFactor = MapBlendFactor(key.srcFactor);
 		blendAttachment.dstAlphaBlendFactor = MapBlendFactor(key.dstFactor);
 		blendAttachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-		blendAttachment.colorWriteMask =
-			VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-			VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		blendAttachment.colorWriteMask = key.colourWrite
+			? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+			   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT)
+			: 0;
 
 		VkPipelineColorBlendStateCreateInfo blend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 		blend.attachmentCount = 1;
