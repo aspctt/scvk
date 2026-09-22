@@ -12,39 +12,24 @@ Arts Inc. or Maxis.
 
 ## Status
 
-**Early. Nothing is drawn yet, but the game does drive the driver.**
+**Early, but playable.** The region view, cities and menus all draw, with a
+few visual bugs left.
 
-SimCity 4 selects scvk as its renderer, initialises it, sets a 1920x1080 video
-mode, queries the buffer region and snapshot extensions, and runs frames
-through it. Every renderer call is traced to `scvk.log`. That trace is the map
-for the actual Vulkan work.
-
-| Component | Status |
+| Area | Status |
 |---|---|
-| GZCOM registration and driver selection | Working in game |
-| Video mode enumeration and `SetVideoMode` | Working in game |
-| Vertex format decoding | Working (vendored from SCGL) |
-| Call tracing | Working |
-| Vulkan instance, device, swapchain | Working, validated |
-| 2D blits (startup and loading screens) | Working, unscaled only |
-| 3D geometry: pipelines, vertex upload, matrices | Working, vertex colour only |
-| Textures | Not started, **next** |
-| Depth buffer | Not started |
-| Blending, alpha test, fog, combiners | Not started |
+| Startup, video modes, swapchain | Working (windowed; fullscreen untested) |
+| Terrain, buildings, interface | Working |
+| Textures, blending, depth | Working |
+| Day and night lighting, cloud shadows | Working |
+| Loading screens | Working, unscaled only |
+| Fog | Not yet |
+| In-game screenshots | Not yet, they come out blank |
 
-What the first in-game trace established:
+Known issues:
 
-- The game reaches a steady render loop of roughly 169 driver calls per frame,
-  built around a repeating 26-call state block.
-- `Flush` is the frame boundary, confirmed.
-- `InterleavedArrays(format 1, stride 16)` matches the vendored vertex format
-  decoder exactly, so that code is correct.
-- **2D blits are on the critical path, not incidental.** `StretchBlt` is how
-  the startup and loading screens reach the display, so it needs a real
-  implementation before the draw path does.
-- The game calls `NewBufferRegion` without first calling
-  `BufferRegionEnabled`, so declining an extension is not sufficient to stop
-  it being used.
+- Small black patches can appear on the city. They go away when you zoom.
+- The interface sometimes flickers for a single frame.
+- Scrolling is slow, around 6 to 7 frames a second.
 
 ## How it works
 
@@ -167,6 +152,23 @@ Regenerate only after changing a shader:
 ```
 pwsh shaders/compile.ps1
 ```
+
+## Diagnostics
+
+`tools/run-sc4.ps1` deploys a build, runs the game for a set time and collects
+the log. Options are listed at the top of the script.
+
+Everything the game asks of the renderer goes into `scvk.log`, and a few
+screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
+during a session.
+
+To see a debug view, put an empty file with one of these names next to
+`scvk.dll`, and delete it to go back to normal:
+
+- `scvk-debug-passes`: colours each draw by how it blends
+- `scvk-debug-texture-colour` or `scvk-debug-texture-alpha`: the texture alone
+- `scvk-debug-vertex-colour` or `scvk-debug-vertex-alpha`: the lit vertex
+  colour alone
 
 ## Installing
 
