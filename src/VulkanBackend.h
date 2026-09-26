@@ -448,11 +448,11 @@ namespace scvk
 
 		/** Copies a vertex range into the per-frame arena. */
 		bool UploadVertices(void const* vertices, uint32_t firstVertex,
-			uint32_t vertexCount, uint32_t stride, VkDeviceSize& outOffset);
+			uint32_t vertexCount, uint32_t stride, VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
 		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
-			VkDeviceSize vertexOffset, uint32_t texCoordSets);
+			VkBuffer vertexBuffer, VkDeviceSize vertexOffset, uint32_t texCoordSets);
 
 		VkPipeline GetPipeline(PipelineKey const& key);
 
@@ -519,22 +519,47 @@ namespace scvk
 		VkDeviceSize   stagingUsed   = 0;
 		void*          stagingMapped = nullptr;
 
-		// Per-frame vertex data, bump allocated and rewound each frame for the
-		// same reason as the staging buffer: the draw is recorded now and runs
-		// later, so the bytes have to stay put until the submit completes.
-		VkBuffer       vertexBuffer = VK_NULL_HANDLE;
-		VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-		VkDeviceSize   vertexSize   = 0;
-		VkDeviceSize   vertexUsed   = 0;
-		void*          vertexMapped = nullptr;
+		// Per-frame vertex and index data, bump allocated and rewound each
+		// frame for the same reason as the staging buffer: the draw is
+		// recorded now and runs later, so the bytes have to stay put until the
+		// submit completes.
+		//
+		// Split into blocks and grown a block at a time. A single fixed buffer
+		// overflowed at the widest zoom, where one frame redraws the whole
+		// city, and every draw past that point was dropped, which left holes
+		// in the saved scene.
+		struct ArenaBlock
+		{
+			VkBuffer       buffer = VK_NULL_HANDLE;
+			VkDeviceMemory memory = VK_NULL_HANDLE;
+			void*          mapped = nullptr;
+		};
 
-		// The same arrangement for indices the game hands over with a draw,
-		// which are client memory just as the vertices are.
-		VkBuffer       indexBuffer     = VK_NULL_HANDLE;
-		VkDeviceMemory indexMemory     = VK_NULL_HANDLE;
-		VkDeviceSize   indexBufferSize = 0;
-		VkDeviceSize   indexUsed       = 0;
-		void*          indexMapped     = nullptr;
+		struct Arena
+		{
+			char const*             name      = "";
+			VkBufferUsageFlags      usage     = 0;
+			VkDeviceSize            blockSize = 0;
+			size_t                  maxBlocks = 0;
+			std::vector<ArenaBlock> blocks;
+			size_t                  current   = 0;
+			VkDeviceSize            used      = 0;
+		};
+
+		Arena vertexArena;
+		Arena indexArena;
+
+		/** Adds one block to an arena. */
+		bool ArenaAddBlock(Arena& arena);
+
+		/** Reserves space, moving to the next block, or adding one, when this one is full. */
+		bool ArenaAllocate(Arena& arena, VkDeviceSize bytes, VkDeviceSize alignment,
+			VkBuffer& buffer, VkDeviceSize& offset, uint8_t*& at);
+
+		/** Rewinds an arena to its first block. */
+		static void ArenaRewind(Arena& arena) { arena.current = 0; arena.used = 0; }
+
+		void DestroyArena(Arena& arena);
 
 		// Static indices turning consecutive quads into triangle pairs.
 		VkBuffer       quadIndexBuffer = VK_NULL_HANDLE;

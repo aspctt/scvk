@@ -798,8 +798,8 @@ namespace scvk
 
 		frameActive = true;
 		stagingUsed = 0;
-		vertexUsed  = 0;
-		indexUsed   = 0;
+		ArenaRewind(vertexArena);
+		ArenaRewind(indexArena);
 
 		// UNDEFINED as the starting point: we overwrite every pixel we care
 		// about and discarding the previous contents is cheaper than
@@ -2585,37 +2585,39 @@ namespace scvk
 
 	bool VulkanBackend::CreateGeometryBuffers(void)
 	{
-		if (vertexBuffer != VK_NULL_HANDLE)
+		if (!vertexArena.blocks.empty())
 		{
 			return true;
 		}
 
-		// Sized from measurement rather than guesswork: a city frame overflowed
-		// 16MB even after each draw was trimmed to the vertices it references.
-		constexpr VkDeviceSize kVertexBufferSize = 64u * 1024u * 1024u;
+		// Two blocks up front, the 64MB a city frame usually fits in. A frame
+		// of the whole city at the widest zoom needs more, and gets it one
+		// block at a time. The cap keeps a runaway from eating the address
+		// space of what is a 32-bit process.
+		vertexArena.name      = "vertex";
+		vertexArena.usage     = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		vertexArena.blockSize = 32u * 1024u * 1024u;
+		vertexArena.maxBlocks = 8;
 
-		if (!CreateHostBuffer(kVertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				vertexBuffer, vertexMemory, vertexMapped))
+		for (int i = 0; i < 2; i++)
 		{
-			return false;
+			if (!ArenaAddBlock(vertexArena))
+			{
+				return false;
+			}
 		}
-
-		vertexSize = kVertexBufferSize;
-		vertexUsed = 0;
 
 		// Indices arriving with a draw are client memory too, so they get the
-		// same treatment as the vertices: copied into a per-frame arena that is
-		// rewound when the frame begins.
-		constexpr VkDeviceSize kIndexBufferSize = 8u * 1024u * 1024u;
+		// same treatment as the vertices.
+		indexArena.name      = "index";
+		indexArena.usage     = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+		indexArena.blockSize = 8u * 1024u * 1024u;
+		indexArena.maxBlocks = 8;
 
-		if (!CreateHostBuffer(kIndexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-				indexBuffer, indexMemory, indexMapped))
+		if (!ArenaAddBlock(indexArena))
 		{
 			return false;
 		}
-
-		indexBufferSize = kIndexBufferSize;
-		indexUsed       = 0;
 
 		// Vulkan has no quad topology, so quads are drawn as indexed triangle
 		// pairs. The index pattern depends only on the vertex count, never on
@@ -2733,7 +2735,7 @@ namespace scvk
 	}
 
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology,
-		VkDeviceSize vertexOffset, uint32_t texCoordSets)
+		VkBuffer vertexBuffer, VkDeviceSize vertexOffset, uint32_t texCoordSets)
 	{
 		PipelineKey key{ gdVertexFormat, topology, blendEnable, blendSrc, blendDst, depthTest, depthWrite, depthCompare, colourWrite };
 		VkPipeline pipeline = GetPipeline(key);
@@ -2896,26 +2898,88 @@ namespace scvk
 		return true;
 	}
 
-	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex,
-		uint32_t vertexCount, uint32_t stride, VkDeviceSize& outOffset)
+	bool VulkanBackend::ArenaAddBlock(Arena& arena)
 	{
-		VkDeviceSize const bytes = static_cast<VkDeviceSize>(vertexCount) * stride;
+		ArenaBlock block;
 
-		// Alignment so the binding offset stays legal for the attributes.
-		VkDeviceSize const offset = (vertexUsed + 15u) & ~static_cast<VkDeviceSize>(15u);
-
-		if (offset + bytes > vertexSize)
+		if (!CreateHostBuffer(arena.blockSize, arena.usage, block.buffer, block.memory, block.mapped))
 		{
-			LogNote("Vulkan: per-frame vertex buffer exhausted; dropping a draw of %u vertices.", vertexCount);
 			return false;
 		}
 
-		memcpy(static_cast<uint8_t*>(vertexMapped) + offset,
+		arena.blocks.push_back(block);
+		return true;
+	}
+
+	bool VulkanBackend::ArenaAllocate(Arena& arena, VkDeviceSize bytes, VkDeviceSize alignment,
+		VkBuffer& buffer, VkDeviceSize& offset, uint8_t*& at)
+	{
+		if (arena.blocks.empty() || bytes > arena.blockSize)
+		{
+			return false;
+		}
+
+		VkDeviceSize aligned = (arena.used + alignment - 1u) & ~(alignment - 1u);
+
+		if (aligned + bytes > arena.blockSize)
+		{
+			// Blocks stay allocated once added, so a heavy frame pays for the
+			// allocation once rather than every time it recurs.
+			if (arena.current + 1 >= arena.blocks.size())
+			{
+				if (arena.blocks.size() >= arena.maxBlocks || !ArenaAddBlock(arena))
+				{
+					return false;
+				}
+
+				LogNote("Vulkan: the per-frame %s data grew to %u blocks of %llu MB.",
+					arena.name, static_cast<unsigned>(arena.blocks.size()),
+					static_cast<unsigned long long>(arena.blockSize >> 20));
+			}
+
+			arena.current++;
+			aligned = 0;
+		}
+
+		ArenaBlock const& block = arena.blocks[arena.current];
+
+		buffer     = block.buffer;
+		offset     = aligned;
+		at         = static_cast<uint8_t*>(block.mapped) + aligned;
+		arena.used = aligned + bytes;
+		return true;
+	}
+
+	void VulkanBackend::DestroyArena(Arena& arena)
+	{
+		for (ArenaBlock& block : arena.blocks)
+		{
+			if (block.mapped != nullptr)          { vkUnmapMemory(device, block.memory); }
+			if (block.memory != VK_NULL_HANDLE)   { vkFreeMemory(device, block.memory, nullptr); }
+			if (block.buffer != VK_NULL_HANDLE)   { vkDestroyBuffer(device, block.buffer, nullptr); }
+		}
+
+		arena.blocks.clear();
+		ArenaRewind(arena);
+	}
+
+	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex,
+		uint32_t vertexCount, uint32_t stride, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	{
+		VkDeviceSize const bytes = static_cast<VkDeviceSize>(vertexCount) * stride;
+		uint8_t* at = nullptr;
+
+		// Aligned so the binding offset stays legal for the attributes.
+		if (!ArenaAllocate(vertexArena, bytes, 16u, outBuffer, outOffset, at))
+		{
+			LogNote("Vulkan: no room for per-frame vertex data; dropping a draw of %u vertices.", vertexCount);
+			return false;
+		}
+
+		memcpy(at,
 			static_cast<uint8_t const*>(vertices) + static_cast<size_t>(firstVertex) * stride,
 			static_cast<size_t>(bytes));
 
-		vertexUsed = offset + bytes;
-		outOffset  = offset;
 		return true;
 	}
 
@@ -2938,13 +3002,14 @@ namespace scvk
 			return;
 		}
 
-		VkDeviceSize offset = 0;
-		if (!UploadVertices(vertices, firstVertex, vertexCount, stride, offset))
+		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
+		VkDeviceSize offset       = 0;
+		if (!UploadVertices(vertices, firstVertex, vertexCount, stride, vertexBuffer, offset))
 		{
 			return;
 		}
 
-		if (!BindDrawState(gdVertexFormat, topology, offset, layout.texCoordSets))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, offset, layout.texCoordSets))
 		{
 			return;
 		}
@@ -3024,8 +3089,9 @@ namespace scvk
 
 		uint32_t const vertexCount = highest - lowest + 1u;
 
+		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, lowest, vertexCount, stride, vertexOffset))
+		if (!UploadVertices(vertices, lowest, vertexCount, stride, vertexBuffer, vertexOffset))
 		{
 			return;
 		}
@@ -3040,15 +3106,17 @@ namespace scvk
 		}
 
 		VkDeviceSize const indexBytes = static_cast<VkDeviceSize>(emitted) * sizeof(uint32_t);
-		VkDeviceSize const indexOffset = (indexUsed + 3u) & ~static_cast<VkDeviceSize>(3u);
+		VkBuffer     indexBuffer = VK_NULL_HANDLE;
+		VkDeviceSize indexOffset = 0;
+		uint8_t*     indexAt     = nullptr;
 
-		if (indexOffset + indexBytes > indexBufferSize)
+		if (!ArenaAllocate(indexArena, indexBytes, sizeof(uint32_t), indexBuffer, indexOffset, indexAt))
 		{
-			LogNote("Vulkan: per-frame index buffer exhausted; dropping a draw of %u indices.", indexCount);
+			LogNote("Vulkan: no room for per-frame index data; dropping a draw of %u indices.", indexCount);
 			return;
 		}
 
-		uint32_t* out = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(indexMapped) + indexOffset);
+		uint32_t* out = reinterpret_cast<uint32_t*>(indexAt);
 
 		if (asQuads)
 		{
@@ -3087,9 +3155,7 @@ namespace scvk
 			}
 		}
 
-		indexUsed = indexOffset + indexBytes;
-
-		if (!BindDrawState(gdVertexFormat, topology, vertexOffset, layout.texCoordSets))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, layout.texCoordSets))
 		{
 			return;
 		}
@@ -4062,13 +4128,8 @@ namespace scvk
 			
 			if (fragModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, fragModule, nullptr); fragModule = VK_NULL_HANDLE; }
 
-			if (vertexMapped != nullptr) { vkUnmapMemory(device, vertexMemory); vertexMapped = nullptr; }
-			if (vertexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, vertexMemory, nullptr); vertexMemory = VK_NULL_HANDLE; }
-			if (vertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, vertexBuffer, nullptr); vertexBuffer = VK_NULL_HANDLE; }
-
-			if (indexMapped != nullptr) { vkUnmapMemory(device, indexMemory); indexMapped = nullptr; }
-			if (indexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, indexMemory, nullptr); indexMemory = VK_NULL_HANDLE; }
-			if (indexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, indexBuffer, nullptr); indexBuffer = VK_NULL_HANDLE; }
+			DestroyArena(vertexArena);
+			DestroyArena(indexArena);
 
 			if (quadIndexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, quadIndexMemory, nullptr); quadIndexMemory = VK_NULL_HANDLE; }
 			if (quadIndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, quadIndexBuffer, nullptr); quadIndexBuffer = VK_NULL_HANDLE; }
