@@ -76,6 +76,7 @@ namespace scvk
 		// scvk-debug-passes names each pass by its blend configuration.
 		// The channel markers show one shader input on its own, which says
 		// whether a wrong colour arrived or was computed.
+		// scvk-skip-cloud-shadows leaves the cloud shadow pass out.
 		{
 			auto const marked = [](char const* name) -> bool
 			{
@@ -94,6 +95,12 @@ namespace scvk
 			if (marked("scvk-debug-passes"))
 			{
 				vulkan->SetDebugPassColours(true);
+			}
+
+			if (marked("scvk-skip-cloud-shadows"))
+			{
+				LogNote("Diagnostic: skipping the cloud shadow pass.");
+				skipCloudShadows = true;
 			}
 
 			char const* const channelMarkers[] =

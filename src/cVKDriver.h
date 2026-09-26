@@ -330,6 +330,13 @@ namespace scvk
 		/** Recomputes and forwards the generated coordinate rows. */
 		void PushTexGen(void);
 
+		/** The cloud shadow pass, the only one that generates its coordinates. */
+		bool IsCloudShadowDraw(void) const;
+
+		// Set by the scvk-skip-cloud-shadows marker file, to see the picture
+		// without that pass.
+		bool     skipCloudShadows;
+
 		/** Applies a texture enable to the stage TexStage last selected. */
 		void SetTextureStageEnabled(bool enabled);
 

@@ -80,6 +80,7 @@ namespace scvk
 		texCoordSource{ 0, 1 },
 		texStageMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
 		textureParameters{ 1, 1, 3, 3 },
+		skipCloudShadows(false),
 		lastMultitexKey(0xffffffffu),
 		frameCounter(0),
 		dumpFrame(false),

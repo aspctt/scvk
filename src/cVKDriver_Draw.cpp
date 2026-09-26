@@ -175,6 +175,11 @@ namespace scvk
 		vulkan->SetTexGen(true, rowS, rowT);
 	}
 
+	bool cVKDriver::IsCloudShadowDraw(void) const
+	{
+		return texStageEnabled[0] && (texCoordSource[0] & ~7u) == 0x10u;
+	}
+
 	void cVKDriver::MaybeArmDump(void)
 	{
 		// The base terrain pass arms the dump, which then runs for the rest of
@@ -455,6 +460,11 @@ namespace scvk
 			return;
 		}
 
+		if (skipCloudShadows && IsCloudShadowDraw())
+		{
+			return;
+		}
+
 		// One sample per distinct combination of format, primitive type and
 		// projection.
 		//
@@ -665,6 +675,11 @@ namespace scvk
 		SCVK_CALL("%u, %d, %u, %p", gdPrimType, count, gdType, indices);
 
 		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		if (skipCloudShadows && IsCloudShadowDraw())
 		{
 			return;
 		}
