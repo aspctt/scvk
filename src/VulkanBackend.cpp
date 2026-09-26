@@ -813,6 +813,18 @@ namespace scvk
 	namespace
 	{
 		/** What a layout implies about access and pipeline stage. */
+		// Depth is read and written in both fragment test stages, early when
+		// the shader cannot discard and late when it can, so a dependency on
+		// depth names both.
+		constexpr VkPipelineStageFlags kDepthStages =
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+		// Where a frame waits for its swapchain image, and so where the first
+		// barrier on that image has to start for the two to form a chain. A
+		// frame's first use of the image is either a copy or a draw.
+		constexpr VkPipelineStageFlags kAcquireStages =
+			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
 		void LayoutAccess(VkImageLayout layout, VkAccessFlags& access, VkPipelineStageFlags& stage)
 		{
 			switch (layout)
@@ -848,7 +860,11 @@ namespace scvk
 
 	void VulkanBackend::TransitionTo(VkImageLayout newLayout)
 	{
-		if (currentLayout == newLayout)
+		// Staying in the transfer destination layout still needs a barrier:
+		// two transfers writing the same image are not ordered against each
+		// other without one, and the game copies then clears, or copies twice,
+		// into the same place.
+		if (currentLayout == newLayout && newLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 		{
 			return;
 		}
@@ -860,6 +876,14 @@ namespace scvk
 
 		LayoutAccess(currentLayout, srcAccess, srcStage);
 		LayoutAccess(newLayout, dstAccess, dstStage);
+
+		// The first barrier of a frame has to start where the submit waits
+		// for the image, or its layout transition can run while the
+		// presentation engine is still reading the previous frame from it.
+		if (currentLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			srcStage = kAcquireStages;
+		}
 
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.srcAccessMask       = srcAccess;
@@ -912,7 +936,7 @@ namespace scvk
 			barrier.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, kDepthStages,
 				0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 			depthLayoutPending = false;
@@ -1497,7 +1521,7 @@ namespace scvk
 			return;
 		}
 
-		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		VkPipelineStageFlags waitStage = kAcquireStages;
 
 		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
 		submit.waitSemaphoreCount   = 1;
@@ -3304,13 +3328,16 @@ namespace scvk
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.image               = depthImage;
+		barrier.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		barrier.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		barrier.subresourceRange.levelCount = 1;
 		barrier.subresourceRange.layerCount = 1;
 
+		// From the depth tests, not the top of the pipe: a clear later in a
+		// frame has to wait for the draws that wrote depth before it.
 		vkCmdPipelineBarrier(commandBuffer,
-			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			kDepthStages, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 		VkClearDepthStencilValue value{};
@@ -3331,7 +3358,7 @@ namespace scvk
 		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
 		vkCmdPipelineBarrier(commandBuffer,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, kDepthStages,
 			0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
@@ -3504,7 +3531,7 @@ namespace scvk
 			toSource.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				kDepthStages, VK_PIPELINE_STAGE_TRANSFER_BIT,
 				0, 0, nullptr, 0, nullptr, 1, &toSource);
 
 			depthLayoutPending = false;
@@ -3553,7 +3580,7 @@ namespace scvk
 			back.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, kDepthStages,
 				0, 0, nullptr, 0, nullptr, 1, &back);
 		}
 
@@ -3621,7 +3648,7 @@ namespace scvk
 			toDest.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				kDepthStages, VK_PIPELINE_STAGE_TRANSFER_BIT,
 				0, 0, nullptr, 0, nullptr, 1, &toDest);
 
 			depthLayoutPending = false;
@@ -3661,7 +3688,7 @@ namespace scvk
 			back.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, kDepthStages,
 				0, 0, nullptr, 0, nullptr, 1, &back);
 		}
 
