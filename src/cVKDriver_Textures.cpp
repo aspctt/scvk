@@ -66,6 +66,9 @@ namespace scvk
 		// Argument 2 is the texture, read through its alpha.
 		constexpr uint32_t ARGUMENT2_TEXTURE_ALPHA = (0u << 13) | (2u << 15);
 
+		// The source that names the environment colour, after texture and previous.
+		constexpr uint32_t SOURCE_CONSTANT = 2;
+
 		constexpr float IDENTITY_MATRIX[16] = {
 			1, 0, 0, 0,
 			0, 1, 0, 0,
@@ -84,12 +87,10 @@ namespace scvk
 		 * Layout, low bits first: the combine mode, then three source and operand pairs,
 		 * then the output scale.
 		 *
-		 * The operand arrives as an eGDBlend, whose useful values here are SrcColor,
-		 * OneMinusSrcColor, SrcAlpha and OneMinusSrcAlpha. Those are numbered 2 to 5 in
-		 * that enumeration and 0 to 3 in the shader, and the game leaves the field at
-		 * zero when it means the default, which is the plain colour. Both readings land
-		 * on 0, so a subtraction that would underflow is simply clamped rather than
-		 * special cased.
+		 * The operand is an index, in the order SCGL maps it: the colour, one minus the
+		 * colour, the alpha, one minus the alpha. The shader numbers them the same way.
+		 * An earlier version read it as an eGDBlend and subtracted 2, which turned the
+		 * alpha operand the game does send into the colour.
 		 */
 		uint32_t PackCombinerChannel(uint8_t mode, cGDCombiner::ParamOperandPair const* parameters, uint8_t scale)
 		{
@@ -97,11 +98,8 @@ namespace scvk
 
 			for (uint32_t i = 0; i < 3; i++)
 			{
-				uint32_t const source = parameters[i].SourceType & 3u;
-
-				uint32_t operand = parameters[i].OperandType;
-				operand = (operand >= 2u) ? (operand - 2u) : 0u;
-				operand &= 7u;
+				uint32_t const source  = parameters[i].SourceType & 3u;
+				uint32_t const operand = parameters[i].OperandType & 3u;
 
 				packed |= source << (3u + i * 5u);
 				packed |= operand << (5u + i * 5u);
@@ -111,14 +109,27 @@ namespace scvk
 			return packed;
 		}
 
+		/** Whether a packed combiner channel reads the environment colour. */
+		bool NamesConstantSource(uint32_t packed)
+		{
+			for (uint32_t i = 0; i < 3; i++)
+			{
+				if (((packed >> (3u + i * 5u)) & 3u) == SOURCE_CONSTANT)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 		/**
 		 * Expresses a texture environment mode as a combiner word.
 		 *
 		 * The combiner network is only consulted when the environment mode selects
-		 * Combine, exactly as the fixed function pipeline defines it. SimCity 4 sets
-		 * combiners on both stages but never asks for Combine, so the network it uploads
-		 * is inert state, and taking it at face value paints the terrain in the
-		 * environment colour it never set: a flat dark navy where the ground should be.
+		 * Combine, exactly as the fixed function pipeline defines it. Applying the last
+		 * network regardless of the mode painted the terrain a flat dark navy where the
+		 * ground should be.
 		 *
 		 * Translating the mode into the same encoding keeps one path in the shader rather
 		 * than two.
@@ -173,6 +184,17 @@ namespace scvk
 
 			vulkan->SetCombinerState(stage, rgb, alpha);
 		}
+
+		// Send the environment colour of the stage that reads one
+		//
+		// Each stage has its own, but the shader has room for one. The first stage wins
+		// when both read theirs, which the game has not been seen doing: its shadows read
+		// the first stage's colour and nothing reads the second's.
+		bool const isFirstStageReading = NamesConstantSource(packedCombiner[0]) || NamesConstantSource(packedCombiner[1]);
+		bool const isSecondStageReading = NamesConstantSource(packedCombiner[2]) || NamesConstantSource(packedCombiner[3]);
+
+		float const* const colour = environmentColours[(!isFirstStageReading && isSecondStageReading) ? 1 : 0];
+		vulkan->SetConstantColour(colour[0], colour[1], colour[2], colour[3]);
 	}
 
 	//// Public API
@@ -232,15 +254,15 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %u, %p", gdTextureEnvironmentTarget, gdTextureEnvironmentParameterType, parameters);
 
-		// The environment colour, which a combiner may name as a source. One value is
-		// kept rather than one per stage, because the game has not been seen setting it
-		// per stage and the shader has room for one.
+		// The environment colour, which a combiner may name as a source. It belongs to
+		// the active stage, as OpenGL's does to the active unit.
 		if (gdTextureEnvironmentParameterType != kGDTextureEnvParamType_Color || parameters == nullptr)
 		{
 			return;
 		}
 
-		vulkan->SetConstantColour(parameters[0], parameters[1], parameters[2], parameters[3]);
+		memcpy(environmentColours[activeTextureStage], parameters, sizeof(environmentColours[activeTextureStage]));
+		PushCombinerState();
 	}
 
 	void cVKDriver::TexParameter(uint32_t gdTextureTarget, uint32_t gdTextureParameterType, int32_t gdTextureParameter)
@@ -504,13 +526,24 @@ namespace scvk
 			key ^= (uint32_t{ combiner.RGBParams[i].SourceType } << (16 + i * 2)) ^ (uint32_t{ combiner.RGBParams[i].OperandType } << (22 + i * 2)) ^ (uint32_t{ combiner.AlphaParams[i].SourceType } << (26 + i)) ^ (uint32_t{ combiner.AlphaParams[i].OperandType } << (29 + i));
 		}
 
-		// Pack and push it for the stage
+		// Pack it and switch the stage to it
+		//
+		// Setting a network also selects Combine for the stage, until the next mode
+		// replaces it, as SCGL does. The game never asks for Combine through the mode
+		// itself, so without this its networks never applied, and the building shadows
+		// took the texture colours rather than their own.
 		if (textureUnit < STAGE_COUNT)
 		{
 			rawCombiner[textureUnit * 2 + 0] = PackCombinerChannel(combiner.RGBCombineMode, combiner.RGBParams, combiner.RGBScale);
 			rawCombiner[textureUnit * 2 + 1] = PackCombinerChannel(combiner.AlphaCombineMode, combiner.AlphaParams, combiner.AlphaScale);
 
+			textureEnvironmentMode[textureUnit] = kGDTextureEnvParam_Combine;
 			PushCombinerState();
+
+			if (textureUnit == 0)
+			{
+				vulkan->SetTextureEnvironmentMode(kGDTextureEnvParam_Combine);
+			}
 		}
 
 		// Describe it the first time it is seen
