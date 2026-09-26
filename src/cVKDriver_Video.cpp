@@ -504,7 +504,59 @@ namespace scvk
 			}
 		}
 
+		PollKeyCapture();
 		vulkan->Present();
+	}
+
+	void cVKDriver::PollKeyCapture(void)
+	{
+		// The periodic captures rarely land on a black patch, so this takes
+		// one when the user can see it. Only while the game has the focus, so
+		// the key does nothing when pressed in another window.
+		DWORD foregroundProcess = 0;
+		GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
+
+		bool const held = foregroundProcess == GetCurrentProcessId() &&
+			(GetAsyncKeyState(VK_SCROLL) & 0x8000) != 0;
+
+		if (held && !keyCaptureHeld && keyCaptureStep == 0)
+		{
+			keyCaptureCount++;
+			keyCaptureStep = 3;
+			LogNote("Diagnostic: Scroll Lock capture %u.", keyCaptureCount);
+			DumpTileRing();
+		}
+
+		keyCaptureHeld = held;
+
+		if (keyCaptureStep == 0)
+		{
+			return;
+		}
+
+		char path[MAX_PATH];
+		if (!LogDirectory(path, sizeof(path)))
+		{
+			keyCaptureStep = 0;
+			return;
+		}
+
+		// One readback buffer, so one capture a frame: the screen first, then
+		// the colour and depth the game restores every frame.
+		char const* const kinds[] = { "depth.raw", "region.bmp", "frame.bmp" };
+		char name[64];
+		sprintf_s(name, sizeof(name), "scvk-key-%u-%s", keyCaptureCount, kinds[keyCaptureStep - 1]);
+
+		if (strlen(path) + strlen(name) < sizeof(path))
+		{
+			strcat_s(path, sizeof(path), name);
+
+			if      (keyCaptureStep == 3) { vulkan->RequestCapture(path); }
+			else if (keyCaptureStep == 2) { vulkan->RequestRegionCapture(path, false); }
+			else                          { vulkan->RequestRegionCapture(path, true); }
+		}
+
+		keyCaptureStep--;
 	}
 
 	void cVKDriver::SetViewport(void)

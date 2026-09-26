@@ -160,7 +160,8 @@ the log. Options are listed at the top of the script.
 
 Everything the game asks of the renderer goes into `scvk.log`, and a few
 screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
-during a session.
+during a session. Press Scroll Lock in game to save one on demand, along with
+the saved scene and its depth (`scvk-key-N-*`).
 
 To see a debug view, put an empty file with one of these names next to
 `scvk.dll`, and delete it to go back to normal:

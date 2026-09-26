@@ -1197,7 +1197,7 @@ namespace scvk
 		capturePath      = path;
 	}
 
-	void VulkanBackend::RequestRegionCapture(char const* path)
+	void VulkanBackend::RequestRegionCapture(char const* path, bool depth)
 	{
 		if (dead || path == nullptr)
 		{
@@ -1205,6 +1205,7 @@ namespace scvk
 		}
 
 		regionCaptureRequested = true;
+		regionCaptureDepth     = depth;
 		regionCapturePath      = path;
 	}
 
@@ -1255,6 +1256,22 @@ namespace scvk
 			fclose(file);
 			return true;
 		}
+
+		/** Width, height, then four bytes a texel, tightly packed. */
+		bool WriteRaw(char const* path, void const* texels, uint32_t width, uint32_t height)
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+			{
+				return false;
+			}
+
+			fwrite(&width, 4, 1, file);
+			fwrite(&height, 4, 1, file);
+			fwrite(texels, 4, static_cast<size_t>(width) * height, file);
+			fclose(file);
+			return true;
+		}
 	}
 
 	void VulkanBackend::Present(void)
@@ -1302,14 +1319,23 @@ namespace scvk
 		{
 			regionCaptureRequested = false;
 
-			// The first live colour region, which is the one the game keeps
-			// the scene in. A region that has never been written holds
-			// nothing worth reading.
+			// The first live region of the kind asked for, which is the one the
+			// game keeps the scene in. A region that has never been written
+			// holds nothing worth reading.
 			for (BufferRegion const& region : bufferRegions)
 			{
-				if (!region.live || region.depth || !region.written)
+				if (!region.live || region.depth != regionCaptureDepth || !region.written)
 				{
 					continue;
+				}
+
+				// Four bytes a texel either way, which for depth only holds
+				// while it is 32-bit float.
+				if (region.depth && region.format != VK_FORMAT_D32_SFLOAT)
+				{
+					LogNote("Vulkan: the depth region is format %d, not D32_SFLOAT; not capturing it.",
+						static_cast<int>(region.format));
+					break;
 				}
 
 				VkDeviceSize const needed =
@@ -1334,7 +1360,7 @@ namespace scvk
 				}
 
 				VkBufferImageCopy copy{};
-				copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				copy.imageSubresource.aspectMask = region.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 				copy.imageSubresource.layerCount = 1;
 				copy.imageExtent = { region.width, region.height, 1 };
 
@@ -1431,8 +1457,12 @@ namespace scvk
 
 			if (capturingRegion)
 			{
-				if (WriteBmp(regionCapturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
-						regionWidth, regionHeight, regionWidth * 4u))
+				bool const written = regionCaptureDepth
+					? WriteRaw(regionCapturePath.c_str(), readbackMapped, regionWidth, regionHeight)
+					: WriteBmp(regionCapturePath.c_str(), static_cast<uint8_t const*>(readbackMapped),
+						regionWidth, regionHeight, regionWidth * 4u);
+
+				if (written)
 				{
 					LogNote("Vulkan: wrote the saved region to %s (%ux%u)",
 						regionCapturePath.c_str(), regionWidth, regionHeight);
@@ -1499,6 +1529,13 @@ namespace scvk
 			if ((presentedFrames % 300ull) == 0ull)
 			{
 				LogNote("Vulkan: %llu frames presented.", static_cast<unsigned long long>(presentedFrames));
+
+				if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
+				{
+					LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.",
+						static_cast<unsigned long long>(drawsBeforeUpload),
+						static_cast<unsigned long long>(uploadsAfterDraw));
+				}
 			}
 		}
 	}
@@ -1982,6 +2019,18 @@ namespace scvk
 			return;
 		}
 
+		if (texture.lastDrawnFrame == presentedFrames)
+		{
+			uploadsAfterDraw++;
+
+			if (hazardNotesRemaining > 0)
+			{
+				hazardNotesRemaining--;
+				LogNote("  HAZARD: texture %u (%ux%u) level %u, %d,%d %ux%u, uploaded after a draw this frame sampled it",
+					handle, texture.width, texture.height, level, xoffset, yoffset, width, height);
+			}
+		}
+
 		if (level + 1 > texture.uploadedLevels)
 		{
 			texture.uploadedLevels = level + 1;
@@ -2215,6 +2264,30 @@ namespace scvk
 			why, handle, texture.width, texture.height, static_cast<int>(texture.format),
 			texture.compressed ? "compressed" : "plain",
 			texture.levels, texture.uploadedLevels);
+	}
+
+	void VulkanBackend::NoteTextureUse(uint32_t handle)
+	{
+		// Zero is the default white texture, which is never uploaded to.
+		if (handle == 0 || handle >= textures.size())
+		{
+			return;
+		}
+
+		Texture& texture = textures[handle];
+		texture.lastDrawnFrame = presentedFrames;
+
+		if (texture.uploadedLevels == 0)
+		{
+			drawsBeforeUpload++;
+
+			if (hazardNotesRemaining > 0)
+			{
+				hazardNotesRemaining--;
+				LogNote("  HAZARD: texture %u (%ux%u) sampled before anything was uploaded to it",
+					handle, texture.width, texture.height);
+			}
+		}
 	}
 
 	void VulkanBackend::SetTexture1(uint32_t handle)
@@ -2705,6 +2778,9 @@ namespace scvk
 		// game's own driver, and only the first draw after a bind reads them.
 		if (stageEnabled[0]) { RefreshTextureParameters(bound); }
 		if (twoStages)       { RefreshTextureParameters(bound1); }
+
+		NoteTextureUse(bound);
+		NoteTextureUse(bound1);
 
 		// One sampler serves both stages, taken from the first stage's texture.
 		// The two stages only ever run together on the terrain, which uses the

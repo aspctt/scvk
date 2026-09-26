@@ -154,8 +154,11 @@ namespace scvk
 		 * present. That is the copy of the scene the game restores every
 		 * frame, so it answers whether something wrong was saved into it or
 		 * only drawn over it afterwards.
+		 *
+		 * With depth set it reads the saved depth region instead, written as
+		 * a width and height followed by raw 32-bit floats.
 		 */
-		void RequestRegionCapture(char const* path);
+		void RequestRegionCapture(char const* path, bool depth = false);
 
 		/**
 		 * Draws from client memory.
@@ -371,6 +374,12 @@ namespace scvk
 			// declared level that was never uploaded is undefined memory, and
 			// sampling it is indistinguishable from sampling black.
 			uint32_t        uploadedLevels = 0;
+
+			// The frame whose command buffer last sampled this texture.
+			// Uploads are submitted at once while draws wait for the end of
+			// the frame, so an upload in that same frame reaches draws that
+			// the game issued before it.
+			uint64_t        lastDrawnFrame = UINT64_MAX;
 		};
 
 		struct PipelineEntry
@@ -680,7 +689,23 @@ namespace scvk
 		VkDeviceSize   readbackSize   = 0;
 		int            textureDumpsRemaining = 8;
 		bool           captureRequested = false;
+		// Texture uses that OpenGL would order differently from us, counted
+		// so the log says whether they happen at all.
+		uint64_t       drawsBeforeUpload    = 0;
+		uint64_t       uploadsAfterDraw     = 0;
+		int            hazardNotesRemaining = 40;
+
+		/** Records a draw sampling a texture, and reports the hazards above. */
+		void NoteTextureUse(uint32_t handle);
+
+	public:
+		/** Both hazard counts together, so a caller can tell whether any happened. */
+		uint64_t TextureHazardCount(void) const { return drawsBeforeUpload + uploadsAfterDraw; }
+
+	private:
+
 		bool           regionCaptureRequested = false;
+		bool           regionCaptureDepth     = false;
 		std::string    regionCapturePath;
 		std::string    capturePath;
 

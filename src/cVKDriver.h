@@ -367,6 +367,16 @@ namespace scvk
 		int      dumpedDraws;
 		int      frameDumpsRemaining;
 
+		// Scroll Lock captures the screen, the saved scene and the saved
+		// depth on three consecutive frames. The step counts down the ones
+		// still to take.
+		int      keyCaptureStep;
+		uint32_t keyCaptureCount;
+		bool     keyCaptureHeld;
+
+		/** Starts and advances the Scroll Lock capture. */
+		void PollKeyCapture(void);
+
 		// A dump stays open over a window of frames, because the frame worth
 		// seeing is the sparse one that rebuilds the scene rather than any of
 		// the many that just restore it from a buffer region.
@@ -424,6 +434,57 @@ namespace scvk
 		/** Whether a copy covers the whole window at the origin. */
 		bool IsFullWindowCopy(int32_t x, int32_t y, int32_t width, int32_t height,
 			int32_t screenX, int32_t screenY) const;
+
+		/** Window depth range of a draw's first few vertices, as OpenGL would compute it. */
+		void SampleWindowDepth(int32_t count, int32_t first, void const* indices,
+			bool indicesAre32Bit, float& zMin, float& zMax) const;
+
+		// Every partial update the game saves, summarised and kept in a ring
+		// so Scroll Lock can write out the ones just before a capture. A tile
+		// is the draws since the previous save, grouped by the state that
+		// decides whether they reach the screen.
+		static constexpr int kTileRing    = 256;
+		static constexpr int kTileClasses = 24;
+
+		struct TileClass
+		{
+			uint32_t key;
+			uint32_t count;
+			uint32_t firstTexture;
+			float    zMin;
+			float    zMax;
+		};
+
+		struct TileRecord
+		{
+			uint32_t  frame;
+			int32_t   save[4];
+			int32_t   sub[4];
+			uint32_t  subDraws;
+			uint32_t  fullDraws;
+			uint32_t  otherClasses;
+			uint64_t  hazards;
+			int       classCount;
+			TileClass classes[kTileClasses];
+		};
+
+		TileRecord tileCurrent;
+		uint64_t   tileHazardsAtStart;
+		TileRecord tileRing[kTileRing];
+		uint32_t   tileRingNext;
+		uint32_t   tileRingCount;
+
+		/** Adds one draw to the tile being built. */
+		void NoteTileDraw(int32_t count, int32_t first, void const* indices, bool indicesAre32Bit);
+
+		/** Closes the tile on a save of part of the scene. */
+		void NoteTileSave(int32_t x, int32_t y, int32_t width, int32_t height);
+
+		/** Starts a fresh tile, dropping whatever was gathered. */
+		void ResetTile(void);
+
+		/** Writes the ring to the log, oldest first. */
+		void DumpTileRing(void);
 
 		// A dump waits for the terrain pass rather than starting on a frame
 		// boundary. Most frames restore the scene from a buffer region and

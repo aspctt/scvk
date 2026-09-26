@@ -186,6 +186,13 @@ foreach ($bmp in Get-ChildItem $PluginsDir -Filter 'scvk-*.bmp' -ErrorAction Sil
     }
 }
 
+# Depth captures are raw floats, moved as they are.
+foreach ($raw in Get-ChildItem $PluginsDir -Filter 'scvk-*.raw' -ErrorAction SilentlyContinue) {
+    $dest = Join-Path $logDir (($raw.BaseName) + "-$stamp$suffix.raw")
+    Move-Item $raw.FullName $dest -Force
+    Write-Host "  captured $dest"
+}
+
 $lines = [System.IO.File]::ReadAllLines($captured)
 
 Write-Host ""

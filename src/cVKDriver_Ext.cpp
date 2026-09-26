@@ -98,6 +98,11 @@ namespace scvk
 		AttachRegionPending();
 		NoteRegionOp("save r%u region %d,%d %dx%d <- screen %d,%d", region, x, y, width, height, destX, destY);
 
+		if (!IsFullWindowCopy(x, y, width, height, destX, destY))
+		{
+			NoteTileSave(destX, destY, width, height);
+		}
+
 		// Saving: the framebuffer is the source. The first pair of coordinates
 		// addresses the region and the last pair addresses the screen, which is
 		// the convention the matching draw call uses in reverse.
@@ -110,6 +115,7 @@ namespace scvk
 
 		regionFrameRestored = true;
 		NoteRegionOp("restore r%u region %d,%d %dx%d -> screen %d,%d", region, x, y, width, height, destX, destY);
+		ResetTile();
 
 		// Restoring: the region is the source, at the first pair of
 		// coordinates, and the screen is the destination, at the last pair.
@@ -214,6 +220,8 @@ namespace scvk
 	void cVKDriver::NoteRegionDraw(uint32_t gdPrimType, int32_t count, int32_t first,
 		void const* indices, bool indicesAre32Bit)
 	{
+		NoteTileDraw(count, first, indices, indicesAre32Bit);
+
 		if (regionTraceFrames <= 0)
 		{
 			return;
@@ -241,10 +249,30 @@ namespace scvk
 			return;
 		}
 
-		// Window depth of the first few vertices, as OpenGL would compute it
-		// with the default depth range.
-		float zMin = 2.0f;
-		float zMax = -2.0f;
+		float zMin;
+		float zMax;
+		SampleWindowDepth(count, first, indices, indicesAre32Bit, zMin, zMax);
+
+		sprintf_s(regionPending[regionPendingCount++], kRegionLineLength,
+			"        fmt 0x%x prim %u n=%d  tex %u%s / %u%s  blend %d(%u,%u)  atest %d %u@%.2f  depth %d/%d func %u  cw %d  "
+			"env %d/%d  tint %.2f %.2f %.2f a %.2f  z %.6f..%.6f",
+			vertexFormat, gdPrimType, count,
+			boundTexture, texStageEnabled[0] ? "" : " (off)",
+			stage1Texture, texStageEnabled[1] ? "" : " (off)",
+			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
+			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
+			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0, depthCompare,
+			colourWrite ? 1 : 0, texEnvMode[0], texEnvMode[1],
+			colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
+			zMin, zMax);
+	}
+
+	void cVKDriver::SampleWindowDepth(int32_t count, int32_t first, void const* indices,
+		bool indicesAre32Bit, float& zMin, float& zMax) const
+	{
+		// With the default depth range.
+		zMin = 2.0f;
+		zMax = -2.0f;
 		int const sampled = (count < 8) ? count : 8;
 
 		for (int i = 0; i < sampled; i++)
@@ -293,19 +321,134 @@ namespace scvk
 			if (window < zMin) { zMin = window; }
 			if (window > zMax) { zMax = window; }
 		}
+	}
 
-		sprintf_s(regionPending[regionPendingCount++], kRegionLineLength,
-			"        fmt 0x%x prim %u n=%d  tex %u%s / %u%s  blend %d(%u,%u)  atest %d %u@%.2f  depth %d/%d func %u  cw %d  "
-			"env %d/%d  tint %.2f %.2f %.2f a %.2f  z %.6f..%.6f",
-			vertexFormat, gdPrimType, count,
-			boundTexture, texStageEnabled[0] ? "" : " (off)",
-			stage1Texture, texStageEnabled[1] ? "" : " (off)",
-			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
-			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
-			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0, depthCompare,
-			colourWrite ? 1 : 0, texEnvMode[0], texEnvMode[1],
-			colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
-			zMin, zMax);
+	void cVKDriver::ResetTile(void)
+	{
+		tileCurrent.subDraws     = 0;
+		tileCurrent.fullDraws    = 0;
+		tileCurrent.otherClasses = 0;
+		tileCurrent.classCount   = 0;
+		tileCurrent.sub[2]       = 0;
+		tileHazardsAtStart       = vulkan->TextureHazardCount();
+	}
+
+	void cVKDriver::NoteTileDraw(int32_t count, int32_t first, void const* indices, bool indicesAre32Bit)
+	{
+		bool const sub = viewportX != 0 || viewportY != 0 ||
+			viewportWidth != windowWidth || viewportHeight != windowHeight;
+
+		if (!sub)
+		{
+			tileCurrent.fullDraws++;
+			return;
+		}
+
+		tileCurrent.subDraws++;
+		tileCurrent.sub[0] = viewportX;
+		tileCurrent.sub[1] = viewportY;
+		tileCurrent.sub[2] = viewportWidth;
+		tileCurrent.sub[3] = viewportHeight;
+
+		// Everything that decides whether a draw can land on the screen.
+		uint32_t const key =
+			(vertexFormat & 0xffu) |
+			((enabledCapabilities[kGDCapability_Blend] ? 1u : 0u) << 8) |
+			((blendSrcFactor & 0xfu) << 9) |
+			((blendDstFactor & 0xfu) << 13) |
+			((enabledCapabilities[kGDCapability_DepthTest] ? 1u : 0u) << 17) |
+			((depthWrite ? 1u : 0u) << 18) |
+			((depthCompare & 7u) << 19) |
+			((colourWrite ? 1u : 0u) << 22) |
+			((texStageEnabled[0] ? 1u : 0u) << 23) |
+			((texStageEnabled[1] ? 1u : 0u) << 24) |
+			((IsCloudShadowDraw() ? 1u : 0u) << 25) |
+			((enabledCapabilities[kGDCapability_AlphaTest] ? 1u : 0u) << 26);
+
+		float zMin;
+		float zMax;
+		SampleWindowDepth(count, first, indices, indicesAre32Bit, zMin, zMax);
+
+		for (int i = 0; i < tileCurrent.classCount; i++)
+		{
+			TileClass& entry = tileCurrent.classes[i];
+
+			if (entry.key == key)
+			{
+				entry.count++;
+				if (zMin < entry.zMin) { entry.zMin = zMin; }
+				if (zMax > entry.zMax) { entry.zMax = zMax; }
+				return;
+			}
+		}
+
+		if (tileCurrent.classCount >= kTileClasses)
+		{
+			tileCurrent.otherClasses++;
+			return;
+		}
+
+		TileClass& entry   = tileCurrent.classes[tileCurrent.classCount++];
+		entry.key          = key;
+		entry.count        = 1;
+		entry.firstTexture = boundTexture;
+		entry.zMin         = zMin;
+		entry.zMax         = zMax;
+	}
+
+	void cVKDriver::NoteTileSave(int32_t x, int32_t y, int32_t width, int32_t height)
+	{
+		// The colour and depth saves come as a pair with nothing drawn
+		// between them, so only the first one closes a tile.
+		if (tileCurrent.subDraws == 0)
+		{
+			return;
+		}
+
+		tileCurrent.frame   = frameCounter;
+		tileCurrent.save[0] = x;
+		tileCurrent.save[1] = y;
+		tileCurrent.save[2] = width;
+		tileCurrent.save[3] = height;
+		tileCurrent.hazards = vulkan->TextureHazardCount() - tileHazardsAtStart;
+
+		tileRing[tileRingNext] = tileCurrent;
+		tileRingNext = (tileRingNext + 1) % kTileRing;
+		if (tileRingCount < kTileRing) { tileRingCount++; }
+
+		ResetTile();
+	}
+
+	void cVKDriver::DumpTileRing(void)
+	{
+		LogNote("=== last %u saved tiles, oldest first ===", tileRingCount);
+
+		uint32_t const start = (tileRingNext + kTileRing - tileRingCount) % kTileRing;
+
+		for (uint32_t n = 0; n < tileRingCount; n++)
+		{
+			TileRecord const& tile = tileRing[(start + n) % kTileRing];
+
+			LogNote("  TILE frame %u  save %d,%d %dx%d  sub %d,%d %dx%d  draws %u sub, %u full  hazards %llu%s",
+				tile.frame, tile.save[0], tile.save[1], tile.save[2], tile.save[3],
+				tile.sub[0], tile.sub[1], tile.sub[2], tile.sub[3],
+				tile.subDraws, tile.fullDraws, static_cast<unsigned long long>(tile.hazards),
+				tile.otherClasses > 0 ? "  (classes overflowed)" : "");
+
+			for (int i = 0; i < tile.classCount; i++)
+			{
+				TileClass const& entry = tile.classes[i];
+				uint32_t const k = entry.key;
+
+				LogNote("    n=%-5u fmt 0x%-2x blend %u(%u,%u) depth %u/%u func %u cw %u tex %u/%u gen %u atest %u  first tex %u  z %.5f..%.5f",
+					entry.count, k & 0xffu, (k >> 8) & 1u, (k >> 9) & 0xfu, (k >> 13) & 0xfu,
+					(k >> 17) & 1u, (k >> 18) & 1u, (k >> 19) & 7u, (k >> 22) & 1u,
+					(k >> 23) & 1u, (k >> 24) & 1u, (k >> 25) & 1u, (k >> 26) & 1u,
+					entry.firstTexture, entry.zMin, entry.zMax);
+			}
+		}
+
+		LogNote("=== end of saved tiles ===");
 	}
 
 	void cVKDriver::FlushRegionTrace(void)
@@ -327,6 +470,8 @@ namespace scvk
 				LogNote("  REGION     %u draws before the frame ended", regionDrawsSinceOp);
 			}
 		}
+
+		ResetTile();
 
 		regionLineCount        = 0;
 		regionLinesDropped     = 0;
