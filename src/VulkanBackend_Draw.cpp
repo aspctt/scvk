@@ -718,22 +718,6 @@ namespace scvk
 		uint32_t const bound  = (isStageEnabled[0] && currentTexture < textures.size() && textures[currentTexture].isLive) ? currentTexture : 0;
 		uint32_t const bound1 = (isTwoStage && currentTexture1 < textures.size() && textures[currentTexture1].isLive) ? currentTexture1 : 0;
 
-		// Apply their parameters
-		//
-		// Only a stage that is on gets its parameters applied, as in the game's own
-		// driver. The first stage takes them after a bind or after any change; the second
-		// only after a bind.
-		if (isStageEnabled[0])
-		{
-			RefreshTextureParameters(bound, shouldRefreshStage0Parameters);
-			shouldRefreshStage0Parameters = false;
-		}
-
-		if (isTwoStage)
-		{
-			RefreshTextureParameters(bound1, false);
-		}
-
 		NoteTextureUse(bound);
 		NoteTextureUse(bound1);
 

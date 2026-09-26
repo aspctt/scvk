@@ -256,18 +256,25 @@ namespace scvk
 			LogNote("  TEXPARAM target %u, param type %u, value %d", gdTextureTarget, gdTextureParameterType, gdTextureParameter);
 		}
 
-		// Record the parameter
+		// Set it on the texture bound to the selected stage
 		//
 		// Parameter type 0 is the magnification filter, 1 the minification filter, 2 the
 		// wrap in S and 3 the wrap in T. The game sets both clamp and repeat. The value
 		// is not negative, checked here.
+		//
+		// The texture keeps it, as an OpenGL texture object does. The game relies on
+		// that: it sets clamp after binding an interface texture but never sets repeat
+		// back on the terrain textures. Applying the latest values to whatever was drawn
+		// next instead left the terrain clamped whenever it was redrawn straight after the
+		// interface, and a clamped grass layer samples the transparent border, which was
+		// the black patches.
 		if (gdTextureParameterType >= 4 || gdTextureParameter < 0)
 		{
 			return;
 		}
 
-		textureParameters[gdTextureParameterType] = static_cast<uint32_t>(gdTextureParameter);
-		vulkan->SetTextureParameters(textureParameters[0], textureParameters[1], textureParameters[2], textureParameters[3]);
+		uint32_t const texture = (activeTextureStage == 1) ? stage1Texture : boundTexture;
+		vulkan->SetTextureParameter(texture, gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
 	}
 
 	void cVKDriver::GenTextures(int32_t count, uint32_t* textures)

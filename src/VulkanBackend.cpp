@@ -1466,11 +1466,6 @@ namespace scvk
 		// trace. Cheap at one line per few hundred frames.
 		LogNote("Vulkan: %llu frames presented.", presentedFrames);
 
-		if (parameterRefreshChanges != 0)
-		{
-			LogNote("Vulkan: %llu draws sampled with parameters the game changed after binding.", parameterRefreshChanges);
-		}
-
 		if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 		{
 			LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);

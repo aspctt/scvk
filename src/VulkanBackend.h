@@ -106,12 +106,10 @@ namespace scvk
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
-			// Filter and wrap, in the game's own numbering, the same one
-			// SetTextureParameters takes. Refreshed from the current values by a draw,
-			// after the texture is bound or, on the first stage, after the values change,
-			// which is when the game's driver pushes them onto the texture object.
-			uint32_t parameters[4]       = { 1, 1, 3, 3 };
-			bool     hasStaleParameters  = true;
+			// Magnification filter, minification filter, wrap S and wrap T, in the game's
+			// own numbering, which SetTextureParameter writes. Linear with repeat until
+			// the game says otherwise.
+			uint32_t parameters[4] = { 1, 1, 3, 3 };
 
 			VkImage         image      = VK_NULL_HANDLE;
 			VkDeviceMemory  memory     = VK_NULL_HANDLE;
@@ -360,21 +358,6 @@ namespace scvk
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
 
-		// Magnification filter, minification filter, wrap S, wrap T, in the game's own
-		// encoding. Linear with repeat is the fixed function default.
-		uint32_t textureParameters[4] = { 1, 1, 3, 3 };
-
-		// Set when the parameters change. The game's OpenGL driver flags the first stage
-		// for a refresh on every TexParameter, so the texture on that stage always
-		// samples with the values current at the draw, not only the ones current at the
-		// first draw after its bind.
-		bool shouldRefreshStage0Parameters = true;
-
-		// Draws where that refresh changed what a texture samples with, which the refresh
-		// on bind alone would have missed.
-		uint64_t parameterRefreshChanges = 0;
-		int      parameterNotesRemaining = 20;
-
 		// Texture uses that OpenGL would order differently from us, counted so the log
 		// says whether they happen at all.
 		uint64_t drawsBeforeUpload     = 0;
@@ -515,20 +498,7 @@ namespace scvk
 		/** Destroys everything retired since the last frame. */
 		void FlushRetiredTextures(void);
 
-		/**
-		 * Copies the current parameters onto a texture if it has been bound since the
-		 * last time, or unconditionally when forced, which is what the game's driver does
-		 * when it applies its texture stages before a draw.
-		 */
-		void RefreshTextureParameters(uint32_t handle, bool shouldForce);
-
-		/**
-		 * The sampler for one texture's own parameters.
-		 *
-		 * OpenGL keeps filter and wrap on the texture object. The game's driver pushes
-		 * the current values onto a texture when it applies the stages for a draw after a
-		 * bind or after the values change, and only while the stage is on.
-		 */
+		/** The sampler for one texture's own parameters. */
 		VkDescriptorSet GetSamplerSet(uint32_t handle);
 
 		/** Records a draw sampling a texture, and reports the hazards counted above. */
@@ -753,13 +723,13 @@ namespace scvk
 		void UploadTextureLevel(uint32_t handle, uint32_t level, int32_t offsetX, int32_t offsetY, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
 
 		/**
-		 * Sets the current filter and wrap parameters.
+		 * Sets one filter or wrap parameter on a texture.
 		 *
-		 * OpenGL keeps these on the texture object. They reach a texture when a draw
-		 * applies its stages, the way the game's driver does it; see
-		 * RefreshTextureParameters.
+		 * The type is 0 for the magnification filter, 1 the minification filter, 2 wrap
+		 * S and 3 wrap T. The texture keeps it, as an OpenGL texture object does, and
+		 * every draw that samples the texture uses it.
 		 */
-		void SetTextureParameters(uint32_t magnificationFilter, uint32_t minificationFilter, uint32_t wrapS, uint32_t wrapT);
+		void SetTextureParameter(uint32_t handle, uint32_t parameterType, uint32_t value);
 
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);

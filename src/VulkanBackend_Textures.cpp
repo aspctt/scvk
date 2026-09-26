@@ -286,45 +286,14 @@ namespace scvk
 		retiredTextures.clear();
 	}
 
-	void VulkanBackend::RefreshTextureParameters(uint32_t handle, bool shouldForce)
-	{
-		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
-		{
-			return;
-		}
-
-		Texture& texture = textures[handle];
-
-		if (!texture.hasStaleParameters && !shouldForce)
-		{
-			return;
-		}
-
-		// Report a forced refresh that changed what the texture samples with
-		if (!texture.hasStaleParameters && memcmp(texture.parameters, textureParameters, sizeof(textureParameters)) != 0)
-		{
-			parameterRefreshChanges++;
-
-			if (parameterNotesRemaining > 0)
-			{
-				parameterNotesRemaining--;
-				LogNote("  PARAMS: texture %u (%ux%u) had %u,%u,%u,%u and now samples with %u,%u,%u,%u", handle, texture.width, texture.height, texture.parameters[0], texture.parameters[1], texture.parameters[2], texture.parameters[3], textureParameters[0], textureParameters[1], textureParameters[2], textureParameters[3]);
-			}
-		}
-
-		// Copy the current values onto the texture
-		for (int i = 0; i < 4; i++)
-		{
-			texture.parameters[i] = textureParameters[i];
-		}
-
-		texture.hasStaleParameters = false;
-	}
-
 	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t handle)
 	{
 		// Reuse the sampler made for the same parameters
-		uint32_t const* const parameters = (handle < textures.size() && textures[handle].isLive) ? textures[handle].parameters : textureParameters;
+		//
+		// A handle that resolves to nothing samples with the defaults a new texture
+		// starts with.
+		Texture const fallbackTexture{};
+		uint32_t const* const parameters = (handle < textures.size() && textures[handle].isLive) ? textures[handle].parameters : fallbackTexture.parameters;
 
 		uint32_t const key = (parameters[0] & 0xff) | ((parameters[1] & 0xff) << 8) | ((parameters[2] & 0xff) << 16) | ((parameters[3] & 0xff) << 24);
 
@@ -814,36 +783,25 @@ namespace scvk
 		vkDestroyBuffer(device, uploadBuffer, nullptr);
 	}
 
-	void VulkanBackend::SetTextureParameters(uint32_t magnificationFilter, uint32_t minificationFilter, uint32_t wrapS, uint32_t wrapT)
+	void VulkanBackend::SetTextureParameter(uint32_t handle, uint32_t parameterType, uint32_t value)
 	{
-		textureParameters[0] = magnificationFilter;
-		textureParameters[1] = minificationFilter;
-		textureParameters[2] = wrapS;
-		textureParameters[3] = wrapT;
+		// Zero is the default white texture, which the game never names.
+		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive || parameterType >= 4)
+		{
+			return;
+		}
 
-		shouldRefreshStage0Parameters = true;
+		textures[handle].parameters[parameterType] = value;
 	}
 
 	void VulkanBackend::SetTexture(uint32_t handle)
 	{
 		currentTexture = (handle < textures.size() && textures[handle].isLive) ? handle : 0;
-
-		// The bind only marks the texture as needing the parameters. They are read at the
-		// next draw, which is when the game's driver applies them.
-		if (currentTexture != 0 && currentTexture < textures.size())
-		{
-			textures[currentTexture].hasStaleParameters = true;
-		}
 	}
 
 	void VulkanBackend::SetTexture1(uint32_t handle)
 	{
 		currentTexture1 = (handle < textures.size() && textures[handle].isLive) ? handle : 0;
-
-		if (currentTexture1 != 0 && currentTexture1 < textures.size())
-		{
-			textures[currentTexture1].hasStaleParameters = true;
-		}
 	}
 
 	void VulkanBackend::SetTextureStageEnabled(uint32_t stage, bool isEnabled)

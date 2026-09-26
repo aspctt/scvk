@@ -27,7 +27,6 @@ few visual bugs left.
 
 Known issues:
 
-- Small black patches can appear on the city. They go away when you zoom.
 - The interface sometimes flickers for a single frame.
 - Scrolling is slow, around 6 to 7 frames a second.
 

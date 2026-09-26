@@ -200,9 +200,6 @@ namespace scvk
 		// Only that stage generates, so only that one is kept.
 		float textureStageMatrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
-		// Magnification filter, minification filter, wrap S, wrap T.
-		uint32_t textureParameters[4] = { 1, 1, 3, 3 };
-
 		// What each stage was last told to combine with, and how. The mode decides which
 		// of the two the stage actually uses: the network only applies when the mode
 		// selects Combine.
