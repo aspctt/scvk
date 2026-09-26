@@ -85,6 +85,33 @@ namespace scvk
 		// The Scroll Lock capture takes one kind a frame, counting down from the last.
 		constexpr int KEY_CAPTURE_STEPS = 3;
 		constexpr char const* KEY_CAPTURE_KINDS[KEY_CAPTURE_STEPS] = { "depth.raw", "region.bmp", "frame.bmp" };
+
+		// A draw record measures at most this many of a draw's vertices. The terrain's
+		// draws stay well under it; the cap only bounds the cost of a stray huge one.
+		constexpr int RECORDED_VERTEX_LIMIT = 4096;
+
+		// The draw record file: a header, the saved tiles, then the draws, oldest first.
+		// tools/draw-records.py reads the same layout.
+		constexpr char DRAW_FILE_MAGIC[8] = { 'S', 'C', 'V', 'K', 'D', 'R', 'W', '1' };
+
+		struct DrawFileHeader
+		{
+			char     magic[8];
+			uint32_t recordSize;
+			uint32_t tileCount;
+			uint32_t drawCount;
+			uint32_t windowWidth;
+			uint32_t windowHeight;
+		};
+
+		struct DrawFileTile
+		{
+			uint32_t frame;
+			int32_t  saveRectangle[4];
+			int32_t  subViewport[4];
+			uint32_t firstDraw;
+			uint32_t endDraw;
+		};
 	}
 
 	//// Private Functions
@@ -647,6 +674,7 @@ namespace scvk
 	void cVKDriver::NoteRegionDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit)
 	{
 		NoteTileDraw(count, first, indices, isIndex32Bit);
+		RecordTileDraw(gdPrimitiveType, count, first, indices, isIndex32Bit);
 
 		if (regionTraceFrames <= 0)
 		{
@@ -791,6 +819,7 @@ namespace scvk
 		currentTile.saveRectangle[2] = width;
 		currentTile.saveRectangle[3] = height;
 		currentTile.hazards          = vulkan->TextureHazardCount() - tileHazardsAtStart;
+		currentTile.endDraw          = drawSequence;
 
 		tileRing[tileRingNext] = currentTile;
 		tileRingNext = (tileRingNext + 1) % TILE_RING_SIZE;
@@ -810,7 +839,220 @@ namespace scvk
 		currentTile.unclassifiedDraws = 0;
 		currentTile.classCount        = 0;
 		currentTile.subViewport[2]    = 0;
+		currentTile.firstDraw         = drawSequence;
 		tileHazardsAtStart            = vulkan->TextureHazardCount();
+	}
+
+	void cVKDriver::RecordTileDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit)
+	{
+		// Only draws that can land in a saved tile
+		if (drawRing.empty() || !IsSubViewport() || count <= 0 || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		// Take the next slot
+		//
+		// The count was checked to be positive above.
+		DrawRecord& record = drawRing[drawSequence % DRAW_RING_SIZE];
+		record = DrawRecord{};
+
+		record.sequence      = drawSequence++;
+		record.frame         = frameCounter;
+		record.vertexFormat  = vertexFormat;
+		record.primitiveType = gdPrimitiveType;
+		record.count         = static_cast<uint32_t>(count);
+		record.textures[0]   = boundTexture;
+		record.textures[1]   = stage1Texture;
+
+		// Pack the state
+		//
+		// The game's blend, comparison, environment, filter and wrap enumerations, its
+		// stage numbers and its coordinate sources are all small, so each fits a byte.
+		uint32_t flags = 0;
+		flags |= isTextureStageEnabled[0] ? DRAW_FLAG_STAGE0 : 0u;
+		flags |= isTextureStageEnabled[1] ? DRAW_FLAG_STAGE1 : 0u;
+		flags |= isCapabilityEnabled[kGDCapability_Blend] ? DRAW_FLAG_BLEND : 0u;
+		flags |= isCapabilityEnabled[kGDCapability_DepthTest] ? DRAW_FLAG_DEPTH_TEST : 0u;
+		flags |= isDepthWriteEnabled ? DRAW_FLAG_DEPTH_WRITE : 0u;
+		flags |= isColourWriteEnabled ? DRAW_FLAG_COLOUR_WRITE : 0u;
+		flags |= isCapabilityEnabled[kGDCapability_AlphaTest] ? DRAW_FLAG_ALPHA_TEST : 0u;
+		flags |= IsGeneratingCoordinates(0) ? DRAW_FLAG_GENERATED : 0u;
+		flags |= isVertexColourAmbient ? DRAW_FLAG_AMBIENT_VERTEX : 0u;
+		flags |= isVertexColourDiffuse ? DRAW_FLAG_DIFFUSE_VERTEX : 0u;
+		flags |= (indices != nullptr) ? DRAW_FLAG_INDEXED : 0u;
+
+		record.blendSource          = static_cast<uint8_t>(blendSourceFactor);
+		record.blendDestination     = static_cast<uint8_t>(blendDestinationFactor);
+		record.depthComparison      = static_cast<uint8_t>(depthComparison);
+		record.alphaComparison      = static_cast<uint8_t>(alphaComparison);
+		record.environmentModes[0]  = static_cast<uint8_t>(textureEnvironmentMode[0]);
+		record.environmentModes[1]  = static_cast<uint8_t>(textureEnvironmentMode[1]);
+		record.alphaReference       = alphaReference;
+		record.diffuseLight         = diffuseLightFactor;
+		record.activeTextureStage   = static_cast<uint8_t>(activeTextureStage);
+		record.coordinateSources[0] = static_cast<uint8_t>(textureCoordinateSource[0]);
+		record.coordinateSources[1] = static_cast<uint8_t>(textureCoordinateSource[1]);
+		memcpy(record.tint, colourMultiplier, sizeof(record.tint));
+
+		for (int i = 0; i < 4; i++)
+		{
+			record.textureMatrixRows[i]     = textureStageMatrices[0][i * 4 + 0];
+			record.textureMatrixRows[4 + i] = textureStageMatrices[0][i * 4 + 1];
+		}
+
+		// Describe the first stage's texture as it stands at the draw
+		//
+		// Texture sides and level counts are far below the field limits.
+		uint32_t textureWidth          = 0;
+		uint32_t textureHeight         = 0;
+		uint32_t textureLevels         = 0;
+		uint32_t textureUploadedLevels = 0;
+		uint32_t textureUploads        = 0;
+		uint32_t textureParameters[4]  = {};
+
+		if (vulkan->DescribeTexture(boundTexture, textureWidth, textureHeight, textureLevels, textureUploadedLevels, textureUploads, textureParameters))
+		{
+			flags |= DRAW_FLAG_TEXTURE_LIVE;
+
+			record.textureWidth          = static_cast<uint16_t>(textureWidth);
+			record.textureHeight         = static_cast<uint16_t>(textureHeight);
+			record.textureLevels         = static_cast<uint8_t>(textureLevels);
+			record.textureUploadedLevels = static_cast<uint8_t>(textureUploadedLevels);
+			record.textureUploads        = textureUploads;
+
+			for (int i = 0; i < 4; i++)
+			{
+				record.samplerParameters[i] = static_cast<uint8_t>(textureParameters[i]);
+			}
+		}
+
+		// Find the parts of the vertex this draw has
+		bool const hasColour      = RZVertexFormatNumElements(vertexFormat, kGDElementType_Color) != 0;
+		bool const hasCoordinates = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0;
+
+		uint32_t const colourOffset     = hasColour ? RZVertexFormatElementOffset(vertexFormat, kGDElementType_Color, 0) : 0;
+		uint32_t const coordinateOffset = hasCoordinates ? RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0) : 0;
+
+		// Map normalised device coordinates to window pixels
+		//
+		// The stored viewport y is bottom-origin, as OpenGL has it, and clip space y runs
+		// the other way from screen y. Pixel counts convert to float exactly.
+		float const viewportLeft = static_cast<float>(viewportX);
+		float const viewportTop  = static_cast<float>(windowHeight - viewportY - viewportHeight);
+		float const halfWidth    = 0.5f * static_cast<float>(viewportWidth);
+		float const halfHeight   = 0.5f * static_cast<float>(viewportHeight);
+
+		// Measure every vertex
+		//
+		// All of them rather than the first few, because the bounds decide which draws
+		// could have covered a given pixel. The positions are hashed in draw order, so two
+		// passes over the same triangles hash the same.
+		int const measured = (count < RECORDED_VERTEX_LIMIT) ? count : RECORDED_VERTEX_LIMIT;
+		if (measured < count)
+		{
+			flags |= DRAW_FLAG_VERTICES_CAPPED;
+		}
+
+		float    bounds[4]        = { 1e30f, 1e30f, -1e30f, -1e30f };
+		float    depthRange[2]    = { 2.0f, -2.0f };
+		float    coordinates[4]   = { 1e30f, -1e30f, 1e30f, -1e30f };
+		uint8_t  colourMinimum[4] = { 255, 255, 255, 255 };
+		uint8_t  colourMaximum[4] = { 0, 0, 0, 0 };
+		uint32_t lowestVertex     = UINT32_MAX;
+		uint32_t highestVertex    = 0;
+		uint32_t geometryHash     = FNV_OFFSET_BASIS;
+
+		for (int i = 0; i < measured; i++)
+		{
+			uint8_t const* const vertex = VertexAt(first, indices, isIndex32Bit, i);
+
+			// Note which array entry this is
+			//
+			// The vertex's distance from the array start in strides, which is its index.
+			// Arrays are far smaller than 4 GB in a 32-bit process.
+			uint32_t const vertexIndex = static_cast<uint32_t>(vertex - static_cast<uint8_t const*>(vertexPointer)) / vertexStride;
+
+			lowestVertex  = (vertexIndex < lowestVertex) ? vertexIndex : lowestVertex;
+			highestVertex = (vertexIndex > highestVertex) ? vertexIndex : highestVertex;
+
+			// Hash its position bits
+			uint32_t positionBits[3];
+			memcpy(positionBits, vertex, sizeof(positionBits));
+
+			for (uint32_t bits : positionBits)
+			{
+				geometryHash = (geometryHash ^ bits) * FNV_PRIME;
+			}
+
+			// Read its colour and coordinates
+			if (hasColour)
+			{
+				for (int channel = 0; channel < 4; channel++)
+				{
+					uint8_t const value = vertex[colourOffset + static_cast<uint32_t>(channel)];
+
+					colourMinimum[channel] = (value < colourMinimum[channel]) ? value : colourMinimum[channel];
+					colourMaximum[channel] = (value > colourMaximum[channel]) ? value : colourMaximum[channel];
+				}
+			}
+
+			if (hasCoordinates)
+			{
+				// Coordinates are floats inside the untyped vertex.
+				float const* const coordinate = reinterpret_cast<float const*>(vertex + coordinateOffset);
+
+				coordinates[0] = (coordinate[0] < coordinates[0]) ? coordinate[0] : coordinates[0];
+				coordinates[1] = (coordinate[0] > coordinates[1]) ? coordinate[0] : coordinates[1];
+				coordinates[2] = (coordinate[1] < coordinates[2]) ? coordinate[1] : coordinates[2];
+				coordinates[3] = (coordinate[1] > coordinates[3]) ? coordinate[1] : coordinates[3];
+			}
+
+			// Project it, leaving out anything at or behind the eye
+			float clip[4];
+			ProjectVertex(vertex, clip);
+
+			if (clip[3] < CLIP_W_EPSILON)
+			{
+				flags |= DRAW_FLAG_BEHIND_CAMERA;
+				continue;
+			}
+
+			float const windowX = viewportLeft + (clip[0] / clip[3] + 1.0f) * halfWidth;
+			float const windowY = viewportTop + (1.0f - clip[1] / clip[3]) * halfHeight;
+			float const depth   = (clip[2] / clip[3] + 1.0f) * 0.5f;
+
+			bounds[0] = (windowX < bounds[0]) ? windowX : bounds[0];
+			bounds[1] = (windowY < bounds[1]) ? windowY : bounds[1];
+			bounds[2] = (windowX > bounds[2]) ? windowX : bounds[2];
+			bounds[3] = (windowY > bounds[3]) ? windowY : bounds[3];
+
+			depthRange[0] = (depth < depthRange[0]) ? depth : depthRange[0];
+			depthRange[1] = (depth > depthRange[1]) ? depth : depthRange[1];
+		}
+
+		// Store the measurements
+		//
+		// A 32-bit process, so the array's address fits; it only tells arrays apart.
+		record.flags         = flags;
+		record.lowestVertex  = lowestVertex;
+		record.highestVertex = highestVertex;
+		record.geometryHash  = geometryHash;
+		record.vertexAddress = reinterpret_cast<uintptr_t>(vertexPointer);
+
+		memcpy(record.bounds, bounds, sizeof(bounds));
+		memcpy(record.depthRange, depthRange, sizeof(depthRange));
+
+		if (hasCoordinates)
+		{
+			memcpy(record.coordinateRange, coordinates, sizeof(coordinates));
+		}
+
+		if (hasColour)
+		{
+			memcpy(record.colourMinimum, colourMinimum, sizeof(colourMinimum));
+			memcpy(record.colourMaximum, colourMaximum, sizeof(colourMaximum));
+		}
 	}
 
 	void cVKDriver::DumpTileRing(void)
@@ -837,6 +1079,62 @@ namespace scvk
 		}
 
 		LogNote("=== end of saved tiles ===");
+	}
+
+	void cVKDriver::WriteDrawRecords(char const* path)
+	{
+		// The reader unpacks one fixed layout, so a change here has to reach it too.
+		static_assert(sizeof(DrawRecord) == 176, "tools/draw-records.py expects 176 byte draw records");
+
+		FILE* file = nullptr;
+		if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+		{
+			LogNote("Diagnostic: could not write the draw records to %s.", path);
+			return;
+		}
+
+		// Write the header
+		//
+		// Only the draws still in the ring, which are the newest ones. Window sizes are
+		// pixel counts and never negative.
+		uint32_t const drawCount = (drawSequence < DRAW_RING_SIZE) ? drawSequence : DRAW_RING_SIZE;
+
+		DrawFileHeader header{};
+		memcpy(header.magic, DRAW_FILE_MAGIC, sizeof(header.magic));
+		header.recordSize   = sizeof(DrawRecord);
+		header.tileCount    = tileRingCount;
+		header.drawCount    = drawCount;
+		header.windowWidth  = static_cast<uint32_t>(windowWidth);
+		header.windowHeight = static_cast<uint32_t>(windowHeight);
+		fwrite(&header, sizeof(header), 1, file);
+
+		// Write the tiles, oldest first
+		uint32_t const tileStart = (tileRingNext + TILE_RING_SIZE - tileRingCount) % TILE_RING_SIZE;
+
+		for (uint32_t n = 0; n < tileRingCount; n++)
+		{
+			TileRecord const& tile = tileRing[(tileStart + n) % TILE_RING_SIZE];
+
+			DrawFileTile entry{};
+			entry.frame     = tile.frame;
+			entry.firstDraw = tile.firstDraw;
+			entry.endDraw   = tile.endDraw;
+			memcpy(entry.saveRectangle, tile.saveRectangle, sizeof(entry.saveRectangle));
+			memcpy(entry.subViewport, tile.subViewport, sizeof(entry.subViewport));
+			fwrite(&entry, sizeof(entry), 1, file);
+		}
+
+		// Write the draws, oldest first
+		//
+		// The oldest may sit anywhere in the ring, so it goes out in up to two runs.
+		uint32_t const drawStart = (drawSequence - drawCount) % DRAW_RING_SIZE;
+		uint32_t const firstRun  = (drawStart + drawCount <= DRAW_RING_SIZE) ? drawCount : DRAW_RING_SIZE - drawStart;
+
+		fwrite(drawRing.data() + drawStart, sizeof(DrawRecord), firstRun, file);
+		fwrite(drawRing.data(), sizeof(DrawRecord), drawCount - firstRun, file);
+
+		fclose(file);
+		LogNote("Diagnostic: wrote %u tiles and %u draws to %s.", tileRingCount, drawCount, path);
 	}
 
 	void cVKDriver::EndFrameDiagnostics(void)
@@ -932,6 +1230,16 @@ namespace scvk
 			keyCaptureStep = KEY_CAPTURE_STEPS;
 			LogNote("Diagnostic: Scroll Lock capture %u.", keyCaptureCount);
 			DumpTileRing();
+
+			// Write the draws behind the tiles, when they are being recorded
+			char drawName[64];
+			char drawPath[MAX_PATH];
+			sprintf_s(drawName, sizeof(drawName), "scvk-key-%u-draws.bin", keyCaptureCount);
+
+			if (!drawRing.empty() && LogFilePath(drawName, drawPath, sizeof(drawPath)))
+			{
+				WriteDrawRecords(drawPath);
+			}
 		}
 
 		isCaptureKeyHeld = isHeld;

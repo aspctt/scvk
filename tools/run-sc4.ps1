@@ -179,8 +179,8 @@ Copy-Item $liveLog $capturedLog
 # Collect the captures
 #
 # The driver writes BMPs next to its log. They are converted to PNG here purely because
-# it is a more convenient format to look at. Depth captures are raw floats, moved as they
-# are.
+# it is a more convenient format to look at. Depth captures are raw floats and draw
+# records are raw structures, both moved as they are.
 Add-Type -AssemblyName System.Drawing
 foreach ($bitmap in Get-ChildItem $PluginsDir -Filter "scvk-*.bmp" -ErrorAction SilentlyContinue) {
 	$pngPath = Join-Path $logDirectory (($bitmap.BaseName) + "-$timestamp$suffix.png")
@@ -195,9 +195,11 @@ foreach ($bitmap in Get-ChildItem $PluginsDir -Filter "scvk-*.bmp" -ErrorAction 
 	}
 }
 
-foreach ($rawFile in Get-ChildItem $PluginsDir -Filter "scvk-*.raw" -ErrorAction SilentlyContinue) {
-	$destination = Join-Path $logDirectory (($rawFile.BaseName) + "-$timestamp$suffix.raw")
-	Move-Item $rawFile.FullName $destination -Force
+$dataFiles = @(Get-ChildItem $PluginsDir -Filter "scvk-*.raw" -ErrorAction SilentlyContinue) + @(Get-ChildItem $PluginsDir -Filter "scvk-*.bin" -ErrorAction SilentlyContinue)
+
+foreach ($dataFile in $dataFiles) {
+	$destination = Join-Path $logDirectory (($dataFile.BaseName) + "-$timestamp$suffix" + $dataFile.Extension)
+	Move-Item $dataFile.FullName $destination -Force
 	Write-Host "  captured $destination"
 }
 

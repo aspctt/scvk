@@ -141,6 +141,10 @@ namespace scvk
 			// indistinguishable from sampling black.
 			uint32_t uploadedLevels = 0;
 
+			// How many uploads have reached any level, to tell a texture the game
+			// rewrites from one it filled once.
+			uint32_t uploadCount = 0;
+
 			// The frame whose command buffer last sampled this texture. Uploads are
 			// submitted at once while draws wait for the end of the frame, so an upload
 			// in that same frame reaches draws that the game issued before it.
@@ -768,6 +772,9 @@ namespace scvk
 
 		/** Describes a texture in the log, for working out why one samples wrong. */
 		void LogTextureInformation(uint32_t handle, char const* reason);
+
+		/** A live texture's size, levels, upload count and parameters, or false when there is none. */
+		bool DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount, uint32_t outParameters[4]) const;
 
 		/** Both hazard counts together, so a caller can tell whether any happened. */
 		uint64_t TextureHazardCount(void) const { return drawsBeforeUpload + uploadsAfterDraw; }

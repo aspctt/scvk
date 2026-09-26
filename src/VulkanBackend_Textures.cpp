@@ -716,6 +716,8 @@ namespace scvk
 			texture.uploadedLevels = level + 1;
 		}
 
+		texture.uploadCount++;
+
 		// Build a tightly packed copy in the image's own format
 		std::vector<uint8_t> staged;
 		if (!StageTexels(texture, width, height, gdFormat, gdType, rowLength, pixels, staged))
@@ -861,5 +863,22 @@ namespace scvk
 
 		Texture const& texture = textures[handle];
 		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels);
+	}
+
+	bool VulkanBackend::DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount, uint32_t outParameters[4]) const
+	{
+		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
+		{
+			return false;
+		}
+
+		Texture const& texture = textures[handle];
+		outWidth          = texture.width;
+		outHeight         = texture.height;
+		outLevels         = texture.levels;
+		outUploadedLevels = texture.uploadedLevels;
+		outUploadCount    = texture.uploadCount;
+		memcpy(outParameters, texture.parameters, sizeof(texture.parameters));
+		return true;
 	}
 }

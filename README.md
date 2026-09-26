@@ -177,6 +177,9 @@ To see a debug view, put an empty file with one of these names next to
 - `scvk-skip-cloud-shadows`: leaves out the cloud shadows
 - `scvk-validate-sync`: in Debug builds, also checks the GPU work is correctly
   ordered (slow)
+- `scvk-record-tile-draws`: Scroll Lock also saves every recent draw of the
+  parts of the scene the game redrew (`scvk-key-N-draws.bin`), which
+  `tools/draw-records.py` reads (slow)
 
 ## Installing
 

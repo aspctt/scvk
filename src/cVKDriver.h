@@ -105,6 +105,62 @@ namespace scvk
 			uint64_t  hazards;
 			int       classCount;
 			TileClass classes[CLASS_LIMIT];
+
+			// The draw record sequence numbers the tile's draws ran from and up to.
+			uint32_t firstDraw;
+			uint32_t endDraw;
+		};
+
+		/**
+		 * One draw of a saved tile, written out on Scroll Lock as raw bytes.
+		 *
+		 * Fixed-width fields only, so tools/draw-records.py can read the file with one
+		 * struct format. Bounds are window pixels from the top-left, and depth is the
+		 * window depth OpenGL would compute.
+		 */
+		struct DrawRecord
+		{
+			uint32_t sequence;
+			uint32_t frame;
+			uint32_t vertexFormat;
+			uint32_t primitiveType;
+			uint32_t count;
+			uint32_t textures[2];
+			uint32_t flags;
+			uint8_t  blendSource;
+			uint8_t  blendDestination;
+			uint8_t  depthComparison;
+			uint8_t  alphaComparison;
+			uint8_t  environmentModes[2];
+			uint8_t  textureLevels;
+			uint8_t  textureUploadedLevels;
+			float    alphaReference;
+			float    tint[4];
+			float    diffuseLight;
+			uint8_t  colourMinimum[4];
+			uint8_t  colourMaximum[4];
+			float    bounds[4];
+			float    depthRange[2];
+			float    coordinateRange[4];
+			uint16_t textureWidth;
+			uint16_t textureHeight;
+			uint32_t textureUploads;
+			uint32_t vertexAddress;
+			uint32_t lowestVertex;
+			uint32_t highestVertex;
+			uint32_t geometryHash;
+
+			// The first two rows of the first stage's texture matrix.
+			float textureMatrixRows[8];
+
+			// The filter and wrap the first stage's texture samples with, and the stage
+			// the game had selected.
+			uint8_t samplerParameters[4];
+			uint8_t activeTextureStage;
+			uint8_t coordinateSources[2];
+
+			// Keeps the record a multiple of four bytes.
+			uint8_t padding;
 		};
 
 	public:
@@ -142,6 +198,26 @@ namespace scvk
 
 		// Saved tiles kept for Scroll Lock to write out.
 		static constexpr uint32_t TILE_RING_SIZE = 256;
+
+		// Draws kept for Scroll Lock to write out, enough for the four tiles of a full
+		// rebuild and the small ones after it.
+		static constexpr uint32_t DRAW_RING_SIZE = 131072;
+
+		// The bits of DrawRecord::flags.
+		static constexpr uint32_t DRAW_FLAG_STAGE0          = 1u << 0;
+		static constexpr uint32_t DRAW_FLAG_STAGE1          = 1u << 1;
+		static constexpr uint32_t DRAW_FLAG_BLEND           = 1u << 2;
+		static constexpr uint32_t DRAW_FLAG_DEPTH_TEST      = 1u << 3;
+		static constexpr uint32_t DRAW_FLAG_DEPTH_WRITE     = 1u << 4;
+		static constexpr uint32_t DRAW_FLAG_COLOUR_WRITE    = 1u << 5;
+		static constexpr uint32_t DRAW_FLAG_ALPHA_TEST      = 1u << 6;
+		static constexpr uint32_t DRAW_FLAG_GENERATED       = 1u << 7;
+		static constexpr uint32_t DRAW_FLAG_AMBIENT_VERTEX  = 1u << 8;
+		static constexpr uint32_t DRAW_FLAG_DIFFUSE_VERTEX  = 1u << 9;
+		static constexpr uint32_t DRAW_FLAG_INDEXED         = 1u << 10;
+		static constexpr uint32_t DRAW_FLAG_TEXTURE_LIVE    = 1u << 11;
+		static constexpr uint32_t DRAW_FLAG_BEHIND_CAMERA   = 1u << 12;
+		static constexpr uint32_t DRAW_FLAG_VERTICES_CAPPED = 1u << 13;
 
 		// The kinds of configuration NoteOnce reports, each keyed separately.
 		static constexpr uint32_t NOTE_COMBINER            = 1;
@@ -329,6 +405,11 @@ namespace scvk
 		uint32_t   tileRingNext       = 0;
 		uint32_t   tileRingCount      = 0;
 
+		// Every draw of the tiles, in a ring sized only when the scvk-record-tile-draws
+		// marker is present, since it costs a transform of every vertex and about 23 MB.
+		std::vector<DrawRecord> drawRing;
+		uint32_t                drawSequence = 0;
+
 		//// Private Functions
 
 		// Plumbing and frames, in cVKDriver.cpp and cVKDriver_Video.cpp
@@ -474,8 +555,14 @@ namespace scvk
 		/** Starts a fresh tile, dropping whatever was gathered. */
 		void ResetTile(void);
 
+		/** Measures one draw of the tile being built and keeps it in the draw ring. */
+		void RecordTileDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit);
+
 		/** Writes the ring to the log, oldest first. */
 		void DumpTileRing(void);
+
+		/** Writes the tile ring and its draws to a file, for tools/draw-records.py. */
+		void WriteDrawRecords(char const* path);
 
 		/** Closes the frame's dump and trace, and takes any capture that is due. */
 		void EndFrameDiagnostics(void);

@@ -56,6 +56,10 @@ namespace scvk
 		constexpr char const* DEBUG_PASSES_MARKER       = "scvk-debug-passes";
 		constexpr char const* SKIP_CLOUD_SHADOWS_MARKER = "scvk-skip-cloud-shadows";
 
+		// Keeps every draw of the saved tiles for Scroll Lock to write out. It changes
+		// nothing on screen but costs time and memory, so it is opt-in too.
+		constexpr char const* RECORD_TILE_DRAWS_MARKER = "scvk-record-tile-draws";
+
 		// The log names a channel by its marker without this common prefix.
 		constexpr char const* CHANNEL_MARKER_PREFIX = "scvk-debug-";
 		constexpr char const* CHANNEL_MARKERS[] = {
@@ -97,6 +101,15 @@ namespace scvk
 		{
 			LogNote("Diagnostic: skipping the cloud shadow pass.");
 			shouldSkipCloudShadows = true;
+		}
+
+		// Record the draws of the saved tiles
+		//
+		// Sized once, because the game calls Init more than once.
+		if (HasMarkerFile(RECORD_TILE_DRAWS_MARKER) && drawRing.empty())
+		{
+			LogNote("Diagnostic: recording the draws of saved tiles.");
+			drawRing.resize(DRAW_RING_SIZE);
 		}
 
 		// Show one input channel, the first one marked
