@@ -1010,15 +1010,28 @@ namespace scvk
 		VkRect2D rect{};
 		ViewportRect(rect);
 
-		if (rect.extent.width == 0 || rect.extent.height == 0)
+		int32_t const maxWidth  = static_cast<int32_t>(swapchainExtent.width);
+		int32_t const maxHeight = static_cast<int32_t>(swapchainExtent.height);
+
+		// The mapping is the game's rectangle as given, even where it runs off
+		// the window. OpenGL only clips what falls outside; shrinking the
+		// viewport to fit would squeeze the geometry instead. The limits are
+		// the smallest range every Vulkan implementation has to accept.
+		int32_t x      = 0;
+		int32_t y      = 0;
+		int32_t width  = maxWidth;
+		int32_t height = maxHeight;
+
+		if (viewportWidth > 0 && viewportHeight > 0)
 		{
-			return;
+			x      = viewportX;
+			width  = std::min(viewportWidth, 4096);
+			height = std::min(viewportHeight, 4096);
+			y      = maxHeight - viewportY - viewportHeight;
 		}
 
-		int32_t const x      = rect.offset.x;
-		int32_t const y      = rect.offset.y;
-		int32_t const width  = static_cast<int32_t>(rect.extent.width);
-		int32_t const height = static_cast<int32_t>(rect.extent.height);
+		x = std::max(-8192, std::min(x, 8191 - width));
+		y = std::max(-8192, std::min(y, 8191 - height));
 
 		VkViewport viewport{};
 		viewport.x        = static_cast<float>(x);
@@ -1029,9 +1042,17 @@ namespace scvk
 		viewport.maxDepth = 1.0f;
 		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-		// Scissor follows the viewport. The game's OpenGL driver enables its
-		// scissor test with the same rectangle for every sub-viewport, and
-		// Vulkan always scissors, so matching the viewport is the same thing.
+		// Scissor follows the viewport, clamped to the window. The game's
+		// OpenGL driver enables its scissor test with the same rectangle for
+		// every sub-viewport, and Vulkan always scissors, so matching the
+		// viewport is the same thing. A rectangle wholly off the window
+		// leaves nothing to draw, which an empty scissor says directly.
+		if (rect.extent.width == 0 || rect.extent.height == 0)
+		{
+			rect.offset = { 0, 0 };
+			rect.extent = { 0, 0 };
+		}
+
 		vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 
 		// What actually reached Vulkan, as opposed to what the driver believes
