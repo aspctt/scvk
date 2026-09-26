@@ -20,19 +20,20 @@
 /*
  * Draw submission and vertex formats.
  *
- * The game packs its vertex formats into a bitfield and asks the driver to
- * decode strides and element offsets back out of it, then does its own pointer
- * arithmetic with the results. A wrong stride is not a visual artefact, it is
- * an out-of-bounds walk, so these have to be answered honestly whether or not
- * anything is being drawn.
+ * The game packs its vertex formats into a bitfield and asks the driver to decode strides
+ * and element offsets back out of it, then does its own pointer arithmetic with the
+ * results. A wrong stride is not a visual artefact, it is an out-of-bounds walk, so these
+ * have to be answered honestly whether or not anything is being drawn.
  *
- * The same decoding drives the pipelines: a format identifies which attributes
- * exist and where, and there is no shortcut. Keying on stride instead looks
- * tempting and is wrong, because V3F_C4UB_T2F and V3F_N3F are both 24 bytes
- * and agree on nothing after the position.
+ * The same decoding drives the pipelines: a format identifies which attributes exist and
+ * where, and there is no shortcut. Keying on stride instead looks tempting and is wrong,
+ * because V3F_C4UB_T2F and V3F_N3F are both 24 bytes and agree on nothing after the
+ * position.
  *
  * The decoding is SCGL's, vendored under the LGPL. See vendor/README.md.
  */
+
+//// Dependencies
 
 #include "cVKDriver.h"
 #include "Logger.h"
@@ -40,403 +41,89 @@
 
 #include <VertexFormatUtils.h>
 
-#include <cstring>
-
 namespace scvk
 {
-	bool cVKDriver::NoteOnce(uint32_t bucket, uint32_t key)
+	//// Constants
+
+	namespace
 	{
-		uint64_t const entry = (static_cast<uint64_t>(bucket) << 32) | key;
+		// The coordinate source the game uses for generated coordinates. 0x10 is its
+		// counterpart of D3DTSS_TCI_CAMERASPACEPOSITION: the coordinate comes from the
+		// vertex position in eye space rather than from a coordinate set. The low three
+		// bits carry which set the result lands in, which does not matter while only one
+		// stage generates. See SCGL's GLTextureUnit.cpp.
+		constexpr uint32_t CAMERA_SPACE_POSITION_SOURCE = 0x10;
+		constexpr uint32_t SOURCE_SET_BITS              = 7;
 
-		for (int i = 0; i < notedCount; i++)
-		{
-			if (notedKeys[i] == entry)
-			{
-				return false;
-			}
-		}
+		// The light sits at (1,1,0) with w zero, which the fixed function pipeline reads
+		// as a direction and normalises.
+		constexpr float LIGHT_DIRECTION_X = 0.70710678f;
+		constexpr float LIGHT_DIRECTION_Y = 0.70710678f;
 
-		if (notedCount >= static_cast<int>(_countof(notedKeys)))
-		{
-			return false;
-		}
+		// A modelview this close to singular has no usable inverse.
+		constexpr float DETERMINANT_EPSILON = 1e-12f;
 
-		notedKeys[notedCount++] = entry;
-		return true;
+		// The game's type numbering, shared with its texture uploads.
+		constexpr uint32_t GD_INDEX_TYPE_UNSIGNED_SHORT = 3;
+		constexpr uint32_t GD_INDEX_TYPE_UNSIGNED_INT   = 5;
 	}
 
-	void cVKDriver::NoteDarkTintedDraw(uint32_t gdPrimType, int32_t count)
-	{
-		// The cloud shadow pass names itself by its tint.
-		//
-		// Shadows are the only thing drawn with a near black ambient colour,
-		// so this catches them wherever in the frame they happen to be, which
-		// the frame dump cannot: the shadows move every frame while the terrain
-		// under them is restored from a buffer region, so the two are almost
-		// never in the same dumped frame.
-		if (colourMultiplier[0] > 0.35f || colourMultiplier[1] > 0.35f || colourMultiplier[2] > 0.35f)
-		{
-			return;
-		}
-
-		uint32_t const key = (vertexFormat << 12)
-			^ (gdPrimType << 8)
-			^ (enabledCapabilities[kGDCapability_Blend] ? 0x80u : 0u)
-			^ (blendSrcFactor << 4)
-			^ blendDstFactor
-			^ (enabledCapabilities[kGDCapability_AlphaTest] ? 0x40000u : 0u)
-			^ (alphaFunc << 20);
-
-		if (NoteOnce(9, key))
-		{
-			LogNote("  SHADOW fmt 0x%x prim %u n=%d  tex %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.2f  "
-				"tint %.3f %.3f %.3f a %.3f  env %d  depth test %d write %d  stage1 on %d  coordsrc %u/%u",
-				vertexFormat, gdPrimType, count,
-				boundTexture, stage1Texture,
-				enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
-				enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
-				colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3],
-				texEnvMode[0],
-				enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,
-				texStageEnabled[1] ? 1 : 0, texCoordSource[0], texCoordSource[1]);
-
-			vulkan->LogTextureInfo(boundTexture, "shadow stage 0");
-		}
-	}
-
-	void cVKDriver::NoteMultitexturedDraw(uint32_t gdVertexFormat)
-	{
-		if (RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord) < 2)
-		{
-			return;
-		}
-
-		// Keyed on the combiner rather than the format, since the format is
-		// already reported on its own and what matters here is which of the
-		// configurations is the one the terrain actually draws with.
-		uint32_t const key = packedCombiner[0] ^ (packedCombiner[1] << 1)
-			^ (packedCombiner[2] << 2) ^ (packedCombiner[3] << 3);
-
-		// This runs per draw, and the configuration almost never changes
-		// between two of them, so the repeat is caught before the search.
-		if (key == lastMultitexKey)
-		{
-			return;
-		}
-
-		lastMultitexKey = key;
-
-		if (NoteOnce(5, key))
-		{
-			LogNote("  MULTITEX format 0x%x: stage 0 rgb 0x%05x alpha 0x%05x, "
-				"stage 1 rgb 0x%05x alpha 0x%05x",
-				gdVertexFormat,
-				packedCombiner[0], packedCombiner[1],
-				packedCombiner[2], packedCombiner[3]);
-		}
-	}
-
-	void cVKDriver::PushTexGen(void)
-	{
-		// Source 16 is D3DTSS_TCI_CAMERASPACEPOSITION: the coordinate comes
-		// from the vertex position in eye space rather than from a coordinate
-		// set. The low three bits carry which set the result lands in, which
-		// does not matter while only one stage generates.
-		bool const generating = (texCoordSource[0] & ~7u) == 0x10u;
-
-		if (!generating)
-		{
-			vulkan->SetTexGen(false, nullptr, nullptr);
-			return;
-		}
-
-		// texcoord = textureMatrix * modelview * position, so the two are
-		// combined here and the shader is left with one dot product per
-		// component. Column major throughout, matching the game and GLSL:
-		// M[col * 4 + row].
-		float rowS[4];
-		float rowT[4];
-
-		for (int col = 0; col < 4; col++)
-		{
-			float s = 0.0f;
-			float t = 0.0f;
-
-			for (int k = 0; k < 4; k++)
-			{
-				s += texStageMatrix[k * 4 + 0] * modelViewMatrix[col * 4 + k];
-				t += texStageMatrix[k * 4 + 1] * modelViewMatrix[col * 4 + k];
-			}
-
-			rowS[col] = s;
-			rowT[col] = t;
-		}
-
-		vulkan->SetTexGen(true, rowS, rowT);
-	}
-
-	bool cVKDriver::IsCloudShadowDraw(void) const
-	{
-		return texStageEnabled[0] && (texCoordSource[0] & ~7u) == 0x10u;
-	}
-
-	void cVKDriver::MaybeArmDump(void)
-	{
-		// The base terrain pass arms the dump, which then runs for the rest of
-		// that frame so the whole scene build is captured together.
-		//
-		// Two coordinate sets alone is not enough to identify it. The cloud
-		// shadows carry two as well and redraw every frame over the restored
-		// buffer region, so arming on those caught a frame holding nothing but
-		// shadows and interface, with the terrain and water already saved.
-		//
-		// The shadows are the pass that generates its coordinates, so requiring
-		// vertex coordinates separates the two. The second texture stage does
-		// not: the game leaves it bound but disabled, and the terrain draws
-		// single stage.
-		if (!dumpArmed || dumpFrame ||
-			(texCoordSource[0] & ~7u) == 0x10u ||
-			RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) < 2)
-		{
-			return;
-		}
-
-		// A partial update is the interesting case now, and it is recognised by
-		// drawing under a sub-viewport in a frame that already restored the
-		// whole scene. Waiting for one costs nothing: the dump stays armed.
-		bool const partialUpdate = regionFrameRestored &&
-			(viewportX != 0 || viewportY != 0 ||
-			 viewportWidth != windowWidth || viewportHeight != windowHeight);
-
-		if (!partialUpdate)
-		{
-			return;
-		}
-
-		dumpArmed   = false;
-		dumpFrame   = true;
-		dumpedDraws = 0;
-		LogNote("=== dumping the partial update of frame %u, sub-viewport %d,%d %dx%d ===",
-			frameCounter, viewportX, viewportY, viewportWidth, viewportHeight);
-	}
-
-	void cVKDriver::DumpDraw(uint32_t gdPrimType, int32_t count, int32_t first,
-		void const* indices, bool indicesAre32Bit)
-	{
-		// Records every draw of one frame with the pixel rectangle it lands on,
-		// so the frame can be reconstructed from the log and compared against
-		// the capture of that same frame.
-		//
-		// Reached from both draw paths. It used to live in DrawArrays alone,
-		// which made it structurally blind to the terrain: that goes through
-		// DrawElements, so no dump ever contained a single terrain draw however
-		// long the window was left open.
-		if (!dumpFrame || count <= 0 || vertexPointer == nullptr || vertexStride == 0)
-		{
-			return;
-		}
-
-		if (dumpedDraws >= kMaxDumpedDraws)
-		{
-			return;
-		}
-
-		if (NoteOnce(11, boundTexture))
-		{
-			vulkan->LogTextureInfo(boundTexture, "terrain pass");
-		}
-
-		int const sampled = (count < 8) ? count : 8;
-
-		auto const vertexAt = [&](int i) -> uint8_t const*
-		{
-			size_t index;
-
-			if (indices == nullptr)
-			{
-				index = static_cast<size_t>(first + i);
-			}
-			else if (indicesAre32Bit)
-			{
-				index = static_cast<uint32_t const*>(indices)[i];
-			}
-			else
-			{
-				index = static_cast<uint16_t const*>(indices)[i];
-			}
-
-			return static_cast<uint8_t const*>(vertexPointer) + index * vertexStride;
-		};
-
-		float minX = 1e30f, maxX = -1e30f;
-		float minY = 1e30f, maxY = -1e30f;
-		bool  usable = true;
-
-		for (int i = 0; i < sampled; i++)
-		{
-			float const* p = reinterpret_cast<float const*>(vertexAt(i));
-
-			float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			for (int row = 0; row < 4; row++)
-			{
-				float sum = 0.0f;
-				for (int k = 0; k < 4; k++)
-				{
-					sum += modelViewMatrix[k * 4 + row] * ((k < 3) ? p[k] : 1.0f);
-				}
-				eye[row] = sum;
-			}
-
-			float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			for (int row = 0; row < 4; row++)
-			{
-				float sum = 0.0f;
-				for (int k = 0; k < 4; k++)
-				{
-					sum += projectionMatrix[k * 4 + row] * eye[k];
-				}
-				clip[row] = sum;
-			}
-
-			if (clip[3] > -1e-6f && clip[3] < 1e-6f) { usable = false; break; }
-
-			float const x = clip[0] / clip[3];
-			float const y = clip[1] / clip[3];
-
-			if (x < minX) minX = x;
-			if (x > maxX) maxX = x;
-			if (y < minY) minY = y;
-			if (y > maxY) maxY = y;
-		}
-
-		if (!usable)
-		{
-			LogNote("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d",
-				dumpedDraws++, boundTexture, vertexFormat, gdPrimType, count);
-			return;
-		}
-
-		int const vpW = (viewportWidth  > 0) ? viewportWidth  : windowWidth;
-		int const vpH = (viewportHeight > 0) ? viewportHeight : windowHeight;
-		int const vpX = (viewportWidth  > 0) ? viewportX : 0;
-
-		// The stored viewport y is bottom-origin, as OpenGL has it.
-		int const vpTop = (viewportHeight > 0)
-			? (windowHeight - viewportY - viewportHeight) : 0;
-
-		// Clip space y runs the other way from screen y.
-		float const left   = vpX   + (minX + 1.0f) * 0.5f * vpW;
-		float const right  = vpX   + (maxX + 1.0f) * 0.5f * vpW;
-		float const top    = vpTop + (1.0f - maxY) * 0.5f * vpH;
-		float const bottom = vpTop + (1.0f - minY) * 0.5f * vpH;
-
-		float uMin = 0.0f, uMax = 0.0f, vMin = 0.0f, vMax = 0.0f;
-
-		if (RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0)
-		{
-			uint32_t const uvOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
-			uMin = vMin = 1e30f;
-			uMax = vMax = -1e30f;
-
-			for (int i = 0; i < sampled; i++)
-			{
-				float const* uv = reinterpret_cast<float const*>(vertexAt(i) + uvOffset);
-
-				if (uv[0] < uMin) uMin = uv[0];
-				if (uv[0] > uMax) uMax = uv[0];
-				if (uv[1] < vMin) vMin = uv[1];
-				if (uv[1] > vMax) vMax = uv[1];
-			}
-		}
-
-		// The vertex colour of the first sampled vertex, which is the primary
-		// colour the texture environment starts from. A draw that comes out
-		// black has either a black input or a state that discards the input,
-		// and the two are told apart here.
-		uint32_t colourBytes = 0xffffffffu;
-
-		if (RZVertexFormatNumElements(vertexFormat, kGDElementType_Color) != 0)
-		{
-			uint32_t const offset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_Color, 0);
-			memcpy(&colourBytes, vertexAt(0) + offset, sizeof(colourBytes));
-		}
-
-		// Blend, alpha test and the second stage are all reported, because a
-		// draw that comes out a flat block and a draw that comes out black are
-		// both questions about state rather than geometry, and the rectangle
-		// alone cannot tell them apart.
-		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  "
-			"vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  weight %.2f %.2f %.2f a%.2f (vc %d%d)  "
-			"blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x",
-			dumpedDraws++, left, top, right, bottom, right - left, bottom - top,
-			boundTexture, stage1Texture, vertexFormat, gdPrimType, count,
-			viewportX, viewportY, viewportWidth, viewportHeight,
-			uMin, uMax, vMin, vMax,
-			(colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu,
-			(vertexColourAmbient ? colourMultiplier[0] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
-			(vertexColourAmbient ? colourMultiplier[1] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
-			(vertexColourAmbient ? colourMultiplier[2] : 0.0f) + (vertexColourDiffuse ? diffuseLightFactor : 0.0f),
-			colourMultiplier[3], vertexColourAmbient ? 1 : 0, vertexColourDiffuse ? 1 : 0,
-			enabledCapabilities[kGDCapability_Blend] ? 1 : 0, blendSrcFactor, blendDstFactor,
-			enabledCapabilities[kGDCapability_AlphaTest] ? 1 : 0, alphaFunc, alphaRef,
-			enabledCapabilities[kGDCapability_DepthTest] ? 1 : 0, depthWrite ? 1 : 0,
-			texEnvMode[0],
-			texStageEnabled[1] ? 1 : 0, lastTexMatrixFlags);
-	}
+	//// Private Functions
 
 	void cVKDriver::UpdateTransform(void)
 	{
+		// Combine the projection and modelview
+		//
 		// Column-major, matching both the game and GLSL: result = P * M, so
-		// result[col][row] = sum over k of P[k][row] * M[col][k].
-		float mvp[16];
+		// result[column][row] = sum over k of P[k][row] * M[column][k].
+		float modelViewProjection[16];
 
-		for (int col = 0; col < 4; col++)
+		for (int column = 0; column < 4; column++)
 		{
 			for (int row = 0; row < 4; row++)
 			{
 				float sum = 0.0f;
 				for (int k = 0; k < 4; k++)
 				{
-					sum += projectionMatrix[k * 4 + row] * modelViewMatrix[col * 4 + k];
+					sum += projectionMatrix[k * 4 + row] * modelViewMatrix[column * 4 + k];
 				}
-				mvp[col * 4 + row] = sum;
+
+				modelViewProjection[column * 4 + row] = sum;
 			}
 		}
 
-		vulkan->SetTransform(mvp);
+		vulkan->SetTransform(modelViewProjection);
 
-		// The light is directional, so its contribution depends only on the
-		// normal, and the game supplies none: the default normal is (0,0,1) in
-		// object space, which reaches eye space through the inverse transpose
-		// of the modelview. That makes the whole diffuse term one number per
-		// transform, computed here rather than per vertex.
+		// Work out the diffuse light term for this modelview
 		//
-		// Left unnormalised, as the fixed function pipeline leaves it with
-		// GL_NORMALIZE off, so a scale in the modelview scales the light.
-		float const* const m = modelViewMatrix;
+		// The light is directional, so its contribution depends only on the normal, and
+		// the game supplies none: the default normal is (0,0,1) in object space, which
+		// reaches eye space through the inverse transpose of the modelview. That makes
+		// the whole diffuse term one number per transform.
+		//
+		// Left unnormalised, as the fixed function pipeline leaves it with GL_NORMALIZE
+		// off, so a scale in the modelview scales the light.
+		//
+		// The third row of the inverse is the third column of cofactors over the
+		// determinant. The light has no z component, so the cofactor that would feed it
+		// is not computed.
+		float const* const modelView = modelViewMatrix;
 
-		// The third row of the inverse is the third column of cofactors over
-		// the determinant. The light has no z component, so the cofactor that
-		// would feed it is not computed.
-		float const c0 = m[1 * 4 + 0] * m[2 * 4 + 1] - m[2 * 4 + 0] * m[1 * 4 + 1];
-		float const c1 = m[2 * 4 + 0] * m[0 * 4 + 1] - m[0 * 4 + 0] * m[2 * 4 + 1];
+		float const cofactorX = modelView[1 * 4 + 0] * modelView[2 * 4 + 1] - modelView[2 * 4 + 0] * modelView[1 * 4 + 1];
+		float const cofactorY = modelView[2 * 4 + 0] * modelView[0 * 4 + 1] - modelView[0 * 4 + 0] * modelView[2 * 4 + 1];
 
-		float const determinant =
-			  m[0 * 4 + 0] * (m[1 * 4 + 1] * m[2 * 4 + 2] - m[2 * 4 + 1] * m[1 * 4 + 2])
-			- m[1 * 4 + 0] * (m[0 * 4 + 1] * m[2 * 4 + 2] - m[2 * 4 + 1] * m[0 * 4 + 2])
-			+ m[2 * 4 + 0] * (m[0 * 4 + 1] * m[1 * 4 + 2] - m[1 * 4 + 1] * m[0 * 4 + 2]);
+		float const minor0 = modelView[1 * 4 + 1] * modelView[2 * 4 + 2] - modelView[2 * 4 + 1] * modelView[1 * 4 + 2];
+		float const minor1 = modelView[0 * 4 + 1] * modelView[2 * 4 + 2] - modelView[2 * 4 + 1] * modelView[0 * 4 + 2];
+		float const minor2 = modelView[0 * 4 + 1] * modelView[1 * 4 + 2] - modelView[1 * 4 + 1] * modelView[0 * 4 + 2];
+
+		float const determinant = modelView[0 * 4 + 0] * minor0 - modelView[1 * 4 + 0] * minor1 + modelView[2 * 4 + 0] * minor2;
 
 		float factor = 0.0f;
 
-		if (determinant > 1e-12f || determinant < -1e-12f)
+		if (determinant > DETERMINANT_EPSILON || determinant < -DETERMINANT_EPSILON)
 		{
-			// The light sits at (1,1,0) with w zero, which the fixed function
-			// pipeline reads as a direction and normalises.
-			constexpr float kLightX = 0.70710678f;
-			constexpr float kLightY = 0.70710678f;
-
 			float const inverse = 1.0f / determinant;
-			factor = (c0 * inverse) * kLightX + (c1 * inverse) * kLightY;
+			factor = (cofactorX * inverse) * LIGHT_DIRECTION_X + (cofactorY * inverse) * LIGHT_DIRECTION_Y;
 
 			if (factor < 0.0f)
 			{
@@ -444,6 +131,7 @@ namespace scvk
 			}
 		}
 
+		// Forward it when it changed
 		if (factor != diffuseLightFactor)
 		{
 			diffuseLightFactor = factor;
@@ -451,249 +139,108 @@ namespace scvk
 		}
 	}
 
-	void cVKDriver::DrawArrays(uint32_t gdPrimType, int32_t first, int32_t count)
+	void cVKDriver::PushTextureGeneration(void)
 	{
-		SCVK_CALL("%u, %d, %d", gdPrimType, first, count);
+		if (!IsGeneratingCoordinates())
+		{
+			vulkan->SetTextureGeneration(false, nullptr, nullptr);
+			return;
+		}
+
+		// Fold the modelview into the texture matrix
+		//
+		// texcoord = textureMatrix * modelview * position, so the two are combined here
+		// and the shader is left with one dot product per component. Column major
+		// throughout, matching the game and GLSL: M[column * 4 + row].
+		float rowS[4];
+		float rowT[4];
+
+		for (int column = 0; column < 4; column++)
+		{
+			float sumS = 0.0f;
+			float sumT = 0.0f;
+
+			for (int k = 0; k < 4; k++)
+			{
+				sumS += textureStageMatrix[k * 4 + 0] * modelViewMatrix[column * 4 + k];
+				sumT += textureStageMatrix[k * 4 + 1] * modelViewMatrix[column * 4 + k];
+			}
+
+			rowS[column] = sumS;
+			rowT[column] = sumT;
+		}
+
+		vulkan->SetTextureGeneration(true, rowS, rowT);
+	}
+
+	bool cVKDriver::IsGeneratingCoordinates(void) const
+	{
+		return (textureCoordinateSource[0] & ~SOURCE_SET_BITS) == CAMERA_SPACE_POSITION_SOURCE;
+	}
+
+	bool cVKDriver::IsCloudShadowDraw(void) const
+	{
+		return isTextureStageEnabled[0] && IsGeneratingCoordinates();
+	}
+
+	//// Public API
+
+	void cVKDriver::DrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
+	{
+		SCVK_CALL("%u, %d, %d", gdPrimitiveType, first, count);
 
 		if (count <= 0 || first < 0 || vertexPointer == nullptr || vertexStride == 0)
 		{
 			return;
 		}
 
-		if (skipCloudShadows && IsCloudShadowDraw())
+		if (shouldSkipCloudShadows && IsCloudShadowDraw())
 		{
 			return;
 		}
 
-		// One sample per distinct combination of format, primitive type and
-		// projection.
-		//
-		// Sampling the first few draws only reported tiny sub-pixel quads.
-		// Sampling per format and primitive was better but still only covered
-		// the startup screen, because later screens reuse the same formats and
-		// nothing new was ever recorded. The projection is what actually
-		// distinguishes one rendering context from another here, so it belongs
-		// in the key.
-		uint32_t projectionHash = 2166136261u;
-		for (int i = 0; i < 16; i++)
-		{
-			// Quantised, so floating point noise does not make every frame
-			// look like a new context.
-			int32_t const quantised = static_cast<int32_t>(projectionMatrix[i] * 1000.0f);
-			projectionHash = (projectionHash ^ static_cast<uint32_t>(quantised)) * 16777619u;
-		}
-
-		uint32_t const probeKey =
-			(vertexFormat << 8) ^ (gdPrimType & 0xFF) ^ (projectionHash & 0xFFFF0000u);
-		bool alreadyProbed = false;
-		for (int i = 0; i < probedCombinations; i++)
-		{
-			if (probedKeys[i] == probeKey) { alreadyProbed = true; break; }
-		}
-
-		if (!alreadyProbed && probedCombinations < static_cast<int>(_countof(probedKeys)))
-		{
-			probedKeys[probedCombinations++] = probeKey;
-
-			LogNote("  DrawArrays prim %u, %d vertices, format 0x%x stride %u, viewport %d,%d %dx%d:",
-				gdPrimType, count, vertexFormat, vertexStride,
-				viewportX, viewportY, viewportWidth, viewportHeight);
-
-			// Both matrices, column by column. If geometry appears at the
-			// wrong scale this is where the answer is: the positions the game
-			// submits are small world-space values and mean nothing without
-			// the projection that maps them.
-			LogNote("    modelview  [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]",
-				modelViewMatrix[0], modelViewMatrix[1], modelViewMatrix[2], modelViewMatrix[3],
-				modelViewMatrix[4], modelViewMatrix[5], modelViewMatrix[6], modelViewMatrix[7],
-				modelViewMatrix[8], modelViewMatrix[9], modelViewMatrix[10], modelViewMatrix[11],
-				modelViewMatrix[12], modelViewMatrix[13], modelViewMatrix[14], modelViewMatrix[15]);
-			LogNote("    projection [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]",
-				projectionMatrix[0], projectionMatrix[1], projectionMatrix[2], projectionMatrix[3],
-				projectionMatrix[4], projectionMatrix[5], projectionMatrix[6], projectionMatrix[7],
-				projectionMatrix[8], projectionMatrix[9], projectionMatrix[10], projectionMatrix[11],
-				projectionMatrix[12], projectionMatrix[13], projectionMatrix[14], projectionMatrix[15]);
-
-			int const shown = (count < 3) ? count : 3;
-			for (int i = 0; i < shown; i++)
-			{
-				uint8_t const* v = static_cast<uint8_t const*>(vertexPointer) +
-					static_cast<size_t>(first + i) * vertexStride;
-
-				float const* position = reinterpret_cast<float const*>(v);
-
-				// Texture coordinates matter as much as positions here: if the
-				// content looks magnified, either the quad is too big or the
-				// coordinates cover too little of the texture, and these two
-				// numbers tell those apart.
-				if (RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0)
-				{
-					uint32_t const uvOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
-					float const* uv = reinterpret_cast<float const*>(v + uvOffset);
-
-					LogNote("    v%d pos %.3f %.3f %.3f  uv %.4f %.4f", i, position[0], position[1], position[2], uv[0], uv[1]);
-				}
-				else
-				{
-					uint8_t const* colour = v + 12;
-					LogNote("    v%d pos %.3f %.3f %.3f  colour %3u %3u %3u %3u",
-						i, position[0], position[1], position[2],
-						colour[0], colour[1], colour[2], colour[3]);
-				}
-			}
-		}
-
+		// Describe the draw for the diagnostics
+		ProbeDrawArrays(gdPrimitiveType, first, count);
 		MaybeArmDump();
-		DumpDraw(gdPrimType, count, first, nullptr, false);
-
-		// Measure how much of its viewport a draw actually covers.
-		//
-		// Reasoning about matrices has repeatedly failed to find why the
-		// interface renders too large, and the projections all turn out to
-		// agree with their viewports. So this stops inferring and measures:
-		// transform the vertices the way the shader will, and report any draw
-		// that ends up covering most of the screen. Whatever is painting over
-		// everything will name itself.
-		if (coverageReportsRemaining > 0 && count >= 3)
-		{
-			float minX = 1e30f, maxX = -1e30f;
-			float minY = 1e30f, maxY = -1e30f;
-			bool  usable = true;
-
-			int const sampled = (count < 8) ? count : 8;
-			for (int i = 0; i < sampled; i++)
-			{
-				float const* p = reinterpret_cast<float const*>(
-					static_cast<uint8_t const*>(vertexPointer) +
-					static_cast<size_t>(first + i) * vertexStride);
-
-				// Projection times modelview times position, in the same
-				// column-major convention as everywhere else.
-				float clip[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-				for (int row = 0; row < 4; row++)
-				{
-					float eye = 0.0f;
-					for (int k = 0; k < 4; k++)
-					{
-						float const v = (k < 3) ? p[k] : 1.0f;
-						eye += modelViewMatrix[k * 4 + row] * v;
-					}
-					clip[row] = eye;
-				}
-
-				float ndc[2] = { 0.0f, 0.0f };
-				for (int row = 0; row < 2; row++)
-				{
-					float sum = 0.0f;
-					for (int k = 0; k < 4; k++)
-					{
-						sum += projectionMatrix[k * 4 + row] * clip[k];
-					}
-					ndc[row] = sum;
-				}
-
-				float w = 0.0f;
-				for (int k = 0; k < 4; k++)
-				{
-					w += projectionMatrix[k * 4 + 3] * clip[k];
-				}
-
-				if (w > -1e-6f && w < 1e-6f) { usable = false; break; }
-
-				float const x = ndc[0] / w;
-				float const y = ndc[1] / w;
-
-				if (x < minX) minX = x;
-				if (x > maxX) maxX = x;
-				if (y < minY) minY = y;
-				if (y > maxY) maxY = y;
-			}
-
-			// Clip space runs -1 to 1, so an extent of 2 is the whole
-			// viewport. Anything past 1.2 is covering well over half of it.
-			if (usable && ((maxX - minX) > 1.2f || (maxY - minY) > 1.2f))
-			{
-				coverageReportsRemaining--;
-				LogNote("  LARGE DRAW: covers ndc x %.2f..%.2f y %.2f..%.2f of viewport %d,%d %dx%d, "
-					"texture %u, format 0x%x prim %u, %d vertices",
-					minX, maxX, minY, maxY,
-					viewportX, viewportY, viewportWidth, viewportHeight,
-					boundTexture, vertexFormat, gdPrimType, count);
-			}
-		}
-
-		// Detect a projection that disagrees with the viewport it is drawn
-		// into.
-		//
-		// An orthographic projection's x scale is 2 divided by the width of
-		// the region it maps onto the whole of clip space. If that width is
-		// not the viewport's width, the draw is stretched by exactly their
-		// ratio, which is the magnification being chased. Every context
-		// sampled so far agreed, and the splash screen renders perfectly, so
-		// the culprit is a pairing the sampling has not caught.
-		if (mismatchReportsRemaining > 0 && viewportWidth > 0 && viewportHeight > 0)
-		{
-			float const xScale = projectionMatrix[0] < 0.0f ? -projectionMatrix[0] : projectionMatrix[0];
-			float const yScale = projectionMatrix[5] < 0.0f ? -projectionMatrix[5] : projectionMatrix[5];
-
-			// A near-zero scale means a perspective or degenerate projection,
-			// where this reasoning does not apply.
-			if (xScale > 1e-6f && yScale > 1e-6f)
-			{
-				float const impliedWidth  = 2.0f / xScale;
-				float const impliedHeight = 2.0f / yScale;
-
-				float const widthRatio  = impliedWidth  / static_cast<float>(viewportWidth);
-				float const heightRatio = impliedHeight / static_cast<float>(viewportHeight);
-
-				bool const stretched =
-					widthRatio  < 0.9f || widthRatio  > 1.1f ||
-					heightRatio < 0.9f || heightRatio > 1.1f;
-
-				if (stretched)
-				{
-					mismatchReportsRemaining--;
-					LogNote("  MISMATCH: projection covers %.1fx%.1f but viewport is %dx%d at %d,%d "
-						"(stretched %.2fx by %.2fx), format 0x%x prim %u, %d vertices",
-						impliedWidth, impliedHeight, viewportWidth, viewportHeight, viewportX, viewportY,
-						widthRatio, heightRatio, vertexFormat, gdPrimType, count);
-				}
-			}
-		}
-
-		NoteRegionDraw(gdPrimType, count, first, nullptr, false);
+		DumpDraw(gdPrimitiveType, count, first, nullptr, false);
+		ReportLargeDraw(gdPrimitiveType, first, count);
+		ReportProjectionMismatch(gdPrimitiveType, count);
+		NoteRegionDraw(gdPrimitiveType, count, first, nullptr, false);
 		NoteMultitexturedDraw(vertexFormat);
-		NoteDarkTintedDraw(gdPrimType, count);
-		PushTexGen();
+		NoteDarkTintedDraw(gdPrimitiveType, count);
+
+		// Draw it
+		//
+		// Both numbers were checked to be positive above.
+		PushTextureGeneration();
 		UpdateTransform();
-		vulkan->DrawVertices(gdPrimType, vertexFormat, vertexPointer,
-			static_cast<uint32_t>(first), static_cast<uint32_t>(count));
+		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, static_cast<uint32_t>(first), static_cast<uint32_t>(count));
 	}
 
-	void cVKDriver::DrawElements(uint32_t gdPrimType, int32_t count, uint32_t gdType, void const* indices)
+	void cVKDriver::DrawElements(uint32_t gdPrimitiveType, int32_t count, uint32_t gdType, void const* indices)
 	{
-		SCVK_CALL("%u, %d, %u, %p", gdPrimType, count, gdType, indices);
+		SCVK_CALL("%u, %d, %u, %p", gdPrimitiveType, count, gdType, indices);
 
 		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
 		{
 			return;
 		}
 
-		if (skipCloudShadows && IsCloudShadowDraw())
+		if (shouldSkipCloudShadows && IsCloudShadowDraw())
 		{
 			return;
 		}
 
-		// The game's type numbering, shared with its texture uploads: 3 is
-		// unsigned short and 5 is unsigned int. Unsigned byte indices are
-		// expressible in the enumeration but Vulkan has no core equivalent, and
-		// the game has not been seen using them.
-		bool indicesAre32Bit;
+		// Read the index width
+		//
+		// Unsigned byte indices are expressible in the enumeration but Vulkan has no core
+		// equivalent, and the game has not been seen using them.
+		bool isIndex32Bit;
 
 		switch (gdType)
 		{
-		case 3: indicesAre32Bit = false; break;
-		case 5: indicesAre32Bit = true;  break;
+		case GD_INDEX_TYPE_UNSIGNED_SHORT: isIndex32Bit = false; break;
+		case GD_INDEX_TYPE_UNSIGNED_INT:   isIndex32Bit = true;  break;
 
 		default:
 			if (indexTypeWarningsRemaining > 0)
@@ -701,62 +248,67 @@ namespace scvk
 				indexTypeWarningsRemaining--;
 				LogNote("  DrawElements: index type %u is not handled; skipping the draw.", gdType);
 			}
+
 			return;
 		}
 
-		NoteRegionDraw(gdPrimType, count, 0, indices, indicesAre32Bit);
+		// Describe the draw for the diagnostics
+		NoteRegionDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
 		NoteMultitexturedDraw(vertexFormat);
-		NoteDarkTintedDraw(gdPrimType, count);
+		NoteDarkTintedDraw(gdPrimitiveType, count);
 		MaybeArmDump();
-		DumpDraw(gdPrimType, count, 0, indices, indicesAre32Bit);
-		PushTexGen();
+		DumpDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+
+		// Draw it
+		//
+		// The count was checked to be positive above.
+		PushTextureGeneration();
 		UpdateTransform();
-		vulkan->DrawIndexedVertices(gdPrimType, vertexFormat, vertexPointer,
-			indices, static_cast<uint32_t>(count), indicesAre32Bit);
+		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, static_cast<uint32_t>(count), isIndex32Bit);
 	}
 
 	void cVKDriver::InterleavedArrays(uint32_t gdVertexFormat, int32_t stride, void const* pointer)
 	{
-		// A stride of zero means "tightly packed", which the game leaves for
-		// the driver to work out from the format.
+		// A stride of zero means "tightly packed", which the game leaves for the driver
+		// to work out from the format. Strides are a few dozen bytes, so they fit either
+		// signedness.
 		if (stride == 0)
 		{
 			stride = static_cast<int32_t>(RZVertexFormatStride(gdVertexFormat));
 		}
 
+		uint32_t const unsignedStride = static_cast<uint32_t>(stride);
+
 		SCVK_CALL("0x%x, %d, %p", gdVertexFormat, stride, pointer);
 
-		// How many texture coordinate sets a format carries is what decides
-		// whether a second texture stage has anything to sample with.
-		if (NoteOnce(4, gdVertexFormat))
+		// Report each format once
+		//
+		// How many texture coordinate sets a format carries is what decides whether a
+		// second texture stage has anything to sample with.
+		if (NoteOnce(NOTE_VERTEX_FORMAT, gdVertexFormat))
 		{
-			LogNote("  FORMAT 0x%x: stride %u, %u texcoord set(s), %u colour, %u normal",
-				gdVertexFormat, static_cast<uint32_t>(stride),
-				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord),
-				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color),
-				RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Normal));
+			LogNote("  FORMAT 0x%x: stride %u, %u texcoord set(s), %u colour, %u normal", gdVertexFormat, unsignedStride, RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Normal));
 		}
 
-		// Recorded rather than uploaded. The game names a client pointer here
-		// and draws from it later, possibly several times, so the copy happens
-		// at draw time when the vertex range is actually known.
+		// Record the format and pointer rather than uploading
 		//
-		// The format is kept as well as the stride, because the stride alone
-		// does not identify the layout: V3F_C4UB_T2F and V3F_N3F are both 24
-		// bytes and share nothing past the position.
+		// The game names a client pointer here and draws from it later, possibly several
+		// times, so the copy happens at draw time when the vertex range is actually
+		// known. The format is kept as well as the stride, because the stride alone does
+		// not identify the layout.
 		vertexFormat  = gdVertexFormat;
-		vertexStride  = static_cast<uint32_t>(stride);
+		vertexStride  = unsignedStride;
 		vertexPointer = pointer;
 	}
 
-	uint32_t cVKDriver::MakeVertexFormat(uint32_t count, intptr_t gdElementTypePtr)
+	uint32_t cVKDriver::MakeVertexFormat(uint32_t count, intptr_t gdElementTypeList)
 	{
-		// The game builds a format from an element type list here rather than
-		// from a standard format id. Not yet observed in practice; the trace
-		// will say whether it is ever reached.
-		SCVK_CALL("%u, 0x%p  [UNIMPLEMENTED]", count, reinterpret_cast<void*>(gdElementTypePtr));
+		// The game builds a format from an element type list here rather than from a
+		// standard format id. Not observed in practice; the trace says whether it is ever
+		// reached. The list arrives as an integer, printed as the pointer it is.
+		SCVK_CALL("%u, 0x%p  [UNIMPLEMENTED]", count, reinterpret_cast<void*>(gdElementTypeList));
 
-		SetLastError(DriverError::NotSupported);
+		SetLastError(DriverError::NOT_SUPPORTED);
 		return UINT32_MAX;
 	}
 

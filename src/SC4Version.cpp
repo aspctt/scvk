@@ -21,6 +21,8 @@
  * License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
+//// Dependencies
+
 #include "SC4Version.h"
 #include "Logger.h"
 
@@ -31,11 +33,27 @@
 
 namespace scvk
 {
+	//// Constants
+
+	namespace
+	{
+		// The signature every VS_FIXEDFILEINFO carries, from the Windows SDK
+		// documentation.
+		constexpr DWORD FIXED_FILE_INFORMATION_SIGNATURE = 0xfeef04bd;
+
+		// A byte that differs between builds, used when the version resource is missing.
+		// The address is only mapped inside SimCity 4 itself.
+		constexpr uintptr_t SENTINEL_ADDRESS = 0x6E5000;
+	}
+
+	//// Private Functions
+
 	namespace
 	{
 		/** File version of the running executable, packed into 64 bits. */
 		uint64_t ExecutableFileVersion(void)
 		{
+			// Read the executable's version resource
 			char path[MAX_PATH];
 			if (GetModuleFileNameA(nullptr, path, MAX_PATH) == 0)
 			{
@@ -43,84 +61,90 @@ namespace scvk
 			}
 
 			DWORD handle = 0;
-			DWORD size = GetFileVersionInfoSizeA(path, &handle);
+			DWORD const size = GetFileVersionInfoSizeA(path, &handle);
 			if (size == 0)
 			{
 				return 0;
 			}
 
-			std::vector<uint8_t> data(size);
-			if (!GetFileVersionInfoA(path, handle, size, data.data()))
+			std::vector<uint8_t> versionData(size);
+			if (!GetFileVersionInfoA(path, handle, size, versionData.data()))
 			{
 				return 0;
 			}
 
-			VS_FIXEDFILEINFO* info = nullptr;
-			UINT infoSize = 0;
-			if (!VerQueryValueA(data.data(), "\\", reinterpret_cast<LPVOID*>(&info), &infoSize) ||
-				infoSize == 0 || info == nullptr)
+			// Find the fixed file information in it
+			//
+			// The query hands back a pointer into the resource through a void pointer out
+			// parameter, so the typed pointer has to be passed as one.
+			VS_FIXEDFILEINFO* fileInformation = nullptr;
+			UINT fileInformationSize = 0;
+			if (!VerQueryValueA(versionData.data(), "\\", reinterpret_cast<LPVOID*>(&fileInformation), &fileInformationSize) || fileInformationSize == 0 || fileInformation == nullptr)
 			{
 				return 0;
 			}
 
-			if (info->dwSignature != 0xfeef04bd)
+			if (fileInformation->dwSignature != FIXED_FILE_INFORMATION_SIGNATURE)
 			{
 				return 0;
 			}
 
-			return (static_cast<uint64_t>(info->dwFileVersionMS) << 32) | info->dwFileVersionLS;
+			return (uint64_t{ fileInformation->dwFileVersionMS } << 32) | fileInformation->dwFileVersionLS;
 		}
 
 		/** True if the address can be read without faulting. */
 		bool IsReadable(uintptr_t address)
 		{
-			MEMORY_BASIC_INFORMATION info{};
-			if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &info, sizeof(info)) == 0)
+			// The query takes a pointer, and the address is a plain number from the
+			// table.
+			MEMORY_BASIC_INFORMATION memoryInformation{};
+			if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &memoryInformation, sizeof(memoryInformation)) == 0)
 			{
 				return false;
 			}
 
-			if (info.State != MEM_COMMIT)
+			if (memoryInformation.State != MEM_COMMIT)
 			{
 				return false;
 			}
 
-			DWORD const readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-				PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-
-			return (info.Protect & readable) != 0 && (info.Protect & PAGE_GUARD) == 0;
+			DWORD const readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+			return (memoryInformation.Protect & readable) != 0 && (memoryInformation.Protect & PAGE_GUARD) == 0;
 		}
 
+		/** Works out the patch number from the version resource or the sentinel byte. */
 		uint16_t DetermineGameVersion(void)
 		{
-			uint64_t fileVersion = ExecutableFileVersion();
+			// Split the file version into its fields
+			//
+			// Each field is 16 bits wide, so the masked value always fits.
+			uint64_t const fileVersion = ExecutableFileVersion();
 
-			uint16_t major    = (fileVersion >> 48) & 0xFFFF;
-			uint16_t minor    = (fileVersion >> 32) & 0xFFFF;
-			uint16_t revision = (fileVersion >> 16) & 0xFFFF;
+			uint16_t const major    = static_cast<uint16_t>((fileVersion >> 48) & 0xFFFF);
+			uint16_t const minor    = static_cast<uint16_t>((fileVersion >> 32) & 0xFFFF);
+			uint16_t const revision = static_cast<uint16_t>((fileVersion >> 16) & 0xFFFF);
 
 			if (fileVersion != 0 && major == 1 && minor == 1)
 			{
 				return revision;
 			}
 
-			// Some copies have had the version resource stripped, so fall back
-			// to sniffing a byte that happens to differ between builds. Less
-			// trustworthy, and it cannot tell 610 and 613 apart, but it is
-			// better than giving up.
+			// Fall back to the sentinel byte
 			//
-			// The address is only mapped inside SimCity 4 itself. Reading it
-			// blind would fault in any other host, which matters because a
-			// crash here would happen during plugin load, before anything has
-			// had a chance to write a log line explaining why.
-			constexpr uintptr_t kSentinelAddress = 0x6E5000;
-
-			if (!IsReadable(kSentinelAddress))
+			// Some copies have had the version resource stripped, so this sniffs a byte
+			// that happens to differ between builds. Less trustworthy, and it cannot tell
+			// 610 and 613 apart, but it is better than giving up.
+			//
+			// Reading it blind would fault in any other host, which matters because a
+			// crash here would happen during plugin load, before anything has had a
+			// chance to write a log line explaining why.
+			if (!IsReadable(SENTINEL_ADDRESS))
 			{
 				return 0;
 			}
 
-			uint8_t sentinel = *reinterpret_cast<uint8_t const*>(kSentinelAddress);
+			// The table holds a plain address, which has to become a pointer to be read.
+			uint8_t const sentinel = *reinterpret_cast<uint8_t const*>(SENTINEL_ADDRESS);
 
 			switch (sentinel)
 			{
@@ -132,6 +156,8 @@ namespace scvk
 			}
 		}
 	}
+
+	//// Public API
 
 	uint16_t GetGameVersion(void)
 	{

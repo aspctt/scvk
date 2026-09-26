@@ -108,6 +108,7 @@
   <ItemGroup>
     <ClCompile Include="src\cVKDriver.cpp" />
     <ClCompile Include="src\cVKDriver_Blit.cpp" />
+    <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
     <ClCompile Include="src\cVKDriver_Draw.cpp" />
     <ClCompile Include="src\cVKDriver_Ext.cpp" />
     <ClCompile Include="src\cVKDriver_State.cpp" />
@@ -119,6 +120,9 @@
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
     <ClCompile Include="src\VulkanBackend.cpp" />
+    <ClCompile Include="src\VulkanBackend_Draw.cpp" />
+    <ClCompile Include="src\VulkanBackend_Regions.cpp" />
+    <ClCompile Include="src\VulkanBackend_Textures.cpp" />
     <ClCompile Include="vendor\src\cRZBaseString.cpp" />
     <ClCompile Include="vendor\src\cRZCOMDllDirector.cpp" />
     <ClCompile Include="vendor\src\cRZRefCount.cpp" />

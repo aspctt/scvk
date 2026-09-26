@@ -17,8 +17,12 @@
  * License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
+//// Dependencies
+
 #include "VulkanApi.h"
 #include "Logger.h"
+
+//// References
 
 PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
 
@@ -33,88 +37,100 @@ PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT = nullptr;
 
 namespace scvk
 {
+	//// State
+
 	namespace
 	{
-		HMODULE gVulkanLibrary = nullptr;
+		HMODULE vulkanLibrary = nullptr;
 	}
+
+	//// Public API
+
+	/*
+	 * Every entry point comes back from the loader as a generic function pointer, typed
+	 * PFN_vkVoidFunction or FARPROC, and has to be cast to its real signature before it
+	 * can be called. That is how the Vulkan loader interface is designed, so the casts
+	 * below are all of that one kind.
+	 */
 
 	bool LoadVulkanLoader(void)
 	{
-		if (gVulkanLibrary != nullptr)
+		if (vulkanLibrary != nullptr)
 		{
 			return true;
 		}
 
-		gVulkanLibrary = LoadLibraryA("vulkan-1.dll");
-		if (gVulkanLibrary == nullptr)
+		// Load the library
+		vulkanLibrary = LoadLibraryA("vulkan-1.dll");
+		if (vulkanLibrary == nullptr)
 		{
-			LogNote("Vulkan: vulkan-1.dll could not be loaded (error %lu). No Vulkan driver is installed, "
-				"or it is not registered for 32-bit processes.", GetLastError());
+			LogNote("Vulkan: vulkan-1.dll could not be loaded (error %lu). No Vulkan driver is installed, or it is not registered for 32-bit processes.", GetLastError());
 			return false;
 		}
 
-		vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-			GetProcAddress(gVulkanLibrary, "vkGetInstanceProcAddr"));
-
+		// Resolve the one entry point everything else comes through
+		vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(vulkanLibrary, "vkGetInstanceProcAddr"));
 		if (vkGetInstanceProcAddr == nullptr)
 		{
 			LogNote("Vulkan: vulkan-1.dll has no vkGetInstanceProcAddr; the file is not a Vulkan loader.");
 			return false;
 		}
 
-		bool ok = true;
+		// Resolve the entry points that need no instance
+		bool hasAllEntryPoints = true;
 
-#define SCVK_VK_LOAD_GLOBAL(name)                                                            \
-		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(VK_NULL_HANDLE, #name));   \
-		if (name == nullptr) { LogNote("Vulkan: missing global entry point %s", #name); ok = false; }
+#define SCVK_VK_LOAD_GLOBAL(name)                                                        \
+		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(VK_NULL_HANDLE, #name)); \
+		if (name == nullptr) { LogNote("Vulkan: missing global entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_GLOBAL_FUNCTIONS(SCVK_VK_LOAD_GLOBAL)
 #undef SCVK_VK_LOAD_GLOBAL
 
-		return ok;
+		return hasAllEntryPoints;
 	}
 
 	bool LoadVulkanInstanceFunctions(VkInstance instance)
 	{
-		bool ok = true;
+		// Resolve the required entry points
+		bool hasAllEntryPoints = true;
 
-#define SCVK_VK_LOAD_INSTANCE(name)                                                     \
-		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(instance, #name));    \
-		if (name == nullptr) { LogNote("Vulkan: missing instance entry point %s", #name); ok = false; }
+#define SCVK_VK_LOAD_INSTANCE(name)                                                  \
+		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(instance, #name)); \
+		if (name == nullptr) { LogNote("Vulkan: missing instance entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_INSTANCE_FUNCTIONS(SCVK_VK_LOAD_INSTANCE)
 #undef SCVK_VK_LOAD_INSTANCE
 
-		// Optional. Absent whenever VK_EXT_debug_utils was not enabled, which
-		// is the normal case in Release, so a null result is not a failure.
-		vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
-			vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
-		vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-			vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+		// Resolve the optional debug entry points
+		//
+		// Absent whenever VK_EXT_debug_utils was not enabled, which is the normal case in
+		// Release, so a null result is not a failure.
+		vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+		vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
 
-		return ok;
+		return hasAllEntryPoints;
 	}
 
 	bool LoadVulkanDeviceFunctions(VkDevice device)
 	{
-		bool ok = true;
+		bool hasAllEntryPoints = true;
 
-#define SCVK_VK_LOAD_DEVICE(name)                                                   \
-		name = reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name));    \
-		if (name == nullptr) { LogNote("Vulkan: missing device entry point %s", #name); ok = false; }
+#define SCVK_VK_LOAD_DEVICE(name)                                                \
+		name = reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name)); \
+		if (name == nullptr) { LogNote("Vulkan: missing device entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_DEVICE_FUNCTIONS(SCVK_VK_LOAD_DEVICE)
 #undef SCVK_VK_LOAD_DEVICE
 
-		return ok;
+		return hasAllEntryPoints;
 	}
 
 	void UnloadVulkan(void)
 	{
-		if (gVulkanLibrary != nullptr)
+		if (vulkanLibrary != nullptr)
 		{
-			FreeLibrary(gVulkanLibrary);
-			gVulkanLibrary = nullptr;
+			FreeLibrary(vulkanLibrary);
+			vulkanLibrary = nullptr;
 		}
 
 		vkGetInstanceProcAddr = nullptr;

@@ -17,6 +17,8 @@
  * License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
+//// Dependencies
+
 #include "Logger.h"
 #include "version.h"
 
@@ -28,57 +30,78 @@
 
 namespace scvk
 {
+	//// Constants
+
 	namespace
 	{
-		// How many ordered trace lines to write before falling back to counters
-		// only. Boot reaches the first rendered frame well inside this.
-		constexpr uint32_t kTraceBudget = 20000;
+		// How many ordered trace lines to write before falling back to counters only.
+		// Boot reaches the first rendered frame well inside this.
+		constexpr uint32_t TRACE_BUDGET = 20000;
 
-		FILE*     gLog         = nullptr;
-		uint32_t  gTraced      = 0;
-		uint64_t  gTotalCalls  = 0;
-		uint64_t  gNextSummary = 0;
-		uint32_t  gNextOrdinal = 0;
-		CallSite* gSites       = nullptr;
-		bool      gEverOpened  = false;
+		// Snapshots of the counters come this many calls apart once the trace is spent.
+		constexpr uint64_t SUMMARY_INTERVAL = 250000;
+	}
 
-		// Repeat collapsing. Notes are not subject to the trace budget, because
-		// they carry the explanations rather than the call sequence. That was a
-		// mistake in the first tracing build: a blit reporting "not supported"
-		// once per call produced 899,697 identical lines and a 25 MB log that
-		// said almost nothing. Collapsing identical consecutive notes keeps the
-		// signal without capping it.
-		char     gLastNote[512] = {};
-		uint32_t gRepeatCount   = 0;
+	//// State
 
+	namespace
+	{
+		FILE*     logFile       = nullptr;
+		uint32_t  tracedCount   = 0;
+		uint64_t  totalCalls    = 0;
+		uint64_t  nextSummaryAt = 0;
+		uint32_t  nextOrdinal   = 0;
+		CallSite* callSites     = nullptr;
+		bool      hasEverOpened = false;
+
+		// Repeat collapsing. Notes are not subject to the trace budget, because they
+		// carry the explanations rather than the call sequence. That was a mistake in the
+		// first tracing build: a blit reporting "not supported" once per call produced
+		// 899,697 identical lines and a 25 MB log that said almost nothing. Collapsing
+		// identical consecutive notes keeps the signal without capping it.
+		char     lastNote[512] = {};
+		uint32_t repeatCount   = 0;
+	}
+
+	//// Private Functions
+
+	namespace
+	{
+		/** Writes how many times the last note repeated, if it did. */
 		void FlushRepeats(void)
 		{
-			if (gRepeatCount > 0 && gLog != nullptr)
+			if (repeatCount == 0 || logFile == nullptr)
 			{
-				fprintf(gLog, "  (previous line repeated %u more times)\n", gRepeatCount);
-				gRepeatCount = 0;
+				return;
 			}
+
+			fprintf(logFile, "  (previous line repeated %u more times)\n", repeatCount);
+			repeatCount = 0;
 		}
 
 		/** Writes the directory holding this DLL, with a trailing separator. */
-		bool ModuleDirectory(char* out, size_t size)
+		bool ModuleDirectory(char* outDirectory, size_t capacity)
 		{
-			HMODULE self = nullptr;
-			if (!GetModuleHandleExA(
-					GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-					reinterpret_cast<LPCSTR>(&ModuleDirectory),
-					&self))
+			// Find the module this code lives in
+			//
+			// The flag makes the API read its second argument as an address inside the
+			// module rather than as a name, which is why a function pointer is passed
+			// where the signature asks for a string.
+			HMODULE module = nullptr;
+			DWORD const flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+			if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(&ModuleDirectory), &module))
 			{
 				return false;
 			}
 
-			DWORD written = GetModuleFileNameA(self, out, static_cast<DWORD>(size));
-			if (written == 0 || written >= size)
+			// Read its path and cut it after the last separator
+			DWORD const written = GetModuleFileNameA(module, outDirectory, capacity);
+			if (written == 0 || written >= capacity)
 			{
 				return false;
 			}
 
-			char* lastSeparator = strrchr(out, '\\');
+			char* const lastSeparator = strrchr(outDirectory, '\\');
 			if (lastSeparator == nullptr)
 			{
 				return false;
@@ -89,192 +112,221 @@ namespace scvk
 		}
 	}
 
-	CallSite::CallSite(char const* name)
-		: name(name), calls(0), ordinal(gNextOrdinal++), next(gSites)
+	//// Public API
+
+	CallSite::CallSite(char const* methodName) : name(methodName), calls(0), ordinal(nextOrdinal++), next(callSites)
 	{
-		gSites = this;
+		callSites = this;
 	}
 
-	bool LogDirectory(char* out, size_t size)
+	bool LogDirectory(char* outDirectory, size_t capacity)
 	{
-		return ModuleDirectory(out, size);
+		return ModuleDirectory(outDirectory, capacity);
+	}
+
+	bool LogFilePath(char const* name, char* outPath, size_t capacity)
+	{
+		if (!ModuleDirectory(outPath, capacity) || strlen(outPath) + strlen(name) >= capacity)
+		{
+			return false;
+		}
+
+		strcat_s(outPath, capacity, name);
+		return true;
+	}
+
+	bool HasMarkerFile(char const* name)
+	{
+		char path[MAX_PATH];
+		return LogFilePath(name, path, sizeof(path)) && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 	}
 
 	void LogOpen(void)
 	{
-		if (gLog != nullptr)
+		if (logFile != nullptr)
 		{
 			return;
 		}
 
+		// Truncate on the first open only
+		//
+		// If the game tears the driver down and builds another, reopening must not throw
+		// away the record of the first lifecycle.
 		char path[MAX_PATH];
+		char const* const mode = hasEverOpened ? "a" : "w";
 
-		// Truncate on the first open only. If the game tears the driver down
-		// and builds another, reopening must not throw away the record of the
-		// first lifecycle.
-		char const* mode = gEverOpened ? "a" : "w";
-
-		// Preferred location is beside the DLL, where a user looking for it will
-		// think to look. A Plugins folder under Program Files may not be
-		// writable though, and a driver that cannot open its log should still
-		// start, so fall back to the temp directory rather than failing.
-		if (ModuleDirectory(path, sizeof(path)) &&
-			strlen(path) + strlen("scvk.log") < sizeof(path))
+		// Open beside the DLL, or in the temp directory
+		//
+		// Beside the DLL is where a user looking for it will think to look. A Plugins
+		// folder under Program Files may not be writable though, and a driver that cannot
+		// open its log should still start, so it falls back rather than failing.
+		if (LogFilePath("scvk.log", path, sizeof(path)))
 		{
-			strcat_s(path, sizeof(path), "scvk.log");
-			fopen_s(&gLog, path, mode);
+			fopen_s(&logFile, path, mode);
 		}
 
-		if (gLog == nullptr && GetTempPathA(sizeof(path), path) != 0 &&
-			strlen(path) + strlen("scvk.log") < sizeof(path))
+		if (logFile == nullptr && GetTempPathA(sizeof(path), path) != 0 && strlen(path) + strlen("scvk.log") < sizeof(path))
 		{
 			strcat_s(path, sizeof(path), "scvk.log");
-			fopen_s(&gLog, path, mode);
+			fopen_s(&logFile, path, mode);
 		}
 
-		if (gLog == nullptr)
+		if (logFile == nullptr)
 		{
 			return;
 		}
 
-		if (!gEverOpened)
+		// Write the header, or mark the reopening
+		if (!hasEverOpened)
 		{
-			fprintf(gLog, "scvk %s - SimCity 4 Vulkan driver\n", SCVK_VERSION_STRING);
-			fprintf(gLog, "Trace budget %u calls, then counters only.\n\n", kTraceBudget);
-			gEverOpened = true;
+			fprintf(logFile, "scvk %s - SimCity 4 Vulkan driver\n", SCVK_VERSION_STRING);
+			fprintf(logFile, "Trace budget %u calls, then counters only.\n\n", TRACE_BUDGET);
+			hasEverOpened = true;
 		}
 		else
 		{
-			fprintf(gLog, "\n--- log reopened ---\n");
+			fprintf(logFile, "\n--- log reopened ---\n");
 		}
 
-		fflush(gLog);
+		fflush(logFile);
 	}
 
 	void LogSummary(char const* reason)
 	{
-		if (gLog == nullptr)
+		if (logFile == nullptr)
 		{
 			return;
 		}
 
 		FlushRepeats();
 
-		// The list is built by prepending, so walk it into an ordinal-indexed
-		// array to report first-call order rather than reverse order.
+		// Order the sites by first call
+		//
+		// The list is built by prepending, so it is walked into an ordinal-indexed array
+		// to report first-call order rather than reverse order.
 		CallSite* byOrdinal[512] = {};
 		uint32_t  count = 0;
 
-		for (CallSite* site = gSites; site != nullptr; site = site->next)
+		for (CallSite* site = callSites; site != nullptr; site = site->next)
 		{
-			if (site->ordinal < _countof(byOrdinal))
+			if (site->ordinal >= _countof(byOrdinal))
 			{
-				byOrdinal[site->ordinal] = site;
-				count++;
+				continue;
 			}
+
+			byOrdinal[site->ordinal] = site;
+			count++;
 		}
 
-		fprintf(gLog, "\n\n=== call summary (%s): %u methods touched, in first-call order ===\n",
-			reason, count);
-		fprintf(gLog, "%-6s %-14s %s\n", "#", "calls", "method");
+		// Write the table
+		fprintf(logFile, "\n\n=== call summary (%s): %u methods touched, in first-call order ===\n", reason, count);
+		fprintf(logFile, "%-6s %-14s %s\n", "#", "calls", "method");
 
 		for (uint32_t i = 0; i < _countof(byOrdinal); i++)
 		{
-			if (byOrdinal[i] != nullptr)
+			if (byOrdinal[i] == nullptr)
 			{
-				fprintf(gLog, "%-6u %-14llu %s\n", i, byOrdinal[i]->calls, byOrdinal[i]->name);
+				continue;
 			}
+
+			fprintf(logFile, "%-6u %-14llu %s\n", i, byOrdinal[i]->calls, byOrdinal[i]->name);
 		}
 
-		if (gTraced >= kTraceBudget)
+		if (tracedCount >= TRACE_BUDGET)
 		{
-			fprintf(gLog, "\nTrace budget was exhausted; ordered lines above stop at call %u.\n", kTraceBudget);
+			fprintf(logFile, "\nTrace budget was exhausted; ordered lines above stop at call %u.\n", TRACE_BUDGET);
 		}
 
-		fprintf(gLog, "=== end of summary, still recording ===\n\n");
+		fprintf(logFile, "=== end of summary, still recording ===\n\n");
 
-		// Deliberately not closed. Every line is flushed as it is written, so
-		// the file is already complete on disk, and staying open means whatever
-		// the game does after this point is still captured.
-		fflush(gLog);
+		// Flush without closing
+		//
+		// Every line is flushed as it is written, so the file is already complete on
+		// disk, and staying open means whatever the game does after this point is still
+		// captured.
+		fflush(logFile);
 	}
 
-	void LogNote(char const* fmt, ...)
+	void LogNote(char const* format, ...)
 	{
-		if (gLog == nullptr)
+		if (logFile == nullptr)
 		{
 			return;
 		}
 
-		char message[sizeof(gLastNote)];
+		// Format the note
+		char message[sizeof(lastNote)];
 
-		va_list args;
-		va_start(args, fmt);
-		vsnprintf(message, sizeof(message), fmt, args);
-		va_end(args);
+		va_list arguments;
+		va_start(arguments, format);
+		vsnprintf(message, sizeof(message), format, arguments);
+		va_end(arguments);
 
-		if (strcmp(message, gLastNote) == 0)
+		// Count a repeat instead of writing it
+		if (strcmp(message, lastNote) == 0)
 		{
-			gRepeatCount++;
+			repeatCount++;
 			return;
 		}
 
+		// Write it
 		FlushRepeats();
 
-		fputs(message, gLog);
-		fputc('\n', gLog);
-		fflush(gLog);
+		fputs(message, logFile);
+		fputc('\n', logFile);
+		fflush(logFile);
 
-		strcpy_s(gLastNote, sizeof(gLastNote), message);
+		strcpy_s(lastNote, sizeof(lastNote), message);
 	}
 
-	void LogCall(CallSite& site, char const* argFmt, ...)
+	void LogCall(CallSite& site, char const* argumentFormat, ...)
 	{
+		// Count the call
 		site.calls++;
-		gTotalCalls++;
+		totalCalls++;
 
-		if (gLog == nullptr)
+		if (logFile == nullptr)
 		{
 			return;
 		}
 
-		// Snapshot the counters periodically rather than only at shutdown.
+		// Snapshot the counters periodically rather than only at shutdown
 		//
-		// The ordered trace covers startup and then stops, which is the point
-		// of the budget. But the per-method counts are the only view of the
-		// steady state, and writing them only in Shutdown means they are lost
-		// whenever the game is killed rather than closed. That is the normal
-		// case while the renderer is incomplete, so the first 3D session
-		// produced a log with no summary in it at all.
-		if (gTotalCalls >= gNextSummary)
+		// The ordered trace covers startup and then stops, which is the point of the
+		// budget. But the per-method counts are the only view of the steady state, and
+		// writing them only in Shutdown means they are lost whenever the game is killed
+		// rather than closed. That is the normal case while the renderer is incomplete,
+		// so the first 3D session produced a log with no summary in it at all. The first
+		// snapshot comes when the ordered trace runs out, then at intervals.
+		if (totalCalls >= nextSummaryAt)
 		{
-			// First snapshot when the ordered trace runs out, then at
-			// intervals, so a killed session still leaves usable numbers.
-			gNextSummary = (gNextSummary == 0) ? kTraceBudget : gTotalCalls + 250000;
-			if (gTotalCalls >= kTraceBudget)
+			nextSummaryAt = (nextSummaryAt == 0) ? TRACE_BUDGET : totalCalls + SUMMARY_INTERVAL;
+			if (totalCalls >= TRACE_BUDGET)
 			{
 				LogSummary("periodic snapshot");
 			}
 		}
 
-		if (gTraced >= kTraceBudget)
+		if (tracedCount >= TRACE_BUDGET)
 		{
 			return;
 		}
 
+		// Write the trace line
 		FlushRepeats();
-		fprintf(gLog, "%6u  %s(", gTraced++, site.name);
+		fprintf(logFile, "%6u  %s(", tracedCount++, site.name);
 
-		va_list args;
-		va_start(args, argFmt);
-		vfprintf(gLog, argFmt, args);
-		va_end(args);
+		va_list arguments;
+		va_start(arguments, argumentFormat);
+		vfprintf(logFile, argumentFormat, arguments);
+		va_end(arguments);
 
-		fputs(")\n", gLog);
+		fputs(")\n", logFile);
 
-		// Flushed per line deliberately. We fully expect the game to crash
-		// partway through while the driver is still stubs, and the last few
-		// lines before the crash are the most valuable ones in the file.
-		fflush(gLog);
+		// Flush per line
+		//
+		// The game can crash partway through while the renderer is incomplete, and the
+		// last few lines before the crash are the most valuable ones in the file.
+		fflush(logFile);
 	}
 }

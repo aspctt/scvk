@@ -1,31 +1,23 @@
 # Compiles the GLSL sources to SPIR-V and regenerates src/ShaderBinaries.h.
 #
-# The generated header is committed, so building scvk needs no shader compiler.
-# Run this only when a shader changes.
+# The generated header is committed, so building scvk needs no shader compiler. Run this
+# only when a shader changes.
 #
 #   pwsh shaders/compile.ps1
 #
-# glslc comes with the Vulkan SDK. Set VULKAN_SDK_32 or VULKAN_SDK, or pass
-# -Glslc with an explicit path.
+# glslc comes with the Vulkan SDK. Set VULKAN_SDK_32 or VULKAN_SDK, or pass -Glslc with an
+# explicit path.
 
 param(
-    [string]$Glslc = $null
+	[string]$Glslc = $null
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-if (-not $Glslc) {
-    foreach ($root in @($env:VULKAN_SDK_32, $env:VULKAN_SDK, 'S:\VulkanSDK\1.3.296.0')) {
-        if ($root -and (Test-Path "$root\Bin\glslc.exe")) { $Glslc = "$root\Bin\glslc.exe"; break }
-    }
-}
+#// Constants
 
-if (-not $Glslc -or -not (Test-Path $Glslc)) {
-    throw "glslc not found. Pass -Glslc <path>, or set VULKAN_SDK."
-}
-
-$shaderDir = $PSScriptRoot
-$outFile   = Join-Path (Split-Path $shaderDir -Parent) 'src\ShaderBinaries.h'
+$shaderDirectory = $PSScriptRoot
+$outputFile      = Join-Path (Split-Path $shaderDirectory -Parent) "src\ShaderBinaries.h"
 
 $header = @"
 /*
@@ -62,58 +54,92 @@ namespace scvk
 {
 "@
 
-$body = ''
-
-# The vertex stage is built once per attribute combination. A shader may not
-# declare an input the pipeline does not supply, and the game's vertex formats
-# disagree about which of colour and texture coordinate are present.
+# The vertex stage is built once per attribute combination. A shader may not declare an
+# input the pipeline does not supply, and the game's vertex formats disagree about which
+# of colour and texture coordinate are present.
 #
-# The names match the order the backend indexes them: the colour flag times
-# three, plus the number of texture coordinate sets.
+# The names match the order the backend indexes them: the colour flag times three, plus
+# the number of texture coordinate sets.
 $stages = @(
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_None';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=0') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex';      defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=1') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Tex2';     defines = @('SCVK_HAS_COLOUR=0', 'SCVK_TEXCOORD_SETS=2') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_Col';      defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=0') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex';   defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=1') },
-    @{ file = 'geometry.vert'; name = 'kGeometryVertSpv_ColTex2';  defines = @('SCVK_HAS_COLOUR=1', 'SCVK_TEXCOORD_SETS=2') },
-    @{ file = 'geometry.frag'; name = 'kGeometryFragSpv';          defines = @() }
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_NONE";            defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=0") },
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_TEXTURE";         defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=1") },
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_TEXTURE2";        defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=2") },
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR";          defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=0") },
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE";  defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=1") },
+	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2"; defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2") },
+	@{ file = "geometry.frag"; name = "GEOMETRY_FRAGMENT_SPIRV";               defines = @() }
 )
 
+# SPIR-V words per line of the generated arrays.
+$wordsPerLine = 8
+
+#// Private Functions
+
+# Finds glslc in the SDKs this machine is known to have, when no path was given.
+function Find-Glslc {
+	foreach ($root in @($env:VULKAN_SDK_32, $env:VULKAN_SDK, "S:\VulkanSDK\1.3.296.0")) {
+		if ($root -and (Test-Path "$root\Bin\glslc.exe")) {
+			return "$root\Bin\glslc.exe"
+		}
+	}
+
+	return $null
+}
+
+# Compiles one stage and returns its SPIR-V as a C++ array definition.
+function Convert-Stage {
+	param([hashtable]$Stage)
+
+	# Compile it to a temporary file
+	$source    = Join-Path $shaderDirectory $Stage.file
+	$spirvFile = [System.IO.Path]::GetTempFileName() + ".spv"
+
+	$compilerArguments = @("-O", "--target-env=vulkan1.0")
+	foreach ($define in $Stage.defines) { $compilerArguments += "-D$define" }
+	$compilerArguments += @($source, "-o", $spirvFile)
+
+	& $Glslc @compilerArguments | Out-Host
+	if ($LASTEXITCODE -ne 0) { throw "glslc failed on $($Stage.name)" }
+
+	$bytes = [System.IO.File]::ReadAllBytes($spirvFile)
+	Remove-Item $spirvFile -Force
+
+	if ($bytes.Length % 4 -ne 0) { throw "$($Stage.file): SPIR-V length is not a multiple of 4" }
+
+	# Write it out as words, a line at a time
+	$words = New-Object "System.Collections.Generic.List[string]"
+	for ($i = 0; $i -lt $bytes.Length; $i += 4) {
+		$word = [System.BitConverter]::ToUInt32($bytes, $i)
+		$words.Add(("0x{0:x8}u" -f $word))
+	}
+
+	$definition = "`tinline constexpr uint32_t $($Stage.name)[] = {`n"
+	for ($i = 0; $i -lt $words.Count; $i += $wordsPerLine) {
+		$slice = $words[$i..([Math]::Min($i + $wordsPerLine - 1, $words.Count - 1))]
+		$definition += "`t`t" + ($slice -join ", ") + ",`n"
+	}
+	$definition += "`t};`n`n"
+
+	Write-Host ("{0,-40} {1,6} bytes, {2} words" -f $Stage.name, $bytes.Length, $words.Count)
+	return $definition
+}
+
+#// Entry Point
+
+if (-not $Glslc) {
+	$Glslc = Find-Glslc
+}
+
+if (-not $Glslc -or -not (Test-Path $Glslc)) {
+	throw "glslc not found. Pass -Glslc <path>, or set VULKAN_SDK."
+}
+
+$body = ""
 foreach ($stage in $stages) {
-
-    $src = Join-Path $shaderDir $stage.file
-    $spv = [System.IO.Path]::GetTempFileName() + '.spv'
-
-    $args = @('-O', '--target-env=vulkan1.0')
-    foreach ($d in $stage.defines) { $args += "-D$d" }
-    $args += @($src, '-o', $spv)
-
-    & $Glslc @args
-    if ($LASTEXITCODE -ne 0) { throw "glslc failed on $($stage.name)" }
-
-    $bytes = [System.IO.File]::ReadAllBytes($spv)
-    Remove-Item $spv -Force
-
-    if ($bytes.Length % 4 -ne 0) { throw "$($stage.file): SPIR-V length is not a multiple of 4" }
-
-    $words = New-Object 'System.Collections.Generic.List[string]'
-    for ($i = 0; $i -lt $bytes.Length; $i += 4) {
-        $w = [System.BitConverter]::ToUInt32($bytes, $i)
-        $words.Add(('0x{0:x8}u' -f $w))
-    }
-
-    $body += "`tinline constexpr uint32_t $($stage.name)[] = {`n"
-    for ($i = 0; $i -lt $words.Count; $i += 8) {
-        $slice = $words[$i..([Math]::Min($i + 7, $words.Count - 1))]
-        $body += "`t`t" + ($slice -join ', ') + ",`n"
-    }
-    $body += "`t};`n`n"
-
-    Write-Host ("{0,-24} {1,6} bytes, {2} words" -f $stage.name, $bytes.Length, $words.Count)
+	$body += Convert-Stage -Stage $stage
 }
 
 $footer = "}`n"
 
-[System.IO.File]::WriteAllText($outFile, $header + "`n" + $body + $footer)
-Write-Host "wrote $outFile"
+[System.IO.File]::WriteAllText($outputFile, $header + "`n" + $body + $footer)
+Write-Host "wrote $outputFile"

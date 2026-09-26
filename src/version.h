@@ -19,6 +19,8 @@
 
 #pragma once
 
+//// Constants
+
 #define SCVK_VERSION_MAJOR 0
 #define SCVK_VERSION_MINOR 1
 #define SCVK_VERSION_PATCH 0

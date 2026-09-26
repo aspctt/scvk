@@ -22,20 +22,25 @@
  */
 
 #pragma once
+
+//// Dependencies
+
 #include <stdint.h>
 
 namespace scvk
 {
+	//// Public API
+
 	/**
 	 * Which build of SimCity 4 we are running inside.
 	 *
-	 * Returns the patch number (610, 638, 640, 641) or 0 if it could not be
-	 * determined. The result is computed once and cached.
+	 * Returns the patch number (610, 638, 640, 641) or 0 if it could not be determined.
+	 * The result is computed once and cached.
 	 *
-	 * scvk's renderer does not care about this, because it patches nothing and
-	 * talks to the game only through a COM interface. It matters for optional
-	 * features that do write to game memory, where a hardcoded address is only
-	 * meaningful for one specific build.
+	 * scvk's renderer does not care about this, because it patches nothing and talks to
+	 * the game only through a COM interface. It matters for optional features that do
+	 * write to game memory, where a hardcoded address is only meaningful for one specific
+	 * build.
 	 */
 	uint16_t GetGameVersion(void);
 }

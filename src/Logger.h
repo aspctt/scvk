@@ -18,20 +18,25 @@
  */
 
 #pragma once
+
+//// Dependencies
+
+#include <stddef.h>
 #include <stdint.h>
 
 namespace scvk
 {
+	//// Types
+
 	/**
-	 * One record per traced method, held in a function-local static so it is
-	 * constructed on the method's first call and costs a single predictable
-	 * branch thereafter. Each site chains itself onto a global list as it is
-	 * created, so the shutdown summary can report every method SimCity 4
-	 * actually touched, in the order it first touched them.
+	 * One record per traced method, held in a function-local static so it is constructed
+	 * on the method's first call and costs a single predictable branch thereafter. Each
+	 * site chains itself onto a global list as it is created, so the shutdown summary can
+	 * report every method SimCity 4 actually touched, in the order it first touched them.
 	 */
 	struct CallSite
 	{
-		explicit CallSite(char const* name);
+		explicit CallSite(char const* methodName);
 
 		char const* name;
 		uint64_t    calls;
@@ -39,52 +44,62 @@ namespace scvk
 		CallSite*   next;
 	};
 
+	//// Public API
+
 	/**
 	 * Opens the trace file. Safe to call any number of times.
 	 *
-	 * Truncates only on the first open in a process. Reopening never discards
-	 * what is already there, because the game may drive the driver through
-	 * more than one lifecycle and losing the earlier one would hide exactly
-	 * the sequence we are trying to record.
+	 * Truncates only on the first open in a process. Reopening never discards what is
+	 * already there, because the game may drive the driver through more than one
+	 * lifecycle and losing the earlier one would hide exactly the sequence we are trying
+	 * to record.
 	 */
 	void LogOpen(void);
 
 	/**
 	 * Writes the call-site summary. Does not close the file.
 	 *
-	 * Called whenever a driver lifecycle ends. The file is never closed: every
-	 * line is flushed as it is written, so it is complete at all times, and
-	 * leaving it open means anything the game does afterwards is still
-	 * recorded.
+	 * Called whenever a driver lifecycle ends. The file is never closed: every line is
+	 * flushed as it is written, so it is complete at all times, and leaving it open means
+	 * anything the game does afterwards is still recorded.
 	 */
 	void LogSummary(char const* reason);
 
 	/** Directory the log is written to, with a trailing separator. */
-	bool LogDirectory(char* out, size_t size);
+	bool LogDirectory(char* outDirectory, size_t capacity);
+
+	/** Path of a file with this name next to the log. Returns false when it does not fit. */
+	bool LogFilePath(char const* name, char* outPath, size_t capacity);
+
+	/**
+	 * Whether a marker file with this name sits next to the log. Diagnostics are switched
+	 * on this way rather than by build constants somebody forgets to flip back.
+	 */
+	bool HasMarkerFile(char const* name);
 
 	/** Writes a free-form line, always, regardless of the trace budget. */
-	void LogNote(char const* fmt, ...);
+	void LogNote(char const* format, ...);
 
 	/** Records a call against its site. Called via SCVK_CALL, not directly. */
-	void LogCall(CallSite& site, char const* argFmt, ...);
+	void LogCall(CallSite& site, char const* argumentFormat, ...);
 }
 
 /**
- * Records the calling method. The counter always advances; the ordered trace
- * line is written only while the trace budget lasts.
+ * Records the calling method. The counter always advances; the ordered trace line is
+ * written only while the trace budget lasts.
  *
- * The budget exists because the two things we want are in tension. Boot order
- * is the interesting signal, and it is a few thousand calls. Steady-state
- * rendering is tens of thousands of draw calls per second, which would bury
- * the boot sequence in minutes of noise and gigabytes of file. Bounding the
- * ordered trace keeps the boot sequence readable; the per-site counters, which
- * are never bounded, still describe the steady state.
+ * The budget exists because the two things we want are in tension. Boot order is the
+ * interesting signal, and it is a few thousand calls. Steady-state rendering is tens of
+ * thousands of draw calls per second, which would bury the boot sequence in minutes of
+ * noise and gigabytes of file. Bounding the ordered trace keeps the boot sequence
+ * readable; the per-site counters, which are never bounded, still describe the steady
+ * state.
  *
- * The first argument is a printf format for the method's own arguments; pass
- * "" for a method that takes none.
+ * The first argument is a printf format for the method's own arguments; pass "" for a
+ * method that takes none.
  */
-#define SCVK_CALL(...)                                    \
-	do {                                                  \
-		static ::scvk::CallSite scvk_site_(__FUNCTION__); \
-		::scvk::LogCall(scvk_site_, __VA_ARGS__);         \
+#define SCVK_CALL(...)                                       \
+	do {                                                     \
+		static ::scvk::CallSite scvkCallSite(__FUNCTION__);  \
+		::scvk::LogCall(scvkCallSite, __VA_ARGS__);          \
 	} while (0)

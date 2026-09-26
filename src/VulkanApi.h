@@ -22,23 +22,24 @@
 /*
  * Vulkan is loaded at runtime rather than linked against vulkan-1.lib.
  *
- * A renderer plugin has to cope with being installed on a machine that has no
- * Vulkan driver at all. If scvk imported vulkan-1.dll statically, the loader
- * would fail to resolve the imports and the DLL would not load, which in this
- * context means SimCity 4 loses its renderer with no explanation. Loading by
- * name lets scvk detect the situation, write a comprehensible line to the log,
- * and decline, leaving the game to fall back to software rendering.
+ * A renderer plugin has to cope with being installed on a machine that has no Vulkan
+ * driver at all. If scvk imported vulkan-1.dll statically, the loader would fail to
+ * resolve the imports and the DLL would not load, which in this context means SimCity 4
+ * loses its renderer with no explanation. Loading by name lets scvk detect the situation,
+ * write a comprehensible line to the log, and decline, leaving the game to fall back to
+ * software rendering.
  *
- * The entry points are declared at global scope under their real names so that
- * call sites read like ordinary Vulkan code.
+ * The entry points are declared at global scope under their real names so that call sites
+ * read like ordinary Vulkan code.
  */
+
+//// Dependencies
 
 #define VK_NO_PROTOTYPES
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
-/** Resolved from vulkan-1.dll itself. Everything else comes through it. */
-extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+//// Constants
 
 /** Resolvable before an instance exists. */
 #define SCVK_VK_GLOBAL_FUNCTIONS(X)           \
@@ -63,8 +64,7 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkCreateDevice)                               \
 	X(vkGetDeviceProcAddr)
 
-/** Need a VkDevice. Fetched through vkGetDeviceProcAddr to skip loader
- *  dispatch on the calls made every frame. */
+/** Need a VkDevice. Fetched through vkGetDeviceProcAddr to skip loader dispatch on the calls made every frame. */
 #define SCVK_VK_DEVICE_FUNCTIONS(X)      \
 	X(vkDestroyDevice)                   \
 	X(vkGetDeviceQueue)                  \
@@ -140,6 +140,11 @@ extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 	X(vkMapMemory)                       \
 	X(vkUnmapMemory)
 
+//// References
+
+/** Resolved from vulkan-1.dll itself. Everything else comes through it. */
+extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+
 #define SCVK_VK_DECLARE(name) extern PFN_##name name;
 SCVK_VK_GLOBAL_FUNCTIONS(SCVK_VK_DECLARE)
 SCVK_VK_INSTANCE_FUNCTIONS(SCVK_VK_DECLARE)
@@ -149,16 +154,18 @@ SCVK_VK_DEVICE_FUNCTIONS(SCVK_VK_DECLARE)
 /*
  * Optional, and kept out of the required lists above.
  *
- * These only exist when VK_EXT_debug_utils is enabled, which happens in Debug
- * builds when the layer is installed. A null pointer here is normal, not a
- * failure, so nothing may treat it as one.
+ * These only exist when VK_EXT_debug_utils is enabled, which happens in Debug builds when
+ * the layer is installed. A null pointer here is normal, not a failure, so nothing may
+ * treat it as one.
  */
 extern PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 extern PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
 namespace scvk
 {
-	/** Loads vulkan-1.dll and the entry points usable without an instance. */
+	//// Public API
+
+	/** Loads vulkan-1.dll and the entry points usable without an instance. Does nothing once loaded. */
 	bool LoadVulkanLoader(void);
 
 	bool LoadVulkanInstanceFunctions(VkInstance instance);

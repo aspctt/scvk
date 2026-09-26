@@ -17,100 +17,48 @@
  * License along with this library; if not, see <https://www.gnu.org/licenses/>.
  */
 
+//// Dependencies
+
 #include "cVKDriver.h"
 #include "Logger.h"
 #include "VulkanBackend.h"
-#include "version.h"
 
-// Both interfaces declare a pure virtual destructor, which still requires a
-// definition for the derived destructor chain to link.
+//// Exports
+
+// Both interfaces declare a pure virtual destructor, which still requires a definition
+// for the derived destructor chain to link.
 cIGZGBufferRegionExtension::~cIGZGBufferRegionExtension(void) { }
 cIGZGDriverVertexBufferExtension::~cIGZGDriverVertexBufferExtension(void) { }
 
 namespace scvk
 {
-	cVKDriver::cVKDriver(void) :
-		lastError(DriverError::OK),
-		videoModes(),
-		videoModeCount(0),
-		currentVideoMode(-1),
-		driverInfo(),
-		windowWidth(0),
-		windowHeight(0),
-		viewportX(0),
-		viewportY(0),
-		viewportWidth(0),
-		viewportHeight(0),
-		enabledCapabilities{},
-		nextTextureName(1),
-		clearColour{ 0.0f, 0.0f, 0.0f, 1.0f },
-		blendSrcFactor(1),
-		blendDstFactor(0),
-		alphaFunc(7),
-		alphaRef(0.0f),
-		depthCompare(1),
-		depthWrite(true),
-		colourWrite(true),
-		clearDepthValue(1.0f),
-		modelViewMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
-		projectionMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
-		activeMatrix(0),
-		boundTexture(0),
-		colourMultiplier{ 1.0f, 1.0f, 1.0f, 1.0f },
-		vertexColourAmbient(false),
-		vertexColourDiffuse(false),
-		diffuseLightFactor(0.0f),
-		vertexFormat(0),
-		vertexStride(0),
-		vertexPointer(nullptr),
-		blitProbesRemaining(3),
-		probedKeys{},
-		probedCombinations(0),
-		texMatrixProbesRemaining(4),
-		mismatchReportsRemaining(12),
-		coverageReportsRemaining(12),
-		indexTypeWarningsRemaining(4),
-		notedKeys{},
-		notedCount(0),
-		packedCombiner{},
-		rawCombiner{},
-		texEnvMode{ kGDTextureEnvParam_Modulate, kGDTextureEnvParam_Modulate },
-		activeTexStage(0),
-		texStageEnabled{ false, false },
-		texCoordSource{ 0, 1 },
-		texStageMatrix{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 },
-		textureParameters{ 1, 1, 3, 3 },
-		skipCloudShadows(false),
-		lastMultitexKey(0xffffffffu),
-		frameCounter(0),
-		dumpFrame(false),
-		dumpedDraws(0),
-		frameDumpsRemaining(10),
-		keyCaptureStep(0),
-		keyCaptureCount(0),
-		keyCaptureHeld(false),
-		dumpWindowRemaining(0),
-		regionLines{},
-		regionLineCount(0),
-		regionLinesDropped(0),
-		regionTraceFrames(kRegionTraceFrames),
-		regionFrameInteresting(false),
-		regionFrameRestored(false),
-		regionDrawsSinceOp(0),
-		regionPending{},
-		regionPendingCount(0),
-		regionPendingTotal(0),
-		regionSubViewport{ 0, 0, 0, 0 },
-		tileCurrent{},
-		tileHazardsAtStart(0),
-		tileRing{},
-		tileRingNext(0),
-		tileRingCount(0),
-		dumpArmed(false),
-		stage1Texture(0),
-		lastTexMatrixFlags(0),
-		vulkan(std::make_unique<VulkanBackend>()),
-		windowHandle(nullptr)
+	//// Private Functions
+
+	void cVKDriver::SetLastError(DriverError error)
+	{
+		// Report a new error
+		//
+		// Worth reporting, because the game polls GetError after initialisation and
+		// treats a non-zero result as the driver having failed: a stray error set deep in
+		// some unrelated method is enough to get the whole driver rejected. The trace
+		// line immediately above identifies who set it.
+		//
+		// Only on a change, though. The same error arriving repeatedly is one piece of
+		// news, not many, and logging every occurrence produced 899,697 identical lines
+		// the first time a blit failed once per call. A scoped enumeration is not
+		// promoted when passed to a variadic function, so it is converted to the error
+		// number it stands for.
+		if (error != DriverError::OK && error != lastError)
+		{
+			LogNote("  !! error state set to %u (repeats suppressed until it changes)", static_cast<uint32_t>(error));
+		}
+
+		lastError = error;
+	}
+
+	//// Public API
+
+	cVKDriver::cVKDriver(void) : vulkan(std::make_unique<VulkanBackend>())
 	{
 		refCount = 0;
 
@@ -123,12 +71,12 @@ namespace scvk
 		LogNote("cVKDriver destroyed (refcount reached zero).");
 	}
 
-	bool cVKDriver::FactoryFunction(uint32_t riid, void** ppvObj)
+	bool cVKDriver::FactoryFunction(uint32_t interfaceId, void** outInterface)
 	{
-		cVKDriver* driver = new cVKDriver();
+		cVKDriver* const driver = new cVKDriver();
 
-		bool succeeded = driver->QueryInterface(riid, ppvObj);
-		if (!succeeded || *ppvObj == nullptr)
+		bool const hasInterface = driver->QueryInterface(interfaceId, outInterface);
+		if (!hasInterface || *outInterface == nullptr)
 		{
 			delete driver;
 			return false;
@@ -137,44 +85,46 @@ namespace scvk
 		return true;
 	}
 
-	bool cVKDriver::QueryInterface(uint32_t riid, void** ppvObj)
+	bool cVKDriver::QueryInterface(uint32_t interfaceId, void** outInterface)
 	{
-		switch (riid)
+		// Hand out the interface asked for
+		//
+		// Each is a base of this class, so the conversion picks the matching subobject.
+		switch (interfaceId)
 		{
 		case GZIID_cIGZUnknown:
 		case GZIID_cIGZGDriver:
-			LogNote("QueryInterface(%08x) -> cIGZGDriver", riid);
-			*ppvObj = static_cast<cIGZGDriver*>(this);
+			LogNote("QueryInterface(%08x) -> cIGZGDriver", interfaceId);
+			*outInterface = static_cast<cIGZGDriver*>(this);
 			break;
 
 		case GZIID_cIGZGBufferRegionExtension:
-			LogNote("QueryInterface(%08x) -> cIGZGBufferRegionExtension", riid);
-			*ppvObj = static_cast<cIGZGBufferRegionExtension*>(this);
+			LogNote("QueryInterface(%08x) -> cIGZGBufferRegionExtension", interfaceId);
+			*outInterface = static_cast<cIGZGBufferRegionExtension*>(this);
 			break;
 
 		case GZIID_cIGZGDriverLightingExtension:
-			LogNote("QueryInterface(%08x) -> cIGZGDriverLightingExtension", riid);
-			*ppvObj = static_cast<cIGZGDriverLightingExtension*>(this);
+			LogNote("QueryInterface(%08x) -> cIGZGDriverLightingExtension", interfaceId);
+			*outInterface = static_cast<cIGZGDriverLightingExtension*>(this);
 			break;
 
 		case GZIID_cIGZGSnapshotExtension:
-			// Documented as mandatory: refusing this one crashes the game
-			// during load, even though it is nominally an extension.
-			LogNote("QueryInterface(%08x) -> cIGZGSnapshotExtension", riid);
-			*ppvObj = static_cast<cIGZGSnapshotExtension*>(this);
+			// Documented as mandatory: refusing this one crashes the game during load,
+			// even though it is nominally an extension.
+			LogNote("QueryInterface(%08x) -> cIGZGSnapshotExtension", interfaceId);
+			*outInterface = static_cast<cIGZGSnapshotExtension*>(this);
 			break;
 
 		case GZIID_cIGZGDriverVertexBufferExtension:
-			// Deliberately declined for now. Accepting it opts the game into a
-			// buffer-object draw path, and while every method is still a stub
-			// the shorter path gets us to a first frame more reliably. SCGL
-			// also leaves this one disabled. Logged so the boot trace still
-			// records that the game asked.
-			LogNote("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension DECLINED (stub stage)", riid);
+			// Deliberately declined. Accepting it opts the game into a buffer-object draw
+			// path, and the client-memory path is the one scvk implements. SCGL also
+			// leaves this one disabled. Logged so the boot trace still records that the
+			// game asked.
+			LogNote("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension DECLINED (stub stage)", interfaceId);
 			return false;
 
 		default:
-			LogNote("QueryInterface(%08x) -> unrecognised, declined", riid);
+			LogNote("QueryInterface(%08x) -> unrecognised, declined", interfaceId);
 			return false;
 		}
 
@@ -198,31 +148,11 @@ namespace scvk
 		return true;
 	}
 
-	void cVKDriver::SetLastError(DriverError error)
-	{
-		// Worth reporting, because the game polls GetError after initialisation
-		// and treats a non-zero result as the driver having failed: a stray
-		// error set deep in some unrelated method is enough to get the whole
-		// driver rejected. The trace line immediately above identifies who set
-		// it.
-		//
-		// Only on a change, though. The same error arriving repeatedly is one
-		// piece of news, not many, and logging every occurrence produced
-		// 899,697 identical lines the first time a blit failed once per call.
-		if (error != DriverError::OK && error != lastError)
-		{
-			LogNote("  !! error state set to %u (repeats suppressed until it changes)",
-				static_cast<uint32_t>(error));
-		}
-
-		lastError = error;
-	}
-
 	uint32_t cVKDriver::GetError(void)
 	{
-		// Read-and-clear, matching the GL error semantics the interface is
-		// modelled on.
-		uint32_t error = static_cast<uint32_t>(lastError);
+		// Read and clear, matching the GL error semantics the interface is modelled on.
+		// The enumeration's underlying type is the interface's error number.
+		uint32_t const error = static_cast<uint32_t>(lastError);
 		lastError = DriverError::OK;
 
 		SCVK_CALL("");
@@ -233,13 +163,13 @@ namespace scvk
 	char const* cVKDriver::GetDriverInfo(void) const
 	{
 		SCVK_CALL("");
-		return driverInfo.c_str();
+		return driverInformation.c_str();
 	}
 
 	uint32_t cVKDriver::GetGZCLSID(void) const
 	{
 		SCVK_CALL("");
-		return kDriverGZCLSID;
+		return DRIVER_GZCLSID;
 	}
 
 	bool cVKDriver::Punt(uint32_t unknown, void* unknown2)
