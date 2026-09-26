@@ -206,10 +206,11 @@ namespace scvk
 
 		/**
 		 * Copies the current parameters onto a texture if it has been bound
-		 * since the last time, which is what the game's driver does when it
-		 * applies its texture stages before a draw.
+		 * since the last time, or unconditionally when forced, which is what
+		 * the game's driver does when it applies its texture stages before a
+		 * draw.
 		 */
-		void RefreshTextureParameters(uint32_t handle);
+		void RefreshTextureParameters(uint32_t handle, bool force);
 
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
@@ -596,15 +597,25 @@ namespace scvk
 		// Linear with repeat is the fixed function default.
 		uint32_t textureParameters[4] = { 1, 1, 3, 3 };
 
+		// Set when the parameters change. The game's OpenGL driver flags the
+		// first stage for a refresh on every TexParameter, so the texture on
+		// that stage always samples with the values current at the draw, not
+		// only the ones current at the first draw after its bind.
+		bool     stage0ParametersDirty = true;
+
+		// Draws where that refresh changed what a texture samples with, which
+		// the refresh on bind alone would have missed.
+		uint64_t parameterRefreshChanges = 0;
+		int      parameterNotesRemaining = 20;
+
 		/** The set for the current parameters, created on first use. */
 		/**
 		 * The sampler for one texture's own parameters.
 		 *
 		 * OpenGL keeps filter and wrap on the texture object. The game's
 		 * driver pushes the current values onto a texture when it applies the
-		 * stages for the first draw after a bind, so a texture samples with
-		 * the values current at that draw and keeps them afterwards, even if
-		 * the game sets different ones without binding again.
+		 * stages for a draw after a bind or after the values change, and only
+		 * while the stage is on.
 		 */
 		VkDescriptorSet GetSamplerSet(uint32_t handle);
 

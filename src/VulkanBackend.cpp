@@ -1624,6 +1624,12 @@ namespace scvk
 			{
 				LogNote("Vulkan: %llu frames presented.", static_cast<unsigned long long>(presentedFrames));
 
+				if (parameterRefreshChanges != 0)
+				{
+					LogNote("Vulkan: %llu draws sampled with parameters the game changed after binding.",
+						static_cast<unsigned long long>(parameterRefreshChanges));
+				}
+
 				if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 				{
 					LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.",
@@ -1839,22 +1845,44 @@ namespace scvk
 		textureParameters[1] = minFilter;
 		textureParameters[2] = wrapS;
 		textureParameters[3] = wrapT;
+		stage0ParametersDirty = true;
 	}
 
-	void VulkanBackend::RefreshTextureParameters(uint32_t handle)
+	void VulkanBackend::RefreshTextureParameters(uint32_t handle, bool force)
 	{
-		if (handle == 0 || handle >= textures.size() || !textures[handle].live ||
-			!textures[handle].parametersStale)
+		if (handle == 0 || handle >= textures.size() || !textures[handle].live)
 		{
 			return;
 		}
 
-		for (int i = 0; i < 4; i++)
+		Texture& texture = textures[handle];
+
+		if (!texture.parametersStale && !force)
 		{
-			textures[handle].parameters[i] = textureParameters[i];
+			return;
 		}
 
-		textures[handle].parametersStale = false;
+		if (!texture.parametersStale &&
+			memcmp(texture.parameters, textureParameters, sizeof(textureParameters)) != 0)
+		{
+			parameterRefreshChanges++;
+
+			if (parameterNotesRemaining > 0)
+			{
+				parameterNotesRemaining--;
+				LogNote("  PARAMS: texture %u (%ux%u) had %u,%u,%u,%u and now samples with %u,%u,%u,%u",
+					handle, texture.width, texture.height,
+					texture.parameters[0], texture.parameters[1], texture.parameters[2], texture.parameters[3],
+					textureParameters[0], textureParameters[1], textureParameters[2], textureParameters[3]);
+			}
+		}
+
+		for (int i = 0; i < 4; i++)
+		{
+			texture.parameters[i] = textureParameters[i];
+		}
+
+		texture.parametersStale = false;
 	}
 
 	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t handle)
@@ -2871,9 +2899,15 @@ namespace scvk
 			? currentTexture1 : 0;
 
 		// Only a stage that is on gets its parameters applied, as in the
-		// game's own driver, and only the first draw after a bind reads them.
-		if (stageEnabled[0]) { RefreshTextureParameters(bound); }
-		if (twoStages)       { RefreshTextureParameters(bound1); }
+		// game's own driver. The first stage takes them after a bind or after
+		// any change; the second only after a bind.
+		if (stageEnabled[0])
+		{
+			RefreshTextureParameters(bound, stage0ParametersDirty);
+			stage0ParametersDirty = false;
+		}
+
+		if (twoStages) { RefreshTextureParameters(bound1, false); }
 
 		NoteTextureUse(bound);
 		NoteTextureUse(bound1);
