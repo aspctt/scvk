@@ -371,16 +371,16 @@ namespace scvk
 
 		lastTextureMatrixFlags = gdTextureMatrixFlags;
 
-		// Keep the first stage's matrix
+		// Keep the matrix for the active stage
 		//
-		// That is the one that generates coordinates. A null matrix means identity. The
-		// flag cases the OpenGL driver distinguishes all rewrite rows 2 and 3 of the
-		// matrix and leave rows 0 and 1 alone. A 2D sample uses only those first two
-		// rows, so none of that distinction reaches here.
-		if (activeTextureStage == 0)
-		{
-			memcpy(textureStageMatrix, (matrix != nullptr) ? matrix : IDENTITY_MATRIX, sizeof(textureStageMatrix));
-		}
+		// It transforms that stage's coordinates whether they are generated or come from
+		// the vertex, as OpenGL's texture matrix does. Dropping it for vertex coordinates
+		// left the foundations sampling far outside their clamped textures, which came
+		// out black. A null matrix means identity. The flag cases the OpenGL driver
+		// distinguishes all rewrite rows 2 and 3 of the matrix and leave rows 0 and 1
+		// alone. A 2D sample uses only those first two rows, so none of that distinction
+		// reaches here, and the fourth row is taken to leave q at one.
+		memcpy(textureStageMatrices[activeTextureStage], (matrix != nullptr) ? matrix : IDENTITY_MATRIX, sizeof(textureStageMatrices[activeTextureStage]));
 
 		// Report the first few matrices
 		//

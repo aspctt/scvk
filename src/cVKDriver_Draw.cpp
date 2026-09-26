@@ -50,8 +50,8 @@ namespace scvk
 		// The coordinate source the game uses for generated coordinates. 0x10 is its
 		// counterpart of D3DTSS_TCI_CAMERASPACEPOSITION: the coordinate comes from the
 		// vertex position in eye space rather than from a coordinate set. The low three
-		// bits carry which set the result lands in, which does not matter while only one
-		// stage generates. See SCGL's GLTextureUnit.cpp.
+		// bits name a coordinate set, which is what a source without the flag samples.
+		// See SCGL's GLTextureUnit.cpp.
 		constexpr uint32_t CAMERA_SPACE_POSITION_SOURCE = 0x10;
 		constexpr uint32_t SOURCE_SET_BITS              = 7;
 
@@ -139,48 +139,55 @@ namespace scvk
 		}
 	}
 
-	void cVKDriver::PushTextureGeneration(void)
+	void cVKDriver::PushStageCoordinates(void)
 	{
-		if (!IsGeneratingCoordinates())
+		for (uint32_t stage = 0; stage < 2; stage++)
 		{
-			vulkan->SetTextureGeneration(false, nullptr, nullptr);
-			return;
-		}
+			float const* const stageMatrix = textureStageMatrices[stage];
+			bool const isGenerated = IsGeneratingCoordinates(stage);
 
-		// Fold the modelview into the texture matrix
-		//
-		// texcoord = textureMatrix * modelview * position, so the two are combined here
-		// and the shader is left with one dot product per component. Column major
-		// throughout, matching the game and GLSL: M[column * 4 + row].
-		float rowS[4];
-		float rowT[4];
+			// Take the matrix rows a 2D sample reads
+			//
+			// Column major throughout, matching the game and GLSL: M[column * 4 + row].
+			float rowS[4] = { stageMatrix[0], stageMatrix[4], stageMatrix[8], stageMatrix[12] };
+			float rowT[4] = { stageMatrix[1], stageMatrix[5], stageMatrix[9], stageMatrix[13] };
 
-		for (int column = 0; column < 4; column++)
-		{
-			float sumS = 0.0f;
-			float sumT = 0.0f;
-
-			for (int k = 0; k < 4; k++)
+			// Fold the modelview in when the stage generates
+			//
+			// texcoord = textureMatrix * modelview * position, so the two are combined here
+			// and what samples it is left with one dot product per component.
+			if (isGenerated)
 			{
-				sumS += textureStageMatrix[k * 4 + 0] * modelViewMatrix[column * 4 + k];
-				sumT += textureStageMatrix[k * 4 + 1] * modelViewMatrix[column * 4 + k];
+				for (int column = 0; column < 4; column++)
+				{
+					float sumS = 0.0f;
+					float sumT = 0.0f;
+
+					for (int k = 0; k < 4; k++)
+					{
+						sumS += stageMatrix[k * 4 + 0] * modelViewMatrix[column * 4 + k];
+						sumT += stageMatrix[k * 4 + 1] * modelViewMatrix[column * 4 + k];
+					}
+
+					rowS[column] = sumS;
+					rowT[column] = sumT;
+				}
 			}
 
-			rowS[column] = sumS;
-			rowT[column] = sumT;
+			vulkan->SetStageCoordinates(stage, isGenerated, textureCoordinateSource[stage] & SOURCE_SET_BITS, rowS, rowT);
 		}
-
-		vulkan->SetTextureGeneration(true, rowS, rowT);
 	}
 
-	bool cVKDriver::IsGeneratingCoordinates(void) const
+	bool cVKDriver::IsGeneratingCoordinates(uint32_t stage) const
 	{
-		return (textureCoordinateSource[0] & ~SOURCE_SET_BITS) == CAMERA_SPACE_POSITION_SOURCE;
+		return (textureCoordinateSource[stage] & ~SOURCE_SET_BITS) == CAMERA_SPACE_POSITION_SOURCE;
 	}
 
 	bool cVKDriver::IsCloudShadowDraw(void) const
 	{
-		return isTextureStageEnabled[0] && IsGeneratingCoordinates();
+		// The building shadows projected onto the terrain generate on the first stage
+		// too, but always with the second stage on.
+		return isTextureStageEnabled[0] && !isTextureStageEnabled[1] && IsGeneratingCoordinates(0);
 	}
 
 	//// Public API
@@ -212,7 +219,7 @@ namespace scvk
 		// Draw it
 		//
 		// Both numbers were checked to be positive above.
-		PushTextureGeneration();
+		PushStageCoordinates();
 		UpdateTransform();
 		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, static_cast<uint32_t>(first), static_cast<uint32_t>(count));
 	}
@@ -262,7 +269,7 @@ namespace scvk
 		// Draw it
 		//
 		// The count was checked to be positive above.
-		PushTextureGeneration();
+		PushStageCoordinates();
 		UpdateTransform();
 		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, static_cast<uint32_t>(count), isIndex32Bit);
 	}

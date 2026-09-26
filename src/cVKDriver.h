@@ -196,9 +196,12 @@ namespace scvk
 		// Which coordinate source each stage was last told to sample with.
 		uint32_t textureCoordinateSource[2] = { 0, 1 };
 
-		// The first stage's texture matrix, which transforms the generated coordinate.
-		// Only that stage generates, so only that one is kept.
-		float textureStageMatrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+		// Each stage's texture matrix, which transforms its coordinates whether they come
+		// from the vertex or are generated.
+		float textureStageMatrices[2][16] = {
+			{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+			{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+		};
 
 		// What each stage was last told to combine with, and how. The mode decides which
 		// of the two the stage actually uses: the network only applies when the mode
@@ -366,13 +369,13 @@ namespace scvk
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
 
-		/** Recomputes and forwards the generated coordinate rows. */
-		void PushTextureGeneration(void);
+		/** Recomputes and forwards where each stage's coordinates come from. */
+		void PushStageCoordinates(void);
 
-		/** Whether the first stage generates its coordinates from the eye-space position. */
-		bool IsGeneratingCoordinates(void) const;
+		/** Whether a stage generates its coordinates from the eye-space position. */
+		bool IsGeneratingCoordinates(uint32_t stage) const;
 
-		/** The cloud shadow pass, the only one that generates its coordinates. */
+		/** The cloud shadow pass, the only single stage pass that generates its coordinates. */
 		bool IsCloudShadowDraw(void) const;
 
 		// Textures, in cVKDriver_Textures.cpp

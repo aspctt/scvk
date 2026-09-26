@@ -103,6 +103,20 @@ namespace scvk
 			uint32_t textureCoordinateOffset[2] = { 0, 0 };
 		};
 
+		/**
+		 * How one texture stage gets its coordinates.
+		 *
+		 * Either a coordinate set of the vertex or the eye-space position, then the two
+		 * rows of the stage's texture matrix a 2D sample reads. For a generating stage
+		 * the rows already include the modelview, so they apply to the object position.
+		 */
+		struct StageCoordinates
+		{
+			bool     isGenerated = false;
+			uint32_t sourceSet   = 0;
+			float    rows[8]     = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+		};
+
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
@@ -319,16 +333,16 @@ namespace scvk
 
 		// The second stage's combiner network and the environment colour a combiner may
 		// name. Only geometry carrying two coordinate sets can use them, which in
-		// practice means the terrain.
+		// practice means the terrain and the building shadows drawn over it.
 		bool     isStageEnabled[2] = { false, false };
 		uint32_t combinerState[4]  = {};
 		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-		// Generated texture coordinates, which the cloud shadows are drawn with. The two
-		// rows share push constant space with the combiner, since a pass never needs
-		// both.
-		bool  isTextureGenerationActive = false;
-		float textureGenerationRows[8]  = {};
+		// Where each stage's texture coordinates come from. The single stage paths hand
+		// the first stage's rows to the shader in the push constant space the combiner
+		// takes on the two stage path, so that path has them written into its vertex copy
+		// instead.
+		StageCoordinates stageCoordinates[2] = { StageCoordinates{}, StageCoordinates{ false, 1, { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f } } };
 
 		// Diagnostics that replace every colour on screen.
 		bool shouldShowPassColours = false;
@@ -477,14 +491,23 @@ namespace scvk
 
 		void DestroyArena(Arena& arena);
 
-		/** Copies a vertex range into the per-frame arena. */
-		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, uint32_t stride, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		/** Copies a vertex range into the per-frame arena, with the coordinates the draw samples. */
+		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+
+		/** Whether the second stage takes part in the draw. */
+		bool IsTwoStageDraw(uint32_t textureCoordinateSets) const;
+
+		/** Whether a stage's coordinates differ from the vertex set of its own number. */
+		bool IsStageTransformed(uint32_t stage) const;
+
+		/** Writes each stage's final coordinates into its own set of the vertex copy. */
+		void WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& layout) const;
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
 		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, uint32_t textureCoordinateSets);
 
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
-		void PushDrawConstants(bool isGenerating);
+		void PushDrawConstants(bool isTwoStage);
 
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);
@@ -671,13 +694,14 @@ namespace scvk
 		void SetCombinerState(uint32_t stage, uint32_t packedRgb, uint32_t packedAlpha);
 
 		/**
-		 * Sets coordinates generated from the eye-space position.
+		 * Sets where a stage's texture coordinates come from.
 		 *
-		 * Takes the two rows of the texture generation matrix a 2D sample needs, already
-		 * multiplied through the modelview. Passing false turns generation off and
-		 * returns the stage to the vertex coordinates.
+		 * Either vertex coordinate set sourceSet or the eye-space position, transformed
+		 * by the two rows of the stage's texture matrix a 2D sample reads. Generated rows
+		 * arrive already multiplied through the modelview. OpenGL transforms every
+		 * texture coordinate of a stage by its matrix, not only generated ones.
 		 */
-		void SetTextureGeneration(bool isActive, float const* rowS, float const* rowT);
+		void SetStageCoordinates(uint32_t stage, bool isGenerated, uint32_t sourceSet, float const* rowS, float const* rowT);
 
 		/** Replaces draw colours with a flat colour per blend configuration. */
 		void SetDebugPassColours(bool isEnabled);

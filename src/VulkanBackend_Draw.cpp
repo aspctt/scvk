@@ -549,13 +549,13 @@ namespace scvk
 		ArenaRewind(arena);
 	}
 
-	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, uint32_t stride, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset)
 	{
 		// Reserve the space
 		//
 		// Measured in 64 bits, so a range the game's indices make absurdly large is
 		// refused by the arena rather than wrapping.
-		VkDeviceSize const bytes = VkDeviceSize{ vertexCount } * stride;
+		VkDeviceSize const bytes = VkDeviceSize{ vertexCount } * layout.stride;
 		uint8_t* destination = nullptr;
 
 		if (!ArenaAllocate(vertexArena, bytes, VERTEX_ALIGNMENT, outBuffer, outOffset, destination))
@@ -568,10 +568,81 @@ namespace scvk
 		//
 		// The game's vertices are untyped bytes, and the arena accepted the size, so it
 		// fits within one block and within a size_t.
-		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * stride;
+		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * layout.stride;
 		memcpy(destination, source, static_cast<size_t>(bytes));
 
+		// Write the coordinates the two stage path cannot work out itself
+		//
+		// Its push constant space holds the combiner, so it has no room for either
+		// stage's rows and samples the vertex sets as they are. The game still asks for
+		// more on that path: it projects building shadows onto the terrain with both
+		// stages generating, the second masking them through a 4x4 texture and its own
+		// matrix.
+		if (IsTwoStageDraw(layout.textureCoordinateSets) && (IsStageTransformed(0) || IsStageTransformed(1)))
+		{
+			WriteStageCoordinates(destination, source, vertexCount, layout);
+		}
+
 		return true;
+	}
+
+	bool VulkanBackend::IsTwoStageDraw(uint32_t textureCoordinateSets) const
+	{
+		// The second stage runs only when it is switched on, has a texture, and the
+		// geometry carries a coordinate set to sample it with. All three matter: the game
+		// leaves a 4x4 placeholder bound to the stage for the whole session and turns the
+		// stage itself off, so taking the binding as the signal modulates the city
+		// terrain down to black.
+		return textureCoordinateSets >= 2 && currentTexture1 != 0 && isStageEnabled[1];
+	}
+
+	bool VulkanBackend::IsStageTransformed(uint32_t stage) const
+	{
+		StageCoordinates const& coordinates = stageCoordinates[stage];
+		StageCoordinates const  untransformed{};
+
+		return coordinates.isGenerated || coordinates.sourceSet != stage || memcmp(coordinates.rows, untransformed.rows, sizeof(coordinates.rows)) != 0;
+	}
+
+	void VulkanBackend::WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& layout) const
+	{
+		for (uint32_t vertex = 0; vertex < vertexCount; vertex++)
+		{
+			uint8_t const* const sourceVertex      = source + size_t{ vertex } * layout.stride;
+			uint8_t* const       destinationVertex = destination + size_t{ vertex } * layout.stride;
+
+			// Read the position, which every format starts with
+			float position[3];
+			memcpy(position, sourceVertex, sizeof(position));
+
+			for (uint32_t stage = 0; stage < 2; stage++)
+			{
+				StageCoordinates const& coordinates = stageCoordinates[stage];
+
+				// Pick the stage's input
+				//
+				// From the game's vertex rather than the copy, since the copy's sets are
+				// being overwritten and a stage may read the other stage's set. A set the
+				// format lacks falls back to the first.
+				float input[4] = { position[0], position[1], position[2], 1.0f };
+
+				if (!coordinates.isGenerated)
+				{
+					uint32_t const set = (coordinates.sourceSet < layout.textureCoordinateSets) ? coordinates.sourceSet : 0;
+					memcpy(input, sourceVertex + layout.textureCoordinateOffset[set], sizeof(float) * 2);
+					input[2] = 0.0f;
+				}
+
+				// Transform it into the stage's own set
+				float const* const rows = coordinates.rows;
+				float const output[2] = {
+					rows[0] * input[0] + rows[1] * input[1] + rows[2] * input[2] + rows[3] * input[3],
+					rows[4] * input[0] + rows[5] * input[1] + rows[6] * input[2] + rows[7] * input[3],
+				};
+
+				memcpy(destinationVertex + layout.textureCoordinateOffset[stage], output, sizeof(output));
+			}
+		}
 	}
 
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, uint32_t textureCoordinateSets)
@@ -596,23 +667,17 @@ namespace scvk
 
 		// Decide which of the shader's paths the draw takes
 		//
-		// The second stage runs only when it is switched on, has a texture, and the
-		// geometry carries a coordinate set to sample it with. All three matter: the game
-		// leaves a 4x4 placeholder bound to the stage for the whole session and turns the
-		// stage itself off, so taking the binding as the signal modulates the city
-		// terrain down to black. Everything else keeps the texture environment path.
-		//
-		// Generated coordinates take the aliased slots when the second stage is not using
-		// them. The interface keeps these apart on its own: the cloud shadow pass that
-		// generates coordinates runs on a single stage.
-		bool const isTwoStage   = textureCoordinateSets >= 2 && currentTexture1 != 0 && isStageEnabled[1];
-		bool const isGenerating = isTextureGenerationActive && !isTwoStage;
+		// A single stage draw has the first stage's rows in the aliased slots, applied to
+		// the position when it generates and to the first set when it does not. A two
+		// stage draw has its coordinates already written into the vertex copy.
+		bool const isTwoStage   = IsTwoStageDraw(textureCoordinateSets);
+		bool const isGenerating = stageCoordinates[0].isGenerated && !isTwoStage;
 
 		fragmentState[3] = isGenerating ? 3.0f : (isTwoStage ? 2.0f : 1.0f);
 
 		// Bind everything
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		PushDrawConstants(isGenerating);
+		PushDrawConstants(isTwoStage);
 		BindTextures(isTwoStage);
 
 		VkBuffer buffers[] = { vertexBuffer };
@@ -622,7 +687,7 @@ namespace scvk
 		return true;
 	}
 
-	void VulkanBackend::PushDrawConstants(bool isGenerating)
+	void VulkanBackend::PushDrawConstants(bool isTwoStage)
 	{
 		// Copy the state this draw sends
 		//
@@ -688,9 +753,9 @@ namespace scvk
 		// Push the two aliased slots, 32 bytes, filled according to the path
 		uint32_t const aliasOffset = sizeof(transform) + sizeof(fragmentState);
 
-		if (isGenerating)
+		if (!isTwoStage)
 		{
-			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset, sizeof(textureGenerationRows), textureGenerationRows);
+			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset, sizeof(stageCoordinates[0].rows), stageCoordinates[0].rows);
 		}
 		else
 		{
@@ -835,17 +900,18 @@ namespace scvk
 		combinerState[stage * 2 + 1] = packedAlpha;
 	}
 
-	void VulkanBackend::SetTextureGeneration(bool isActive, float const* rowS, float const* rowT)
+	void VulkanBackend::SetStageCoordinates(uint32_t stage, bool isGenerated, uint32_t sourceSet, float const* rowS, float const* rowT)
 	{
-		isTextureGenerationActive = isActive;
-
-		if (!isActive || rowS == nullptr || rowT == nullptr)
+		if (stage > 1 || rowS == nullptr || rowT == nullptr)
 		{
 			return;
 		}
 
-		memcpy(textureGenerationRows, rowS, sizeof(float) * 4);
-		memcpy(textureGenerationRows + 4, rowT, sizeof(float) * 4);
+		StageCoordinates& coordinates = stageCoordinates[stage];
+		coordinates.isGenerated = isGenerated;
+		coordinates.sourceSet   = sourceSet;
+		memcpy(coordinates.rows, rowS, sizeof(float) * 4);
+		memcpy(coordinates.rows + 4, rowT, sizeof(float) * 4);
 	}
 
 	void VulkanBackend::SetDebugPassColours(bool isEnabled)
@@ -880,7 +946,7 @@ namespace scvk
 		// Copy the vertices and bind the state
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, firstVertex, vertexCount, layout.stride, vertexBuffer, vertexOffset))
+		if (!UploadVertices(vertices, firstVertex, vertexCount, layout, vertexBuffer, vertexOffset))
 		{
 			return;
 		}
@@ -961,7 +1027,7 @@ namespace scvk
 
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, lowest, vertexCount, layout.stride, vertexBuffer, vertexOffset))
+		if (!UploadVertices(vertices, lowest, vertexCount, layout, vertexBuffer, vertexOffset))
 		{
 			return;
 		}

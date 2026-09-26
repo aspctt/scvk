@@ -21,8 +21,10 @@
 //// Constants
 
 // The path value from which the draw's coordinates are generated from the eye-space
-// position rather than read from the vertex.
+// position rather than read from the vertex, and the one below which the draw is on the
+// single stage path.
 const float PATH_GENERATED_COORDINATES = 2.5;
+const float PATH_TWO_STAGES_MINIMUM    = 1.5;
 
 // The texture environment mode carries 8 on top when the primary colour's alpha comes from
 // the vertex, so anything from here up has the flag.
@@ -50,9 +52,10 @@ layout(push_constant) uniform PushConstants
 	// guaranteed minimum and both meanings will not fit side by side.
 	//
 	// Path 2 reads them as the combiner network and the environment colour. Path 3 reads
-	// them as the two rows of the texture generation matrix that matter for a 2D sample.
-	// The two are mutually exclusive in the interface: generated coordinates arrive on a
-	// single stage pass, and the combiner only means anything when a second stage is live.
+	// them as the two rows of the texture generation matrix that matter for a 2D sample,
+	// and path 1 as the same two rows of the texture matrix. Path 2 has no room left for
+	// either stage's rows, so the backend writes its final coordinates into the vertex
+	// copy instead.
 	vec4 aliasA;
 	vec4 aliasB;
 
@@ -117,6 +120,18 @@ void main()
 #else
 	fragmentTextureCoordinate0 = vec2(0.0);
 #endif
+
+	// Transform it by the texture matrix on the single stage path
+	//
+	// OpenGL applies a stage's texture matrix to the coordinates the vertex carries as
+	// well as to generated ones. The foundations rely on it: their coordinates lie far
+	// outside their clamped textures until the matrix brings them back. The rows are the
+	// identity when the game has set no matrix, which leaves the coordinate exact.
+	if (push.fragmentState.w < PATH_TWO_STAGES_MINIMUM)
+	{
+		vec4 coordinate = vec4(fragmentTextureCoordinate0, 0.0, 1.0);
+		fragmentTextureCoordinate0 = vec2(dot(push.aliasA, coordinate), dot(push.aliasB, coordinate));
+	}
 
 	// Or generate it from the camera-space position
 	//

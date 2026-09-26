@@ -406,7 +406,7 @@ namespace scvk
 		// so requiring vertex coordinates separates the two. The second texture stage
 		// does not: the game leaves it bound but disabled, and the terrain draws single
 		// stage.
-		if (!isDumpArmed || isDumpingFrame || IsGeneratingCoordinates() || RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) < 2)
+		if (!isDumpArmed || isDumpingFrame || IsGeneratingCoordinates(0) || RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) < 2)
 		{
 			return;
 		}
