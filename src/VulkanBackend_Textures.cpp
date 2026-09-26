@@ -396,7 +396,7 @@ namespace scvk
 
 		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-		LogNote("Vulkan: created sampler for mag %u, min %u, wrap %u/%u.", textureParameters[0], textureParameters[1], textureParameters[2], textureParameters[3]);
+		LogNote("Vulkan: created sampler for mag %u, min %u, wrap %u/%u.", parameters[0], parameters[1], parameters[2], parameters[3]);
 
 		samplers.push_back(entry);
 		return entry.set;

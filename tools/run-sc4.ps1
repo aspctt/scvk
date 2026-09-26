@@ -222,7 +222,7 @@ if ($frameCounts) {
 $validationMessages = @($lines | Where-Object { $_ -match "Vulkan ERROR|Vulkan warning" })
 Write-Host "  validation       : $(if ($validationMessages.Count) { "$($validationMessages.Count) message(s)" } else { "clean" })"
 
-$frameDumps = @($lines | Where-Object { $_ -match "dumping every draw of frame" })
+$frameDumps = @($lines | Where-Object { $_ -match "=== dumping " })
 Write-Host "  frame dumps      : $($frameDumps.Count)"
 
 $notableLines = @($lines | Where-Object { $_ -match "MISMATCH|LARGE DRAW|FATAL|not handled|could not|Falling back" })

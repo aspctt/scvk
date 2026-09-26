@@ -29,6 +29,7 @@
 #include "version.h"
 
 #include <Windows.h>
+#include <string.h>
 
 namespace scvk
 {
@@ -55,6 +56,8 @@ namespace scvk
 		constexpr char const* DEBUG_PASSES_MARKER       = "scvk-debug-passes";
 		constexpr char const* SKIP_CLOUD_SHADOWS_MARKER = "scvk-skip-cloud-shadows";
 
+		// The log names a channel by its marker without this common prefix.
+		constexpr char const* CHANNEL_MARKER_PREFIX = "scvk-debug-";
 		constexpr char const* CHANNEL_MARKERS[] = {
 			"scvk-debug-texture-colour",
 			"scvk-debug-texture-alpha",
@@ -103,7 +106,7 @@ namespace scvk
 		{
 			if (HasMarkerFile(marker))
 			{
-				LogNote("Diagnostic: drawing %s only.", marker + 12);
+				LogNote("Diagnostic: drawing %s only.", marker + strlen(CHANNEL_MARKER_PREFIX));
 				vulkan->SetDebugChannel(channel);
 				break;
 			}
