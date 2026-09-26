@@ -64,16 +64,17 @@ namespace scvk
 			return false;
 		}
 
-		bool HasInstanceExtension(char const* wanted)
+		/** Whether the loader, or the named layer when one is given, offers an extension. */
+		bool HasInstanceExtension(char const* wanted, char const* layer = nullptr)
 		{
 			uint32_t count = 0;
-			if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
+			if (vkEnumerateInstanceExtensionProperties(layer, &count, nullptr) != VK_SUCCESS || count == 0)
 			{
 				return false;
 			}
 
 			std::vector<VkExtensionProperties> extensions(count);
-			if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data()) != VK_SUCCESS)
+			if (vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data()) != VK_SUCCESS)
 			{
 				return false;
 			}
@@ -103,6 +104,46 @@ namespace scvk
 			VkDebugUtilsMessengerCallbackDataEXT const* data,
 			void*)
 		{
+			// The same hazard repeats every frame once synchronisation
+			// validation is on, so each message ID is written a few times and
+			// then only counted.
+			constexpr int kIds      = 64;
+			constexpr int kRepeats  = 5;
+			static int32_t ids[kIds];
+			static uint32_t seen[kIds];
+			static int used = 0;
+
+			int32_t const id = (data != nullptr) ? data->messageIdNumber : 0;
+			int slot = -1;
+
+			for (int i = 0; i < used; i++)
+			{
+				if (ids[i] == id) { slot = i; break; }
+			}
+
+			if (slot < 0 && used < kIds)
+			{
+				slot = used++;
+				ids[slot]  = id;
+				seen[slot] = 0;
+			}
+
+			if (slot >= 0)
+			{
+				seen[slot]++;
+
+				if (seen[slot] > kRepeats)
+				{
+					if ((seen[slot] & (seen[slot] - 1)) == 0)
+					{
+						LogNote("Vulkan: message %s has now been reported %u times.",
+							(data != nullptr && data->pMessageIdName != nullptr) ? data->pMessageIdName : "?", seen[slot]);
+					}
+
+					return VK_FALSE;
+				}
+			}
+
 			char const* level = "info";
 			if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)        level = "ERROR";
 			else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) level = "warning";
@@ -172,11 +213,40 @@ namespace scvk
 		// default SDK install only provides 64-bit ones and the layer will be
 		// absent here.
 		char const* layers[] = { kValidationLayer };
+
+		// Synchronisation validation reports hazards between commands, such
+		// as a copy reading an image before the draws that write it are done,
+		// which the default checks do not. It is slow, so it waits for a
+		// marker file next to the driver.
+		VkValidationFeatureEnableEXT const syncFeature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+		VkValidationFeaturesEXT features{ VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
+		features.enabledValidationFeatureCount = 1;
+		features.pEnabledValidationFeatures    = &syncFeature;
+
 		if (HasValidationLayer())
 		{
 			info.enabledLayerCount   = 1;
 			info.ppEnabledLayerNames = layers;
 			LogNote("Vulkan: validation layers enabled.");
+
+			char marker[MAX_PATH];
+			char const* const markerName = "scvk-validate-sync";
+
+			if (LogDirectory(marker, sizeof(marker)) &&
+				strlen(marker) + strlen(markerName) < sizeof(marker))
+			{
+				strcat_s(marker, sizeof(marker), markerName);
+
+				if (GetFileAttributesA(marker) != INVALID_FILE_ATTRIBUTES &&
+					HasInstanceExtension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, kValidationLayer))
+				{
+					extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+					info.enabledExtensionCount   = static_cast<uint32_t>(extensions.size());
+					info.ppEnabledExtensionNames = extensions.data();
+					info.pNext                   = &features;
+					LogNote("Vulkan: synchronisation validation enabled.");
+				}
+			}
 		}
 		else
 		{

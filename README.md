@@ -171,6 +171,8 @@ To see a debug view, put an empty file with one of these names next to
 - `scvk-debug-vertex-colour` or `scvk-debug-vertex-alpha`: the lit vertex
   colour alone
 - `scvk-skip-cloud-shadows`: leaves out the cloud shadows
+- `scvk-validate-sync`: in Debug builds, also checks the GPU work is correctly
+  ordered (slow)
 
 ## Installing
 
