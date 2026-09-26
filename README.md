@@ -120,6 +120,9 @@ msbuild scvk.sln /p:Configuration=Release /p:Platform=Win32
 SimCity 4 is a 32-bit process, so **Win32 is the only supported platform**.
 There is deliberately no x64 configuration.
 
+Warnings are strict and treated as errors, so a build that warns does not
+finish.
+
 ### Vulkan SDK
 
 scvk loads `vulkan-1.dll` by name rather than linking `vulkan-1.lib`, so the

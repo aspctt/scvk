@@ -66,6 +66,24 @@
     <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And Exists('S:\VulkanSDK\1.3.296.0\Include\vulkan\vulkan.h')">S:\VulkanSDK\1.3.296.0</VulkanSdkDir>
     <VulkanSdkDir Condition="'$(VulkanSdkDir)' == ''">$(VULKAN_SDK)</VulkanSdkDir>
   </PropertyGroup>
+  <!--
+    Warnings.
+
+    The strictest checking MSVC offers short of /Wall, whose extra noise is about
+    padding, inlining and Spectre rather than types: level 4, conformance mode,
+    warnings as errors, and the off-by-default conversion and override warnings
+    on top. Headers included with angle brackets (Windows, Vulkan, the GZCOM SDK)
+    are external and stay quiet, since they are not ours to fix.
+
+    C4242, C4254, C4365, C4826 and C5219: narrowing and sign-changing conversions.
+    C4263, C4264, C4265, C4266: virtual functions that fail to override or hide.
+    C4062: an enumerator missing from a switch with no default.
+    C4287, C4296: comparisons that are always true or always false.
+    C4388: signed and unsigned comparisons.
+  -->
+  <PropertyGroup Label="Warnings">
+    <ScvkExtraWarnings>/w44242 /w44254 /w44365 /w44826 /w45219 /w44263 /w44264 /w44265 /w44266 /w44062 /w44287 /w44296 /w44388</ScvkExtraWarnings>
+  </PropertyGroup>
   <Target Name="ScvkCheckVulkanSdk" BeforeTargets="ClCompile">
     <Error Condition="!Exists('$(VulkanSdkDir)\Include\vulkan\vulkan.h')"
            Text="Vulkan headers not found. Set VULKAN_SDK_32 or pass /p:VulkanSdkDir=&lt;sdk root&gt;. Looked in '$(VulkanSdkDir)'." />
@@ -73,7 +91,12 @@
   </Target>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <ConformanceMode>true</ConformanceMode>
+      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <AdditionalOptions>$(ScvkExtraWarnings) %(AdditionalOptions)</AdditionalOptions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -88,7 +111,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <ConformanceMode>true</ConformanceMode>
+      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <AdditionalOptions>$(ScvkExtraWarnings) %(AdditionalOptions)</AdditionalOptions>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
@@ -123,10 +151,28 @@
     <ClCompile Include="src\VulkanBackend_Draw.cpp" />
     <ClCompile Include="src\VulkanBackend_Regions.cpp" />
     <ClCompile Include="src\VulkanBackend_Textures.cpp" />
-    <ClCompile Include="vendor\src\cRZBaseString.cpp" />
-    <ClCompile Include="vendor\src\cRZCOMDllDirector.cpp" />
-    <ClCompile Include="vendor\src\cRZRefCount.cpp" />
-    <ClCompile Include="vendor\src\VertexFormatUtils.cpp" />
+  </ItemGroup>
+  <!--
+    Vendored sources keep the level they were written for. They are not ours to
+    restyle, and a newer compiler's opinion of them should not break the build.
+  -->
+  <ItemGroup>
+    <ClCompile Include="vendor\src\cRZBaseString.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="vendor\src\cRZCOMDllDirector.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="vendor\src\cRZRefCount.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="vendor\src\VertexFormatUtils.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\cVKDriver.h" />
