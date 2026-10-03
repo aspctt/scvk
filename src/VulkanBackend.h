@@ -120,13 +120,7 @@ namespace scvk
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
-			// Magnification filter, minification filter, wrap S and wrap T, in the game's
-			// own numbering, which SetTextureParameter writes. Linear with repeat until
-			// the game says otherwise. The first stage samples with these; the second
-			// stage has parameters of its own.
-			uint32_t parameters[4] = { 1, 1, 3, 3 };
-
-			VkImage         image      = VK_NULL_HANDLE;
+			VkImage        image      = VK_NULL_HANDLE;
 			VkDeviceMemory  memory     = VK_NULL_HANDLE;
 			VkImageView     view       = VK_NULL_HANDLE;
 			VkDescriptorSet descriptor = VK_NULL_HANDLE;
@@ -380,9 +374,10 @@ namespace scvk
 		uint32_t                    currentTexture  = 0;
 		uint32_t                    currentTexture1 = 0;
 
-		// The second stage's filter and wrap, in the same numbering as a texture's. They
-		// belong to the stage, so binding another texture there leaves them alone.
-		uint32_t                    stage1Parameters[4] = { 1, 1, 3, 3 };
+		// Each stage's magnification filter, minification filter, wrap S and wrap T, in the
+		// game's own numbering. They belong to the stage, so binding another texture there
+		// leaves them alone. Linear with repeat until the game says otherwise.
+		uint32_t                    stageParameters[2][4] = { { 1, 1, 3, 3 }, { 1, 1, 3, 3 } };
 
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
@@ -762,19 +757,16 @@ namespace scvk
 		void UploadTextureLevel(uint32_t handle, uint32_t level, int32_t offsetX, int32_t offsetY, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
 
 		/**
-		 * Sets one filter or wrap parameter on a texture.
+		 * Sets one filter or wrap parameter on a stage.
 		 *
 		 * The type is 0 for the magnification filter, 1 the minification filter, 2 wrap
-		 * S and 3 wrap T. The texture keeps it, as an OpenGL texture object does, and
-		 * every draw that samples the texture on the first stage uses it.
+		 * S and 3 wrap T. The stage keeps it, as a Direct3D texture stage does, and every
+		 * draw samples whatever texture is bound there with it.
 		 */
-		void SetTextureParameter(uint32_t handle, uint32_t parameterType, uint32_t value);
+		void SetStageParameter(uint32_t stage, uint32_t parameterType, uint32_t value);
 
-		/** Sets one filter or wrap parameter on the second stage, numbered as above. */
-		void SetStage1Parameter(uint32_t parameterType, uint32_t value);
-
-		/** The second stage's filter and wrap parameters, for the log. */
-		void GetStage1Parameters(uint32_t outParameters[4]) const;
+		/** A stage's filter and wrap parameters, for the log. */
+		void GetStageParameters(uint32_t stage, uint32_t outParameters[4]) const;
 
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
@@ -790,8 +782,8 @@ namespace scvk
 		/** Describes a texture in the log, for working out why one samples wrong. */
 		void LogTextureInformation(uint32_t handle, char const* reason);
 
-		/** A live texture's size, levels, upload count and parameters, or false when there is none. */
-		bool DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount, uint32_t outParameters[4]) const;
+		/** A live texture's size, levels and upload count, or false when there is none. */
+		bool DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount) const;
 
 		/** Both hazard counts together, so a caller can tell whether any happened. */
 		uint64_t TextureHazardCount(void) const { return drawsBeforeUpload + uploadsAfterDraw; }

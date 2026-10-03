@@ -93,9 +93,9 @@ layout(push_constant) uniform PushConstants
 	vec4 sceneTint;
 } push;
 
-// Image and sampler are separate objects here. Filter and wrap depend on the stage as
-// well as the texture, so the sampler has to be free to change while a texture's
-// descriptor stays fixed. Each stage has its own: the building shadows clamp a small
+// Image and sampler are separate objects here. Filter and wrap belong to the stage, not
+// the texture, so the sampler has to be free to change while a texture's descriptor
+// stays fixed. Each stage has its own: the building shadows clamp a small
 // mask on the second stage while the first repeats, and one shared sampler tiled the
 // mask across the ground.
 layout(set = 0, binding = 0) uniform texture2D textureImage0;

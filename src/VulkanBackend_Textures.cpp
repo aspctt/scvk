@@ -21,8 +21,8 @@
  * Textures and samplers.
  *
  * Each texture owns an image, a view and a descriptor set that never changes. Filter and
- * wrap live on the texture, as they do on an OpenGL texture object, and pick a sampler
- * from a small cache when a draw binds it.
+ * wrap live on each stage, as they do on a Direct3D texture stage, and pick a sampler
+ * from a small cache when a draw binds them.
  */
 
 //// Dependencies
@@ -795,30 +795,20 @@ namespace scvk
 		vkDestroyBuffer(device, uploadBuffer, nullptr);
 	}
 
-	void VulkanBackend::SetTextureParameter(uint32_t handle, uint32_t parameterType, uint32_t value)
+	void VulkanBackend::SetStageParameter(uint32_t stage, uint32_t parameterType, uint32_t value)
 	{
-		// Zero is the default white texture, which the game never names.
-		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive || parameterType >= 4)
+		if (stage >= _countof(stageParameters) || parameterType >= 4)
 		{
 			return;
 		}
 
-		textures[handle].parameters[parameterType] = value;
+		stageParameters[stage][parameterType] = value;
 	}
 
-	void VulkanBackend::SetStage1Parameter(uint32_t parameterType, uint32_t value)
+	void VulkanBackend::GetStageParameters(uint32_t stage, uint32_t outParameters[4]) const
 	{
-		if (parameterType >= 4)
-		{
-			return;
-		}
-
-		stage1Parameters[parameterType] = value;
-	}
-
-	void VulkanBackend::GetStage1Parameters(uint32_t outParameters[4]) const
-	{
-		memcpy(outParameters, stage1Parameters, sizeof(stage1Parameters));
+		uint32_t const clampedStage = (stage < _countof(stageParameters)) ? stage : 0;
+		memcpy(outParameters, stageParameters[clampedStage], sizeof(stageParameters[clampedStage]));
 	}
 
 	void VulkanBackend::SetTexture(uint32_t handle)
@@ -896,10 +886,10 @@ namespace scvk
 			sprintf_s(bytes + i * 3, sizeof(bytes) - i * 3, "%02x ", texture.firstBytes[i]);
 		}
 
-		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded, filter %u/%u wrap %u/%u%s%s", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels, texture.parameters[0], texture.parameters[1], texture.parameters[2], texture.parameters[3], (texture.firstByteCount > 0) ? ", bytes " : "", bytes);
+		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded%s%s", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels, (texture.firstByteCount > 0) ? ", bytes " : "", bytes);
 	}
 
-	bool VulkanBackend::DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount, uint32_t outParameters[4]) const
+	bool VulkanBackend::DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount) const
 	{
 		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
 		{
@@ -912,7 +902,6 @@ namespace scvk
 		outLevels         = texture.levels;
 		outUploadedLevels = texture.uploadedLevels;
 		outUploadCount    = texture.uploadCount;
-		memcpy(outParameters, texture.parameters, sizeof(texture.parameters));
 		return true;
 	}
 }

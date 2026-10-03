@@ -27,7 +27,6 @@ few visual bugs left.
 
 Known issues:
 
-- On hills the ground cut away behind a building is black.
 - The interface sometimes flickers for a single frame.
 - Scrolling is slow, around 6 to 7 frames a second.
 

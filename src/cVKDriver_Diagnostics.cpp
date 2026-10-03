@@ -445,7 +445,7 @@ namespace scvk
 		vulkan->LogTextureInformation(stage1Texture, "shadow mask stage 1");
 
 		uint32_t stage1Parameters[4];
-		vulkan->GetStage1Parameters(stage1Parameters);
+		vulkan->GetStageParameters(1, stage1Parameters);
 		LogNote("    stage 1 sampler filter %u/%u wrap %u/%u", stage1Parameters[0], stage1Parameters[1], stage1Parameters[2], stage1Parameters[3]);
 
 		// Follow the first vertices through both stages
@@ -1006,9 +1006,8 @@ namespace scvk
 		uint32_t textureLevels         = 0;
 		uint32_t textureUploadedLevels = 0;
 		uint32_t textureUploads        = 0;
-		uint32_t textureParameters[4]  = {};
 
-		if (vulkan->DescribeTexture(boundTexture, textureWidth, textureHeight, textureLevels, textureUploadedLevels, textureUploads, textureParameters))
+		if (vulkan->DescribeTexture(boundTexture, textureWidth, textureHeight, textureLevels, textureUploadedLevels, textureUploads))
 		{
 			flags |= DRAW_FLAG_TEXTURE_LIVE;
 
@@ -1017,11 +1016,15 @@ namespace scvk
 			record.textureLevels         = static_cast<uint8_t>(textureLevels);
 			record.textureUploadedLevels = static_cast<uint8_t>(textureUploadedLevels);
 			record.textureUploads        = textureUploads;
+		}
 
-			for (int i = 0; i < 4; i++)
-			{
-				record.samplerParameters[i] = static_cast<uint8_t>(textureParameters[i]);
-			}
+		// Note the first stage's sampler parameters, which are small enumeration values
+		uint32_t stage0Parameters[4] = {};
+		vulkan->GetStageParameters(0, stage0Parameters);
+
+		for (int i = 0; i < 4; i++)
+		{
+			record.samplerParameters[i] = static_cast<uint8_t>(stage0Parameters[i]);
 		}
 
 		// Find the parts of the vertex this draw has

@@ -278,38 +278,35 @@ namespace scvk
 			LogNote("  TEXPARAM target %u, param type %u, value %d", gdTextureTarget, gdTextureParameterType, gdTextureParameter);
 		}
 
-		// Set it on the first stage's texture or on the second stage
+		// Set it on the selected stage
 		//
 		// Parameter type 0 is the magnification filter, 1 the minification filter, 2 the
 		// wrap in S and 3 the wrap in T. The game sets both clamp and repeat. The value
 		// is not negative, checked here.
 		//
-		// On the first stage the texture keeps it, as an OpenGL texture object does. The
-		// game relies on that: the interface sets clamp after binding its own textures,
-		// straight to the driver, but nothing sets repeat back on the terrain textures.
-		// Applying the latest values to whatever was drawn next left the terrain clamped
-		// whenever it was redrawn straight after the interface, and a clamped grass layer
-		// samples the transparent border, which was the black patches.
+		// The stage keeps it, whatever is bound there, as a Direct3D texture stage does
+		// and as the game's own DirectX driver does. The game sets most parameters
+		// through a cache of its own that holds filter and wrap per stage, and skips the
+		// call when the stage already has the value.
 		//
-		// The second stage keeps it itself, as a Direct3D texture stage does and as the
-		// game's own DirectX driver does for every stage. The game sets the second stage
-		// only through a cache of its own that holds filter and wrap per stage, and skips
-		// the call when the stage already has the value. The building shadows bind their
-		// small mask there and then ask for clamp, which the cache drops whenever the
-		// stage is clamped already. Kept on the texture, the mask never got it and
-		// repeated.
+		// The first stage used to keep it on the bound texture instead, as an OpenGL
+		// texture object does. The interface's 2D path sets clamp before binding its
+		// texture, so that clamp landed on whatever was bound before, and the cache later
+		// skipped setting repeat because the stage already held it. The walls of the
+		// ground cut away beside sloped lots were left clamped that way, with coordinates
+		// far outside 0 to 1, and sampled only the transparent border, which was black.
+		// The building shadows' small mask on the second stage repeated for the same
+		// reason before it moved to the stage.
+		//
+		// That earlier model answered black patches on the terrain, seen while every
+		// parameter applied to both stages at once, so the second stage's clamps reached
+		// the first. Here only the selected stage takes the value, as on DirectX.
 		if (gdTextureParameterType >= 4 || gdTextureParameter < 0)
 		{
 			return;
 		}
 
-		if (activeTextureStage == 1)
-		{
-			vulkan->SetStage1Parameter(gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
-			return;
-		}
-
-		vulkan->SetTextureParameter(boundTexture, gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
+		vulkan->SetStageParameter(activeTextureStage, gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
 	}
 
 	void cVKDriver::GenTextures(int32_t count, uint32_t* textures)

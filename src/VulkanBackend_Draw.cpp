@@ -789,15 +789,15 @@ namespace scvk
 
 		// Bind their sets
 		//
-		// Each stage has its own sampler. The first takes its texture's parameters, the
-		// second the stage's. Sharing the first stage's sampler gave the building shadows'
-		// small clamped mask the repeat of the texture they project, so the mask tiled
-		// and every shadow repeated along the streets.
+		// Each stage has its own sampler, made from that stage's parameters. Sharing the
+		// first stage's sampler gave the building shadows' small clamped mask the repeat
+		// of the texture they project, so the mask tiled and every shadow repeated along
+		// the streets.
 		VkDescriptorSet const sets[] = {
 			textures[bound].descriptor,
 			textures[bound1].descriptor,
-			GetSamplerSet(textures[bound].parameters),
-			GetSamplerSet(stage1Parameters),
+			GetSamplerSet(stageParameters[0]),
+			GetSamplerSet(stageParameters[1]),
 		};
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);

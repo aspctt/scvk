@@ -153,8 +153,8 @@ namespace scvk
 			// The first two rows of the first stage's texture matrix.
 			float textureMatrixRows[8];
 
-			// The filter and wrap the first stage's texture samples with, and the stage
-			// the game had selected.
+			// The filter and wrap the first stage samples with, and the stage the game had
+			// selected.
 			uint8_t samplerParameters[4];
 			uint8_t activeTextureStage;
 			uint8_t coordinateSources[2];
