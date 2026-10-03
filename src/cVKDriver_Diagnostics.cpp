@@ -1319,10 +1319,38 @@ namespace scvk
 		DWORD foregroundProcess = 0;
 		GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
 
-		bool const isHeld = foregroundProcess == GetCurrentProcessId() && (GetAsyncKeyState(VK_SCROLL) & 0x8000) != 0;
+		bool const isForeground = foregroundProcess == GetCurrentProcessId();
+		bool const isHeld       = isForeground && (GetAsyncKeyState(VK_SCROLL) & 0x8000) != 0;
 
-		if (isHeld && !isCaptureKeyHeld && keyCaptureStep == 0)
+		// Read the toggle as this thread's messages have left it
+		//
+		// The window belongs to this thread, so its key messages update the state here.
+		// A flip that a press seen held already accounted for is absorbed once.
+		bool const isToggled = (GetKeyState(VK_SCROLL) & 0x0001) != 0;
+		bool hasFlipped = isCaptureKeyToggleKnown && isToggled != wasCaptureKeyToggled;
+
+		if (hasFlipped && isCaptureKeyFlipExpected)
 		{
+			hasFlipped               = false;
+			isCaptureKeyFlipExpected = false;
+		}
+
+		bool const isPressed = (isHeld && !isCaptureKeyHeld) || (isForeground && hasFlipped);
+
+		if (keyCaptureStep == 0 || !hasFlipped)
+		{
+			wasCaptureKeyToggled    = isToggled;
+			isCaptureKeyToggleKnown = true;
+		}
+
+		if (isPressed && keyCaptureStep == 0)
+		{
+			// A press seen held before its message arrived flips the toggle later
+			if (isHeld && !hasFlipped)
+			{
+				isCaptureKeyFlipExpected = true;
+			}
+
 			keyCaptureCount++;
 			keyCaptureStep = KEY_CAPTURE_STEPS;
 			LogNote("Diagnostic: Scroll Lock capture %u.", keyCaptureCount);

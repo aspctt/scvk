@@ -375,10 +375,16 @@ namespace scvk
 		int      dumpWindowRemaining = 0;
 
 		// Scroll Lock captures the screen, the saved scene and the saved depth on three
-		// consecutive frames. The step counts down the ones still to take.
-		int      keyCaptureStep   = 0;
-		uint32_t keyCaptureCount  = 0;
-		bool     isCaptureKeyHeld = false;
+		// consecutive frames. The step counts down the ones still to take. The toggle
+		// state catches a press made between two frames, which a paused city, drawing a
+		// few frames a second, otherwise misses; a press seen held expects one flip of
+		// it, so it does not capture twice.
+		int      keyCaptureStep           = 0;
+		uint32_t keyCaptureCount          = 0;
+		bool     isCaptureKeyHeld         = false;
+		bool     wasCaptureKeyToggled     = false;
+		bool     isCaptureKeyToggleKnown  = false;
+		bool     isCaptureKeyFlipExpected = false;
 
 		// The partial update trace: the frame's steps, whether the frame is worth writing
 		// out, and the draws since the last step.
