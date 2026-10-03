@@ -41,12 +41,19 @@ namespace scvk
 		// the game sends is written against that assumption.
 		constexpr uint32_t TEXTURE_STAGE_COUNT = 2;
 
-		constexpr char const* WINDOW_CLASS_NAME = "GDriverClass--scvk";
-		constexpr char const* WINDOW_NAME       = "GDriverWindow--scvk";
+		// The names the game's own OpenGL driver gives its window, whose class ID scvk
+		// claims. SC4GraphicsOptions recognises the game's window by them, and its
+		// borderless fullscreen mode reshapes only a window it recognises.
+		constexpr char const* WINDOW_CLASS_NAME = "GDriverClass--OpenGL";
+		constexpr char const* WINDOW_NAME       = "GDriverWindow--OpenGL";
 
 		// The game's window: a fixed size with a caption, no resizing.
 		constexpr DWORD WINDOW_STYLE          = WS_SYSMENU | WS_MINIMIZEBOX | WS_CAPTION | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
 		constexpr DWORD WINDOW_EXTENDED_STYLE = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+
+		// The fullscreen window: no frame, above every other window, as SCGL makes it.
+		constexpr DWORD FULLSCREEN_STYLE          = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_MAXIMIZE;
+		constexpr DWORD FULLSCREEN_EXTENDED_STYLE = WS_EX_APPWINDOW | WS_EX_TOPMOST;
 
 		// Diagnostics that replace every colour on screen, each enabled by dropping a
 		// marker file next to the driver. The pass marker names each pass by its blend
@@ -70,7 +77,124 @@ namespace scvk
 		};
 	}
 
+	//// State
+
+	namespace
+	{
+		// Fullscreen, for the one game window there is at a time. It lives here rather
+		// than on the driver because the window procedure has to reach it, and Windows
+		// hands a procedure nothing but the window.
+		HWND     fullscreenWindow      = nullptr;
+		WNDPROC  gameWindowProcedure   = nullptr;
+		DEVMODEA fullscreenDisplayMode = {};
+		bool     isDisplayModeChanged  = false;
+	}
+
 	//// Private Functions
+
+	namespace
+	{
+		// Switches the main display to the fullscreen mode, or says why it could not
+		bool EnterDisplayMode(void)
+		{
+			if (isDisplayModeChanged)
+			{
+				return true;
+			}
+
+			// Marked temporary, as SCGL does. LeaveDisplayMode puts the desktop's back.
+			LONG const result = ChangeDisplaySettingsExA(nullptr, &fullscreenDisplayMode, nullptr, CDS_FULLSCREEN, nullptr);
+
+			if (result != DISP_CHANGE_SUCCESSFUL)
+			{
+				LogNote("SetVideoMode: could not switch the display to %lux%lu %lubpp, error %ld.", fullscreenDisplayMode.dmPelsWidth, fullscreenDisplayMode.dmPelsHeight, fullscreenDisplayMode.dmBitsPerPel, result);
+				return false;
+			}
+
+			isDisplayModeChanged = true;
+			return true;
+		}
+
+		// Puts the desktop's own display mode back
+		void LeaveDisplayMode(void)
+		{
+			if (!isDisplayModeChanged)
+			{
+				return;
+			}
+
+			// No mode and no flags restores the one in the registry.
+			ChangeDisplaySettingsExA(nullptr, nullptr, nullptr, 0, nullptr);
+			isDisplayModeChanged = false;
+		}
+
+		// Covers the main monitor with the window, above every other window
+		void CoverMainMonitor(HWND window)
+		{
+			MONITORINFO monitor{};
+			monitor.cbSize = sizeof(monitor);
+
+			POINT const origin{ 0, 0 };
+			if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) == 0)
+			{
+				return;
+			}
+
+			RECT const& bounds = monitor.rcMonitor;
+			SetWindowPos(window, HWND_TOPMOST, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOACTIVATE);
+		}
+
+		// Sees the fullscreen window's messages before the game does
+		LRESULT CALLBACK FullscreenWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		{
+			// Give the desktop back while the game is in the background
+			//
+			// Switching away puts the desktop's mode back and minimises the game, since a
+			// window above every other one would otherwise hide whatever was switched to.
+			// Switching back sets the game's mode again.
+			if (message == WM_ACTIVATEAPP && window == fullscreenWindow)
+			{
+				LogNote("Fullscreen: the game is %s.", (wParam != FALSE) ? "back in front" : "in the background");
+
+				if (wParam != FALSE)
+				{
+					EnterDisplayMode();
+
+					if (IsIconic(window))
+					{
+						ShowWindow(window, SW_RESTORE);
+					}
+
+					CoverMainMonitor(window);
+				}
+				else
+				{
+					LeaveDisplayMode();
+					ShowWindow(window, SW_MINIMIZE);
+				}
+			}
+
+			// Pass everything on to the game
+			WNDPROC const next = (gameWindowProcedure != nullptr) ? gameWindowProcedure : DefWindowProcA;
+			return CallWindowProcA(next, window, message, wParam, lParam);
+		}
+
+		// Stops treating the window as fullscreen and puts the desktop's mode back
+		//
+		// The window goes back to sending its messages straight to the game. The API
+		// stores the procedure as an integer.
+		void EndFullscreen(void)
+		{
+			if (fullscreenWindow != nullptr && gameWindowProcedure != nullptr)
+			{
+				SetWindowLongPtrA(fullscreenWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(gameWindowProcedure));
+			}
+
+			fullscreenWindow    = nullptr;
+			gameWindowProcedure = nullptr;
+			LeaveDisplayMode();
+		}
+	}
 
 	void cVKDriver::BuildDriverInformation(void)
 	{
@@ -236,26 +360,59 @@ namespace scvk
 			return false;
 		}
 
-		// Size the window around the client area
+		// Switch the display for fullscreen
 		//
-		// Fullscreen is left alone for now. A mode change would take the desktop with it,
-		// and recovering from a crash in a driver that has just switched resolution is
-		// needlessly unpleasant. Windowed is enough to play.
+		// Exclusive, as the game's own drivers do: the display takes the mode's size, and
+		// the window covers it. A display that refuses the mode leaves the game windowed,
+		// as SCGL does.
+		bool isFullscreen = false;
+
 		if (mode.isFullscreen)
 		{
-			LogNote("SetVideoMode: fullscreen requested; running windowed instead at this stage.");
+			fullscreenDisplayMode              = {};
+			fullscreenDisplayMode.dmSize       = sizeof(fullscreenDisplayMode);
+			fullscreenDisplayMode.dmPelsWidth  = mode.width;
+			fullscreenDisplayMode.dmPelsHeight = mode.height;
+			fullscreenDisplayMode.dmBitsPerPel = mode.depth;
+			fullscreenDisplayMode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
+
+			isFullscreen = EnterDisplayMode();
+
+			if (!isFullscreen)
+			{
+				LogNote("SetVideoMode: running windowed instead.");
+			}
 		}
 
-		RECT rectangle{ 0, 0, windowWidth, windowHeight };
-		AdjustWindowRectEx(&rectangle, WINDOW_STYLE, FALSE, WINDOW_EXTENDED_STYLE);
-		OffsetRect(&rectangle, 0, GetSystemMetrics(SM_CYCAPTION));
+		// Size the window
+		//
+		// Fullscreen covers the main monitor, which has just taken the mode's size. A
+		// window is sized around its client area.
+		RECT  rectangle{ 0, 0, windowWidth, windowHeight };
+		DWORD style         = isFullscreen ? FULLSCREEN_STYLE : WINDOW_STYLE;
+		DWORD extendedStyle = isFullscreen ? FULLSCREEN_EXTENDED_STYLE : WINDOW_EXTENDED_STYLE;
+
+		MONITORINFO monitor{};
+		monitor.cbSize = sizeof(monitor);
+
+		POINT const origin{ 0, 0 };
+		if (isFullscreen && GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) != 0)
+		{
+			rectangle = monitor.rcMonitor;
+		}
+		else if (!isFullscreen)
+		{
+			AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
+			OffsetRect(&rectangle, 0, GetSystemMetrics(SM_CYCAPTION));
+		}
 
 		// Create it
-		HWND const window = CreateWindowExA(WINDOW_EXTENDED_STYLE, WINDOW_CLASS_NAME, WINDOW_NAME, WINDOW_STYLE, rectangle.left, rectangle.top, rectangle.right - rectangle.left, rectangle.bottom - rectangle.top, nullptr, nullptr, windowClass.hInstance, nullptr);
+		HWND const window = CreateWindowExA(extendedStyle, WINDOW_CLASS_NAME, WINDOW_NAME, style, rectangle.left, rectangle.top, rectangle.right - rectangle.left, rectangle.bottom - rectangle.top, nullptr, nullptr, windowClass.hInstance, nullptr);
 
 		if (window == nullptr)
 		{
 			LogNote("SetVideoMode: CreateWindowEx failed, error %lu.", GetLastError());
+			EndFullscreen();
 			return false;
 		}
 
@@ -264,9 +421,18 @@ namespace scvk
 		// Route its messages to the game
 		//
 		// The game hands us its own window procedure and expects input to arrive through
-		// it. Without this the window exists but the game never sees a message. The API
-		// stores the procedure as an integer.
-		if (windowProcedure != nullptr)
+		// it. Without this the window exists but the game never sees a message. A
+		// fullscreen window sees them first, to give the desktop back on a switch away.
+		//
+		// The game passes the procedure as a plain pointer, and the API stores one as an
+		// integer.
+		if (isFullscreen)
+		{
+			fullscreenWindow    = window;
+			gameWindowProcedure = reinterpret_cast<WNDPROC>(windowProcedure);
+			SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&FullscreenWindowProcedure));
+		}
+		else if (windowProcedure != nullptr)
 		{
 			SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProcedure));
 		}
@@ -284,6 +450,10 @@ namespace scvk
 
 	void cVKDriver::DestroyRenderWindow(void)
 	{
+		// Give the desktop its mode back first, so the window's last messages are not
+		// taken for a switch away.
+		EndFullscreen();
+
 		if (windowHandle == nullptr)
 		{
 			return;
@@ -405,6 +575,8 @@ namespace scvk
 		// Hide the window when the game unsets the mode
 		if (newModeIndex == -1)
 		{
+			EndFullscreen();
+
 			if (windowHandle != nullptr)
 			{
 				// The interface carries the window as a plain pointer.

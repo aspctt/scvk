@@ -17,7 +17,7 @@ few visual bugs left.
 
 | Area | Status |
 |---|---|
-| Startup, video modes, swapchain | Working (windowed; fullscreen untested) |
+| Startup, video modes, swapchain | Working, windowed and fullscreen |
 | Terrain, buildings, interface | Working |
 | Textures, blending, depth | Working |
 | Day and night lighting, cloud shadows | Working |
