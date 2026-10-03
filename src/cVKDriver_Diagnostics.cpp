@@ -167,13 +167,11 @@ namespace scvk
 		return static_cast<uint8_t const*>(vertexPointer) + index * vertexStride;
 	}
 
-	void cVKDriver::ProjectVertex(uint8_t const* vertex, float outClip[4]) const
+	void cVKDriver::TransformToEyeSpace(uint8_t const* vertex, float outEye[4]) const
 	{
 		// Every vertex format starts with three floats of position.
 		float const* const position = reinterpret_cast<float const*>(vertex);
 
-		// Transform into eye space
-		float eye[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		for (int row = 0; row < 4; row++)
 		{
 			float sum = 0.0f;
@@ -182,8 +180,15 @@ namespace scvk
 				sum += modelViewMatrix[k * 4 + row] * ((k < 3) ? position[k] : 1.0f);
 			}
 
-			eye[row] = sum;
+			outEye[row] = sum;
 		}
+	}
+
+	void cVKDriver::ProjectVertex(uint8_t const* vertex, float outClip[4]) const
+	{
+		// Transform into eye space
+		float eye[4];
+		TransformToEyeSpace(vertex, eye);
 
 		// Then into clip space
 		for (int row = 0; row < 4; row++)
@@ -391,6 +396,98 @@ namespace scvk
 		LogNote("  SHADOW fmt 0x%x prim %u n=%d  tex %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.2f  tint %.3f %.3f %.3f a %.3f  env %d  depth test %d write %d  stage1 on %d  coordsrc %u/%u", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, isAlphaTesting ? 1 : 0, alphaComparison, alphaReference, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], textureEnvironmentMode[0], isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, isTextureStageEnabled[1] ? 1 : 0, textureCoordinateSource[0], textureCoordinateSource[1]);
 
 		vulkan->LogTextureInformation(boundTexture, "shadow stage 0");
+	}
+
+	void cVKDriver::ReportShadowMaskDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit)
+	{
+		// Describe the first few building shadows in full
+		//
+		// They draw with both stages generating: the first projects the building's own
+		// texture and the second samples a 4x4 mask, which should keep each shadow to one
+		// copy and off higher ground. This writes out everything that decides where the
+		// mask lands: each stage's whole matrix and call arguments, the modelview, the
+		// second stage's sampler, and the full coordinates the first vertices end up
+		// with, q included. Requiring the first stage to generate as well skips the draws
+		// with one coordinate set, which used up the reports before.
+		if (shadowMaskReportsRemaining <= 0 || !isTextureStageEnabled[0] || !isTextureStageEnabled[1] || stage1Texture == 0 || !IsGeneratingCoordinates(0) || !IsGeneratingCoordinates(1))
+		{
+			return;
+		}
+
+		shadowMaskReportsRemaining--;
+
+		// Describe the draw
+		LogNote("  SHADOWMASK fmt 0x%x prim %u n=%d  tex %u/%u  coordsrc %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.3f  depth test %d func %u write %d", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureCoordinateSource[0], textureCoordinateSource[1], isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, depthComparison, isDepthWriteEnabled ? 1 : 0);
+		LogNote("    combiners 0x%05x 0x%05x / 0x%05x 0x%05x  env colours %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f", packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3], environmentColours[0][0], environmentColours[0][1], environmentColours[0][2], environmentColours[0][3], environmentColours[1][0], environmentColours[1][1], environmentColours[1][2], environmentColours[1][3]);
+
+		// Write each matrix a row per line
+		//
+		// Column major, so row r is elements r, 4 + r, 8 + r and 12 + r.
+		for (uint32_t stage = 0; stage < 2; stage++)
+		{
+			float const* const matrix = textureStageMatrices[stage];
+			LogNote("    stage %u matrix, arguments %u %u flags 0x%x", stage, textureStageMatrixArguments[stage][0], textureStageMatrixArguments[stage][1], textureStageMatrixArguments[stage][2]);
+
+			for (int row = 0; row < 4; row++)
+			{
+				LogNote("      [%10.5g %10.5g %10.5g %10.5g]", matrix[row], matrix[4 + row], matrix[8 + row], matrix[12 + row]);
+			}
+		}
+
+		LogNote("    modelview");
+
+		for (int row = 0; row < 4; row++)
+		{
+			LogNote("      [%10.5g %10.5g %10.5g %10.5g]", modelViewMatrix[row], modelViewMatrix[4 + row], modelViewMatrix[8 + row], modelViewMatrix[12 + row]);
+		}
+
+		vulkan->LogTextureInformation(boundTexture, "shadow mask stage 0");
+		vulkan->LogTextureInformation(stage1Texture, "shadow mask stage 1");
+
+		uint32_t stage1Parameters[4];
+		vulkan->GetStage1Parameters(stage1Parameters);
+		LogNote("    stage 1 sampler filter %u/%u wrap %u/%u", stage1Parameters[0], stage1Parameters[1], stage1Parameters[2], stage1Parameters[3]);
+
+		// Follow the first vertices through both stages
+		//
+		// A generating stage takes the eye-space position with q at one, as SCGL's eye
+		// planes leave it, then applies its whole matrix. The fixed function pipeline
+		// divides by the q that comes out before sampling, so both are written.
+		int const shown = (count < SAMPLED_VERTICES) ? count : SAMPLED_VERTICES;
+
+		for (int i = 0; i < shown; i++)
+		{
+			uint8_t const* const vertex = VertexAt(first, indices, isIndex32Bit, i);
+			float const* const position = reinterpret_cast<float const*>(vertex);
+
+			float eye[4];
+			TransformToEyeSpace(vertex, eye);
+
+			float const input[4] = { eye[0], eye[1], eye[2], 1.0f };
+			float output[2][4] = {};
+
+			for (uint32_t stage = 0; stage < 2; stage++)
+			{
+				for (int row = 0; row < 4; row++)
+				{
+					for (int k = 0; k < 4; k++)
+					{
+						output[stage][row] += textureStageMatrices[stage][k * 4 + row] * input[k];
+					}
+				}
+			}
+
+			LogNote("    v%d pos %.2f %.2f %.2f  eye %.2f %.2f %.2f %.3f", i, position[0], position[1], position[2], eye[0], eye[1], eye[2], eye[3]);
+
+			for (uint32_t stage = 0; stage < 2; stage++)
+			{
+				float const* const coordinates = output[stage];
+				float const q = coordinates[3];
+				bool const isDivisible = q > CLIP_W_EPSILON || q < -CLIP_W_EPSILON;
+
+				LogNote("      stage %u strq %.4f %.4f %.4f %.4f  s/q t/q %.4f %.4f", stage, coordinates[0], coordinates[1], coordinates[2], q, isDivisible ? coordinates[0] / q : 0.0f, isDivisible ? coordinates[1] / q : 0.0f);
+			}
+		}
 	}
 
 	void cVKDriver::NoteMultitexturedDraw(uint32_t gdVertexFormat)

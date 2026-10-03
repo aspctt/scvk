@@ -62,6 +62,9 @@ namespace scvk
 		// Texture dumps wait until the startup screen is over, since its splash tiles
 		// were dumped once and turned out to be perfectly correct.
 		constexpr uint64_t TEXTURE_DUMP_AFTER_FRAMES = 1000;
+
+		// A texture this small keeps the start of its top level for the log.
+		constexpr uint32_t TINY_TEXTURE_TEXELS = 16;
 	}
 
 	//// Private Functions
@@ -721,6 +724,19 @@ namespace scvk
 
 		DumpUploadedTexture(texture, handle, width, height, gdFormat, gdType, rowLength, pixels);
 
+		// Keep the start of a tiny texture's top level for the log
+		//
+		// The building shadows mask with a 4x4 texture, and what it holds decides where
+		// they show.
+		if (level == 0 && offsetX == 0 && offsetY == 0 && texture.width * texture.height <= TINY_TEXTURE_TEXELS)
+		{
+			size_t const keptBytes = (staged.size() < sizeof(texture.firstBytes)) ? staged.size() : sizeof(texture.firstBytes);
+			memcpy(texture.firstBytes, staged.data(), keptBytes);
+
+			// At most 16, so it fits.
+			texture.firstByteCount = static_cast<uint32_t>(keptBytes);
+		}
+
 		// Put it in a host buffer
 		VkBuffer       uploadBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory uploadMemory = VK_NULL_HANDLE;
@@ -800,6 +816,11 @@ namespace scvk
 		stage1Parameters[parameterType] = value;
 	}
 
+	void VulkanBackend::GetStage1Parameters(uint32_t outParameters[4]) const
+	{
+		memcpy(outParameters, stage1Parameters, sizeof(stage1Parameters));
+	}
+
 	void VulkanBackend::SetTexture(uint32_t handle)
 	{
 		currentTexture = (handle < textures.size() && textures[handle].isLive) ? handle : 0;
@@ -866,7 +887,16 @@ namespace scvk
 		}
 
 		Texture const& texture = textures[handle];
-		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels);
+
+		// Spell out any kept bytes, two hex digits each
+		char bytes[sizeof(texture.firstBytes) * 3 + 1] = {};
+
+		for (uint32_t i = 0; i < texture.firstByteCount; i++)
+		{
+			sprintf_s(bytes + i * 3, sizeof(bytes) - i * 3, "%02x ", texture.firstBytes[i]);
+		}
+
+		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded, filter %u/%u wrap %u/%u%s%s", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels, texture.parameters[0], texture.parameters[1], texture.parameters[2], texture.parameters[3], (texture.firstByteCount > 0) ? ", bytes " : "", bytes);
 	}
 
 	bool VulkanBackend::DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount, uint32_t outParameters[4]) const

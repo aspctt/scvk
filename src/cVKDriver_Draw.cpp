@@ -215,6 +215,7 @@ namespace scvk
 		NoteRegionDraw(gdPrimitiveType, count, first, nullptr, false);
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimitiveType, count);
+		ReportShadowMaskDraw(gdPrimitiveType, count, first, nullptr, false);
 
 		// Draw it
 		//
@@ -263,6 +264,7 @@ namespace scvk
 		NoteRegionDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimitiveType, count);
+		ReportShadowMaskDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
 		MaybeArmDump();
 		DumpDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
 

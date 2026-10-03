@@ -146,6 +146,11 @@ namespace scvk
 			// rewrites from one it filled once.
 			uint32_t uploadCount = 0;
 
+			// The start of the top level of a texture of 16 texels or fewer, for the log:
+			// one compressed block, or the first row of an uncompressed one.
+			uint8_t  firstBytes[16] = {};
+			uint32_t firstByteCount = 0;
+
 			// The frame whose command buffer last sampled this texture. Uploads are
 			// submitted at once while draws wait for the end of the frame, so an upload
 			// in that same frame reaches draws that the game issued before it.
@@ -767,6 +772,9 @@ namespace scvk
 
 		/** Sets one filter or wrap parameter on the second stage, numbered as above. */
 		void SetStage1Parameter(uint32_t parameterType, uint32_t value);
+
+		/** The second stage's filter and wrap parameters, for the log. */
+		void GetStage1Parameters(uint32_t outParameters[4]) const;
 
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);

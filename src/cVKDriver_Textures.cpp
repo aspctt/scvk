@@ -406,6 +406,10 @@ namespace scvk
 
 		lastTextureMatrixFlags = gdTextureMatrixFlags;
 
+		textureStageMatrixArguments[activeTextureStage][0] = unknown0;
+		textureStageMatrixArguments[activeTextureStage][1] = unknown1;
+		textureStageMatrixArguments[activeTextureStage][2] = gdTextureMatrixFlags;
+
 		// Keep the matrix for the active stage
 		//
 		// It transforms that stage's coordinates whether they are generated or come from

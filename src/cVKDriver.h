@@ -279,6 +279,10 @@ namespace scvk
 			{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
 		};
 
+		// The other arguments of each stage's last TexStageMatrix, kept for the log: the
+		// two numbers SCGL leaves unnamed, then the flags.
+		uint32_t textureStageMatrixArguments[2][3] = {};
+
 		// What each stage was last told to combine with, and how. The mode decides which
 		// of the two the stage actually uses: the network only applies when the mode
 		// selects Combine, which setting a network does.
@@ -353,6 +357,7 @@ namespace scvk
 		uint32_t probedKeys[48]               = {};
 		uint32_t probedCombinations           = 0;
 		int      textureMatrixProbesRemaining = 4;
+		int      shadowMaskReportsRemaining   = 8;
 		int      mismatchReportsRemaining     = 12;
 		int      coverageReportsRemaining     = 12;
 		int      indexTypeWarningsRemaining   = 4;
@@ -498,6 +503,9 @@ namespace scvk
 		/** The bytes of a draw's i-th vertex, through its index array when it has one. */
 		uint8_t const* VertexAt(int32_t first, void const* indices, bool isIndex32Bit, int i) const;
 
+		/** Transforms a vertex's position to eye space, the way the fixed function pipeline would. */
+		void TransformToEyeSpace(uint8_t const* vertex, float outEye[4]) const;
+
 		/** Transforms a vertex's position to clip space, the way the fixed function pipeline would. */
 		void ProjectVertex(uint8_t const* vertex, float outClip[4]) const;
 
@@ -512,6 +520,9 @@ namespace scvk
 
 		/** Reports the state of draws made under a near black ambient tint. */
 		void NoteDarkTintedDraw(uint32_t gdPrimitiveType, int32_t count);
+
+		/** Describes the first few draws whose two stages both generate their coordinates. */
+		void ReportShadowMaskDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit);
 
 		/** Reports the combiner in force, once per distinct multitextured draw. */
 		void NoteMultitexturedDraw(uint32_t gdVertexFormat);
