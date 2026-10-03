@@ -423,6 +423,9 @@ namespace scvk
 		void DestroyFramebuffers(void);
 		void DestroySwapchain(void);
 
+		/** Makes the swapchain again once the window has area, or returns false while it has none. */
+		bool RestoreSwapchain(void);
+
 		/** Destroys everything that belongs to the device and the window, keeping the instance. */
 		void DestroyDevice(void);
 
@@ -588,7 +591,8 @@ namespace scvk
 
 		void Destroy(void);
 
-		bool IsReady(void) const { return swapchain != VK_NULL_HANDLE; }
+		/** Whether frames can be drawn, rebuilding a swapchain lost while the window had no area. */
+		bool IsReady(void);
 
 		/** Description of the selected GPU, for GetDriverInfo. */
 		std::string const& DeviceName(void) const { return deviceName; }

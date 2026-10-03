@@ -763,13 +763,15 @@ namespace scvk
 
 		// Wait for the GPU, then destroy what is sized to the swapchain
 		//
-		// Regions are sized to the swapchain too, so a resize invalidates them. The game
-		// reallocates on its own once its old handles stop working.
+		// The buffer regions stay. They are images of their own, and every copy to or
+		// from one is clamped to both sizes. The game never makes new ones when its old
+		// handles stop working: destroying them on a rebuild left it restoring its saved
+		// scene from nothing, so moving clouds smeared across the screen after every
+		// switch away from fullscreen.
 		vkDeviceWaitIdle(device);
 
 		DestroyFramebuffers();
 		DestroyDepthResources();
-		DestroyAllBufferRegions();
 
 		if (swapchain != VK_NULL_HANDLE)
 		{
@@ -784,6 +786,30 @@ namespace scvk
 		currentLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
+	bool VulkanBackend::RestoreSwapchain(void)
+	{
+		if (isDead || device == VK_NULL_HANDLE || surface == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		// Wait while the window has no area
+		//
+		// A minimised window reports a zero extent, and no swapchain can be made for it.
+		// Presenting to one loses the swapchain, which used to stop the game drawing for
+		// good. This runs every frame until the window is back, so it checks quietly.
+		VkSurfaceCapabilitiesKHR capabilities{};
+		VkResult const result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
+
+		if (result != VK_SUCCESS || capabilities.currentExtent.width == 0 || capabilities.currentExtent.height == 0)
+		{
+			return false;
+		}
+
+		LogNote("Vulkan: the window has area again; rebuilding the swapchain.");
+		return CreateSwapchain(swapchainExtent.width, swapchainExtent.height);
+	}
+
 	void VulkanBackend::DestroyDevice(void)
 	{
 		if (device != VK_NULL_HANDLE)
@@ -792,6 +818,7 @@ namespace scvk
 			vkDeviceWaitIdle(device);
 
 			DestroySwapchain();
+			DestroyAllBufferRegions();
 			DestroyPipelines();
 			DestroyTextures();
 
@@ -943,7 +970,7 @@ namespace scvk
 
 	bool VulkanBackend::EnsureFrame(void)
 	{
-		if (isDead || swapchain == VK_NULL_HANDLE)
+		if (isDead || !IsReady())
 		{
 			return false;
 		}
@@ -1684,6 +1711,11 @@ namespace scvk
 		return CreateSwapchain(width, height);
 	}
 
+	bool VulkanBackend::IsReady(void)
+	{
+		return swapchain != VK_NULL_HANDLE || RestoreSwapchain();
+	}
+
 	void VulkanBackend::Destroy(void)
 	{
 		DestroyDevice();
@@ -1948,11 +1980,11 @@ namespace scvk
 			DestroySwapchain();
 
 			// A failure here leaves no swapchain, which makes IsDeviceReady report false
-			// and stops the game drawing. Silence would make that indistinguishable from
-			// a hang, so it says so.
+			// and stops the game drawing until RestoreSwapchain makes one again. Silence
+			// would make that indistinguishable from a hang, so it says so.
 			if (!CreateSwapchain(swapchainExtent.width, swapchainExtent.height))
 			{
-				LogNote("Vulkan: could not rebuild the swapchain; presenting has stopped.");
+				LogNote("Vulkan: could not rebuild the swapchain; drawing waits until the window has area again.");
 			}
 
 			return;
