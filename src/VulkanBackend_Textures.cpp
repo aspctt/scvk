@@ -286,15 +286,9 @@ namespace scvk
 		retiredTextures.clear();
 	}
 
-	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t handle)
+	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t const parameters[4])
 	{
 		// Reuse the sampler made for the same parameters
-		//
-		// A handle that resolves to nothing samples with the defaults a new texture
-		// starts with.
-		Texture const fallbackTexture{};
-		uint32_t const* const parameters = (handle < textures.size() && textures[handle].isLive) ? textures[handle].parameters : fallbackTexture.parameters;
-
 		uint32_t const key = (parameters[0] & 0xff) | ((parameters[1] & 0xff) << 8) | ((parameters[2] & 0xff) << 16) | ((parameters[3] & 0xff) << 24);
 
 		for (SamplerEntry const& entry : samplers)
@@ -794,6 +788,16 @@ namespace scvk
 		}
 
 		textures[handle].parameters[parameterType] = value;
+	}
+
+	void VulkanBackend::SetStage1Parameter(uint32_t parameterType, uint32_t value)
+	{
+		if (parameterType >= 4)
+		{
+			return;
+		}
+
+		stage1Parameters[parameterType] = value;
 	}
 
 	void VulkanBackend::SetTexture(uint32_t handle)

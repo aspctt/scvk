@@ -278,25 +278,38 @@ namespace scvk
 			LogNote("  TEXPARAM target %u, param type %u, value %d", gdTextureTarget, gdTextureParameterType, gdTextureParameter);
 		}
 
-		// Set it on the texture bound to the selected stage
+		// Set it on the first stage's texture or on the second stage
 		//
 		// Parameter type 0 is the magnification filter, 1 the minification filter, 2 the
 		// wrap in S and 3 the wrap in T. The game sets both clamp and repeat. The value
 		// is not negative, checked here.
 		//
-		// The texture keeps it, as an OpenGL texture object does. The game relies on
-		// that: it sets clamp after binding an interface texture but never sets repeat
-		// back on the terrain textures. Applying the latest values to whatever was drawn
-		// next instead left the terrain clamped whenever it was redrawn straight after the
-		// interface, and a clamped grass layer samples the transparent border, which was
-		// the black patches.
+		// On the first stage the texture keeps it, as an OpenGL texture object does. The
+		// game relies on that: the interface sets clamp after binding its own textures,
+		// straight to the driver, but nothing sets repeat back on the terrain textures.
+		// Applying the latest values to whatever was drawn next left the terrain clamped
+		// whenever it was redrawn straight after the interface, and a clamped grass layer
+		// samples the transparent border, which was the black patches.
+		//
+		// The second stage keeps it itself, as a Direct3D texture stage does and as the
+		// game's own DirectX driver does for every stage. The game sets the second stage
+		// only through a cache of its own that holds filter and wrap per stage, and skips
+		// the call when the stage already has the value. The building shadows bind their
+		// small mask there and then ask for clamp, which the cache drops whenever the
+		// stage is clamped already. Kept on the texture, the mask never got it and
+		// repeated.
 		if (gdTextureParameterType >= 4 || gdTextureParameter < 0)
 		{
 			return;
 		}
 
-		uint32_t const texture = (activeTextureStage == 1) ? stage1Texture : boundTexture;
-		vulkan->SetTextureParameter(texture, gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
+		if (activeTextureStage == 1)
+		{
+			vulkan->SetStage1Parameter(gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
+			return;
+		}
+
+		vulkan->SetTextureParameter(boundTexture, gdTextureParameterType, static_cast<uint32_t>(gdTextureParameter));
 	}
 
 	void cVKDriver::GenTextures(int32_t count, uint32_t* textures)

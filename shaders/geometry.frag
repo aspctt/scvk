@@ -93,12 +93,15 @@ layout(push_constant) uniform PushConstants
 	vec4 sceneTint;
 } push;
 
-// Image and sampler are separate objects here. Filter and wrap belong to the texture
-// object in the game's OpenGL driver, and are applied when a draw binds it, so the
-// sampler has to be free to change while a texture's descriptor stays fixed.
+// Image and sampler are separate objects here. Filter and wrap depend on the stage as
+// well as the texture, so the sampler has to be free to change while a texture's
+// descriptor stays fixed. Each stage has its own: the building shadows clamp a small
+// mask on the second stage while the first repeats, and one shared sampler tiled the
+// mask across the ground.
 layout(set = 0, binding = 0) uniform texture2D textureImage0;
 layout(set = 1, binding = 0) uniform texture2D textureImage1;
-layout(set = 2, binding = 0) uniform sampler   textureSampler;
+layout(set = 2, binding = 0) uniform sampler   textureSampler0;
+layout(set = 3, binding = 0) uniform sampler   textureSampler1;
 
 layout(location = 0) in vec4 fragmentColour;
 layout(location = 1) in vec2 fragmentTextureCoordinate0;
@@ -213,7 +216,7 @@ void main()
 		return;
 	}
 
-	vec4 texel0 = texture(sampler2D(textureImage0, textureSampler), fragmentTextureCoordinate0);
+	vec4 texel0 = texture(sampler2D(textureImage0, textureSampler0), fragmentTextureCoordinate0);
 
 	// Show one input channel
 	//
@@ -264,7 +267,7 @@ void main()
 		//
 		// The first stage has no predecessor, so the primary colour stands in as
 		// "previous", which is what the fixed function pipeline defines.
-		vec4 texel1 = texture(sampler2D(textureImage1, textureSampler), fragmentTextureCoordinate1);
+		vec4 texel1 = texture(sampler2D(textureImage1, textureSampler1), fragmentTextureCoordinate1);
 
 		uvec4 combiner = floatBitsToUint(push.aliasA);
 		result = runStage(combiner.x, combiner.y, texel0, fragmentColour);

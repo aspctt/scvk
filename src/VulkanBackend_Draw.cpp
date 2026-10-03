@@ -170,12 +170,13 @@ namespace scvk
 		range.offset     = 0;
 		range.size       = PUSH_CONSTANT_BYTES;
 
-		// Bind one set per texture stage, plus a third for the sampler
+		// Bind one image set per texture stage, then one sampler set per stage
 		//
 		// Keeping them separate is what lets a descriptor set stay a property of one
 		// texture: a single set with two bindings would need a set per pair of textures
-		// instead, and the pairs multiply.
-		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, imageSetLayout, samplerSetLayout };
+		// instead, and the pairs multiply. Four sets is the minimum every Vulkan device
+		// supports.
+		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, imageSetLayout, samplerSetLayout, samplerSetLayout };
 
 		VkPipelineLayoutCreateInfo information{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 		information.setLayoutCount         = _countof(setLayouts);
@@ -788,13 +789,15 @@ namespace scvk
 
 		// Bind their sets
 		//
-		// One sampler serves both stages, taken from the first stage's texture. The two
-		// stages only ever run together on the terrain, which uses the same parameters
-		// for both.
+		// Each stage has its own sampler. The first takes its texture's parameters, the
+		// second the stage's. Sharing the first stage's sampler gave the building shadows'
+		// small clamped mask the repeat of the texture they project, so the mask tiled
+		// and every shadow repeated along the streets.
 		VkDescriptorSet const sets[] = {
 			textures[bound].descriptor,
 			textures[bound1].descriptor,
-			GetSamplerSet(bound),
+			GetSamplerSet(textures[bound].parameters),
+			GetSamplerSet(stage1Parameters),
 		};
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);

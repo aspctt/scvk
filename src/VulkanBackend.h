@@ -122,7 +122,8 @@ namespace scvk
 		{
 			// Magnification filter, minification filter, wrap S and wrap T, in the game's
 			// own numbering, which SetTextureParameter writes. Linear with repeat until
-			// the game says otherwise.
+			// the game says otherwise. The first stage samples with these; the second
+			// stage has parameters of its own.
 			uint32_t parameters[4] = { 1, 1, 3, 3 };
 
 			VkImage         image      = VK_NULL_HANDLE;
@@ -373,6 +374,11 @@ namespace scvk
 		std::vector<SamplerEntry>   samplers;
 		uint32_t                    currentTexture  = 0;
 		uint32_t                    currentTexture1 = 0;
+
+		// The second stage's filter and wrap, in the same numbering as a texture's. They
+		// belong to the stage, so binding another texture there leaves them alone.
+		uint32_t                    stage1Parameters[4] = { 1, 1, 3, 3 };
+
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
 
@@ -525,8 +531,8 @@ namespace scvk
 		/** Destroys everything retired since the last frame. */
 		void FlushRetiredTextures(void);
 
-		/** The sampler for one texture's own parameters. */
-		VkDescriptorSet GetSamplerSet(uint32_t handle);
+		/** The sampler for one set of filter and wrap parameters. */
+		VkDescriptorSet GetSamplerSet(uint32_t const parameters[4]);
 
 		/** Records a draw sampling a texture, and reports the hazards counted above. */
 		void NoteTextureUse(uint32_t handle);
@@ -755,9 +761,12 @@ namespace scvk
 		 *
 		 * The type is 0 for the magnification filter, 1 the minification filter, 2 wrap
 		 * S and 3 wrap T. The texture keeps it, as an OpenGL texture object does, and
-		 * every draw that samples the texture uses it.
+		 * every draw that samples the texture on the first stage uses it.
 		 */
 		void SetTextureParameter(uint32_t handle, uint32_t parameterType, uint32_t value);
+
+		/** Sets one filter or wrap parameter on the second stage, numbered as above. */
+		void SetStage1Parameter(uint32_t parameterType, uint32_t value);
 
 		/** Selects the texture used by subsequent draws. 0 means untextured. */
 		void SetTexture(uint32_t handle);
