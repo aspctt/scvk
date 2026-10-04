@@ -39,10 +39,9 @@ const float PASS_COLOURS_MINIMUM    = 9.5;
 const float PASS_COLOURS_MAXIMUM    = 19.5;
 const float CHANNELS_MINIMUM        = 19.5;
 
-// The flag added to the texture environment mode when the primary colour's alpha comes
-// from the vertex, which the vertex stage reads, and the value from which a mode has it.
-const float ALPHA_FROM_VERTEX_FLAG      = 8.0;
-const float ALPHA_FROM_VERTEX_THRESHOLD = 7.5;
+// The bits of fragmentState.z that hold the texture environment mode. The bits above are
+// lighting flags for the vertex stage.
+const int ENVIRONMENT_MODE_BITS = 7;
 
 //// References
 
@@ -56,8 +55,9 @@ layout(push_constant) uniform PushConstants
 	// y: reference value.
 	// z: texture environment mode in the game's own order, 0 replace,
 	//    1 modulate, 2 decal, plus 8 when the primary colour's alpha comes
-	//    from the vertex rather than from the alpha multiplier. The vertex
-	//    stage reads that flag; this one reads the mode.
+	//    from the vertex rather than from the alpha multiplier, and 16 when
+	//    its colour does. The vertex stage reads the flags; this one reads
+	//    the mode.
 	// w: which path this draw takes.
 	//    1 one texture stage, coordinates from the vertex
 	//    2 two texture stages, coordinates from the vertex
@@ -243,14 +243,13 @@ void main()
 		//
 		// This is the path everything but the terrain is on. The game's own order is not
 		// the obvious one: replace comes first, then modulate, then decal.
-		float mode = push.fragmentState.z;
-		if (mode >= ALPHA_FROM_VERTEX_THRESHOLD) { mode -= ALPHA_FROM_VERTEX_FLAG; }
+		int mode = int(push.fragmentState.z) & ENVIRONMENT_MODE_BITS;
 
-		if (mode < 0.5)
+		if (mode == 0)
 		{
 			result = texel0;                                    // replace
 		}
-		else if (mode < 1.5)
+		else if (mode == 1)
 		{
 			result = texel0 * fragmentColour;                   // modulate
 		}

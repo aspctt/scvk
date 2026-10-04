@@ -20,14 +20,14 @@ from collections import Counter
 # Must match DrawFileHeader, DrawFileTile and DrawRecord in the driver.
 HEADER_FORMAT = "<8s5I"
 TILE_FORMAT = "<I4i4iII"
-DRAW_FORMAT = "<8I8B6f8B10f2H5I8f8B"
+DRAW_FORMAT = "<8I8B5f8B10f2H5I8f8B"
 
 MAGIC = b"SCVKDRW1"
 
 DRAW_FIELDS = [
 	"sequence", "frame", "vertex_format", "primitive_type", "count", "texture0", "texture1", "flags",
 	"blend_source", "blend_destination", "depth_comparison", "alpha_comparison", "environment0", "environment1", "texture_levels", "texture_uploaded_levels",
-	"alpha_reference", "tint_red", "tint_green", "tint_blue", "tint_alpha", "diffuse_light",
+	"alpha_reference", "tint_red", "tint_green", "tint_blue", "tint_alpha",
 	"colour_minimum_blue", "colour_minimum_green", "colour_minimum_red", "colour_minimum_alpha",
 	"colour_maximum_blue", "colour_maximum_green", "colour_maximum_red", "colour_maximum_alpha",
 	"left", "top", "right", "bottom", "depth_minimum", "depth_maximum",
@@ -42,6 +42,7 @@ DRAW_FIELDS = [
 FLAG_NAMES = [
 	"stage0", "stage1", "blend", "depth_test", "depth_write", "colour_write", "alpha_test",
 	"generated", "ambient_vertex", "diffuse_vertex", "indexed", "texture_live", "behind_camera", "vertices_capped",
+	"alpha_vertex",
 ]
 
 # The game's comparison enumeration follows OpenGL's order.

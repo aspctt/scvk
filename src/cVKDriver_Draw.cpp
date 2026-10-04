@@ -55,14 +55,6 @@ namespace scvk
 		constexpr uint32_t CAMERA_SPACE_POSITION_SOURCE = 0x10;
 		constexpr uint32_t SOURCE_SET_BITS              = 7;
 
-		// The light sits at (1,1,0) with w zero, which the fixed function pipeline reads
-		// as a direction and normalises.
-		constexpr float LIGHT_DIRECTION_X = 0.70710678f;
-		constexpr float LIGHT_DIRECTION_Y = 0.70710678f;
-
-		// A modelview this close to singular has no usable inverse.
-		constexpr float DETERMINANT_EPSILON = 1e-12f;
-
 		// The game's type numbering, shared with its texture uploads.
 		constexpr uint32_t GD_INDEX_TYPE_UNSIGNED_SHORT = 3;
 		constexpr uint32_t GD_INDEX_TYPE_UNSIGNED_INT   = 5;
@@ -93,50 +85,6 @@ namespace scvk
 		}
 
 		vulkan->SetTransform(modelViewProjection);
-
-		// Work out the diffuse light term for this modelview
-		//
-		// The light is directional, so its contribution depends only on the normal, and
-		// the game supplies none: the default normal is (0,0,1) in object space, which
-		// reaches eye space through the inverse transpose of the modelview. That makes
-		// the whole diffuse term one number per transform.
-		//
-		// Left unnormalised, as the fixed function pipeline leaves it with GL_NORMALIZE
-		// off, so a scale in the modelview scales the light.
-		//
-		// The third row of the inverse is the third column of cofactors over the
-		// determinant. The light has no z component, so the cofactor that would feed it
-		// is not computed.
-		float const* const modelView = modelViewMatrix;
-
-		float const cofactorX = modelView[1 * 4 + 0] * modelView[2 * 4 + 1] - modelView[2 * 4 + 0] * modelView[1 * 4 + 1];
-		float const cofactorY = modelView[2 * 4 + 0] * modelView[0 * 4 + 1] - modelView[0 * 4 + 0] * modelView[2 * 4 + 1];
-
-		float const minor0 = modelView[1 * 4 + 1] * modelView[2 * 4 + 2] - modelView[2 * 4 + 1] * modelView[1 * 4 + 2];
-		float const minor1 = modelView[0 * 4 + 1] * modelView[2 * 4 + 2] - modelView[2 * 4 + 1] * modelView[0 * 4 + 2];
-		float const minor2 = modelView[0 * 4 + 1] * modelView[1 * 4 + 2] - modelView[1 * 4 + 1] * modelView[0 * 4 + 2];
-
-		float const determinant = modelView[0 * 4 + 0] * minor0 - modelView[1 * 4 + 0] * minor1 + modelView[2 * 4 + 0] * minor2;
-
-		float factor = 0.0f;
-
-		if (determinant > DETERMINANT_EPSILON || determinant < -DETERMINANT_EPSILON)
-		{
-			float const inverse = 1.0f / determinant;
-			factor = (cofactorX * inverse) * LIGHT_DIRECTION_X + (cofactorY * inverse) * LIGHT_DIRECTION_Y;
-
-			if (factor < 0.0f)
-			{
-				factor = 0.0f;
-			}
-		}
-
-		// Forward it when it changed
-		if (factor != diffuseLightFactor)
-		{
-			diffuseLightFactor = factor;
-			PushLighting();
-		}
 	}
 
 	void cVKDriver::PushStageCoordinates(void)

@@ -335,6 +335,7 @@ namespace scvk
 
 		// The texture environment and lighting the fragment and vertex stages read.
 		uint32_t textureEnvironmentMode = 1;
+		bool     isColourFromVertex     = true;
 		bool     isAlphaFromVertex      = true;
 		float    sceneTint[4]           = { 1.0f, 1.0f, 1.0f, 1.0f };
 
@@ -696,8 +697,11 @@ namespace scvk
 		/** Clears the depth attachment to the given value. */
 		void ClearDepth(float depth);
 
-		/** The global ambient tint applied to every lit draw. */
-		void SetSceneTint(float red, float green, float blue, float alpha, bool isAlphaFromVertexColour);
+		/**
+		 * The ambient light and alpha multiplier applied to every lit draw, and whether the
+		 * vertex colour stands in for the material's colour and alpha.
+		 */
+		void SetSceneTint(float red, float green, float blue, float alpha, bool isColourFromVertexColour, bool isAlphaFromVertexColour);
 
 		/** The environment colour a combiner may name as a source. */
 		void SetConstantColour(float red, float green, float blue, float alpha);

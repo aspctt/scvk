@@ -136,7 +136,6 @@ namespace scvk
 			uint8_t  textureUploadedLevels;
 			float    alphaReference;
 			float    tint[4];
-			float    diffuseLight;
 			uint8_t  colourMinimum[4];
 			uint8_t  colourMaximum[4];
 			float    bounds[4];
@@ -218,6 +217,7 @@ namespace scvk
 		static constexpr uint32_t DRAW_FLAG_TEXTURE_LIVE    = 1u << 11;
 		static constexpr uint32_t DRAW_FLAG_BEHIND_CAMERA   = 1u << 12;
 		static constexpr uint32_t DRAW_FLAG_VERTICES_CAPPED = 1u << 13;
+		static constexpr uint32_t DRAW_FLAG_ALPHA_VERTEX    = 1u << 14;
 
 		// The kinds of configuration NoteOnce reports, each keyed separately.
 		static constexpr uint32_t NOTE_COMBINER            = 1;
@@ -326,10 +326,10 @@ namespace scvk
 		bool  isVertexColourAmbient = false;
 		bool  isVertexColourDiffuse = false;
 
-		// The diffuse light term for the current modelview. The light is directional and
-		// fixed, the geometry carries no normals, so this is one number per transform
-		// rather than per vertex.
-		float diffuseLightFactor = 0.0f;
+		// Whether the lit alpha is the vertex alpha rather than the alpha multiplier.
+		// Mostly the diffuse mapping, except that an alpha multiplier below one takes it
+		// back. See AlphaMultiplier.
+		bool isAlphaFromVertexColour = false;
 
 		// The last format handed to InterleavedArrays, and the client pointer it named.
 		// Draws read from that pointer, so the driver has to keep both until the draw
@@ -456,7 +456,7 @@ namespace scvk
 		/** Forwards the tint, and logs the day and night cycle. */
 		void PushSceneTint(void);
 
-		/** Forwards the lighting weight and the alpha source. */
+		/** Forwards the ambient light and where the lit colour and alpha come from. */
 		void PushLighting(void);
 
 		// Draws, in cVKDriver_Draw.cpp

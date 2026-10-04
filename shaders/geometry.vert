@@ -26,9 +26,10 @@
 const float PATH_GENERATED_COORDINATES = 2.5;
 const float PATH_TWO_STAGES_MINIMUM    = 1.5;
 
-// The texture environment mode carries 8 on top when the primary colour's alpha comes from
-// the vertex, so anything from here up has the flag.
-const float ALPHA_FROM_VERTEX_THRESHOLD = 7.5;
+// The bits added to the texture environment mode when the primary colour's alpha, and its
+// colour, come from the vertex rather than from the material.
+const int ALPHA_FROM_VERTEX_FLAG  = 8;
+const int COLOUR_FROM_VERTEX_FLAG = 16;
 
 //// References
 
@@ -40,9 +41,9 @@ layout(push_constant) uniform PushConstants
 	// clip space.
 	mat4 modelViewProjection;
 
-	// Used only by the fragment stage, apart from two parts. z carries the alpha source
-	// flag on top of the environment mode. w selects how the two aliased slots below are
-	// read:
+	// Used only by the fragment stage, apart from two parts. z carries the colour and
+	// alpha source flags on top of the environment mode. w selects how the two aliased
+	// slots below are read:
 	//   1 one texture stage, coordinates from the vertex
 	//   2 two texture stages, coordinates from the vertex
 	//   3 one texture stage, coordinates generated from the eye-space position
@@ -95,27 +96,28 @@ void main()
 	// The game packs vertex colours as BGRA, which is why its OpenGL driver requires the
 	// vertex_array_bgra extension. The attribute is declared R8G8B8A8 because that format
 	// is universally supported for vertex buffers, so the swizzle happens here instead.
-	// Geometry with no colour takes the fixed function current colour, which the game
-	// never sets and which starts white.
+	// Direct3D lights geometry with no colour from the material instead, which the game's
+	// DirectX driver keeps white with the alpha multiplier as its alpha.
 #if SCVK_HAS_COLOUR
 	vec4 vertexColour = inColour.bgra;
 #else
-	vec4 vertexColour = vec4(1.0);
+	vec4 vertexColour = vec4(1.0, 1.0, 1.0, push.sceneTint.a);
 #endif
 
 	// Light it into the primary colour
 	//
-	// That is the colour the texture environment consumes. sceneTint.rgb is the light
-	// weight the driver collapsed the ambient and diffuse terms into; the alpha comes from
-	// the vertex when colour material maps it onto the diffuse material, and from the
-	// alpha multiplier when it does not.
+	// That is the colour the texture environment consumes. sceneTint.rgb is the ambient
+	// light, which scales the vertex colour where the game maps it onto the ambient
+	// material and the white material where it does not. The alpha comes from the vertex
+	// or from the alpha multiplier, as the driver decided. See cVKDriver::PushLighting.
 	//
-	// OpenGL clamps the lit colour to 0 to 1 before texturing (2.1 spec, section 2.14.6).
-	// The weight reaches about 1.58 in daylight, ambient plus the diffuse term, so
-	// leaving it unclamped brightened every modulated texture past what the game's own
-	// drivers draw.
-	vec4 litColour = vec4(vertexColour.rgb * push.sceneTint.rgb, (push.fragmentState.z >= ALPHA_FROM_VERTEX_THRESHOLD) ? vertexColour.a : push.sceneTint.a);
-	fragmentColour = clamp(litColour, 0.0, 1.0);
+	// Fixed function lighting clamps the lit colour to 0 to 1 before texturing (OpenGL
+	// 2.1 spec, section 2.14.6), and so does Direct3D. An ambient light above one would
+	// otherwise brighten every modulated texture.
+	int   lightingSources = int(push.fragmentState.z);
+	vec3  materialColour  = ((lightingSources & COLOUR_FROM_VERTEX_FLAG) != 0) ? vertexColour.rgb : vec3(1.0);
+	float materialAlpha   = ((lightingSources & ALPHA_FROM_VERTEX_FLAG) != 0) ? vertexColour.a : push.sceneTint.a;
+	fragmentColour = clamp(vec4(materialColour * push.sceneTint.rgb, materialAlpha), 0.0, 1.0);
 
 	// Pass the first coordinate set on
 	//

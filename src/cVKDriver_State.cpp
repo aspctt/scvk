@@ -143,30 +143,25 @@ namespace scvk
 
 	void cVKDriver::PushLighting(void)
 	{
-		// Collapse the game's lighting into one weight
+		// Reduce the game's lighting to what its DirectX driver draws
 		//
-		// The whole of the game's lighting, as its OpenGL driver sets it up: lighting on,
-		// one directional light 45 degrees above the x and y axes with a white diffuse
-		// and no ambient, a black ambient material, and colour material mapping the
-		// vertex colour onto the ambient term, the diffuse term, both or neither.
+		// The colour multiplier is the global ambient light, the alpha multiplier the
+		// diffuse material's alpha, and the vertex colour stands in for the ambient
+		// material, the diffuse material, both or neither. The DirectX driver keeps the
+		// ambient material white.
 		//
-		// The fixed function equation then reduces to two scales of the vertex colour,
-		// because every material the vertex colour does not replace is black:
+		// There is a directional light too, but the DirectX driver never hands Direct3D a
+		// normal, and Direct3D lights a vertex without one with a dot product of zero. The
+		// light adds nothing there, which leaves:
 		//
 		//   rgb   = ambient light * vertex colour, when ambient is mapped
-		//         + N.L          * vertex colour, when diffuse is mapped
-		//   alpha = the diffuse material's alpha, which is the vertex alpha
-		//           when diffuse is mapped and the alpha multiplier otherwise
+		//         = ambient light,                when it is not
+		//   alpha = the vertex alpha or the alpha multiplier, see AlphaMultiplier
 		//
-		// Both scales are per draw, so they collapse into one weight for the vertex stage
-		// to multiply the colour by.
-		float weight[3];
-		for (int i = 0; i < 3; i++)
-		{
-			weight[i] = (isVertexColourAmbient ? colourMultiplier[i] : 0.0f) + (isVertexColourDiffuse ? diffuseLightFactor : 0.0f);
-		}
-
-		vulkan->SetSceneTint(weight[0], weight[1], weight[2], colourMultiplier[3], isVertexColourDiffuse);
+		// OpenGL lights the default normal (0,0,1) instead, which adds about 0.59 of the
+		// vertex colour wherever diffuse is mapped. scvk did that once, and it washed the
+		// sea out to white and brightened the shaded cliff faces by half.
+		vulkan->SetSceneTint(colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient, isAlphaFromVertexColour);
 	}
 
 	//// Public API
@@ -320,6 +315,22 @@ namespace scvk
 		SCVK_CALL("%.3f", alpha);
 
 		colourMultiplier[3] = alpha;
+
+		// Take the alpha from the material while it is below one
+		//
+		// The DirectX driver points the diffuse material back at its own colour for an
+		// alpha below one, and back at the vertex colour at one if the vertex colour feeds
+		// the diffuse term. A fade therefore wins over the vertex alpha until
+		// EnableVertexColors next says otherwise.
+		if (alpha < 1.0f)
+		{
+			isAlphaFromVertexColour = false;
+		}
+		else if (isVertexColourDiffuse)
+		{
+			isAlphaFromVertexColour = true;
+		}
+
 		PushSceneTint();
 	}
 
@@ -327,12 +338,12 @@ namespace scvk
 	{
 		SCVK_CALL("%d, %d", shouldFeedAmbient, shouldFeedDiffuse);
 
-		// Whether the vertex colour feeds the ambient and diffuse material terms. With
-		// both off the fixed function pipeline stops taking the material from the vertex
-		// colour, so the tint has nothing to scale and must not be applied: the interface
-		// is drawn that way and has no business dimming at night.
-		isVertexColourAmbient = shouldFeedAmbient;
-		isVertexColourDiffuse = shouldFeedDiffuse;
+		// Whether the vertex colour feeds the ambient and diffuse material terms. The
+		// diffuse one decides the alpha source outright, whatever the alpha multiplier
+		// set before. See PushLighting.
+		isVertexColourAmbient   = shouldFeedAmbient;
+		isVertexColourDiffuse   = shouldFeedDiffuse;
+		isAlphaFromVertexColour = shouldFeedDiffuse;
 		PushSceneTint();
 	}
 

@@ -654,9 +654,7 @@ namespace scvk
 		// Blend, alpha test and the second stage are all reported, because a draw that
 		// comes out a flat block and a draw that comes out black are both questions about
 		// state rather than geometry, and the rectangle alone cannot tell them apart.
-		float const diffuseWeight = isVertexColourDiffuse ? diffuseLightFactor : 0.0f;
-
-		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  weight %.2f %.2f %.2f a%.2f (vc %d%d)  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x", dumpedDraws++, left, top, right, bottom, right - left, bottom - top, boundTexture, stage1Texture, vertexFormat, gdPrimitiveType, count, viewportX, viewportY, viewportWidth, viewportHeight, minimumU, maximumU, minimumV, maximumV, (colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu, (isVertexColourAmbient ? colourMultiplier[0] : 0.0f) + diffuseWeight, (isVertexColourAmbient ? colourMultiplier[1] : 0.0f) + diffuseWeight, (isVertexColourAmbient ? colourMultiplier[2] : 0.0f) + diffuseWeight, colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isVertexColourDiffuse ? 1 : 0, isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, textureEnvironmentMode[0], isTextureStageEnabled[1] ? 1 : 0, lastTextureMatrixFlags);
+		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  light %.2f %.2f %.2f a%.2f (from vertex %d%d)  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x", dumpedDraws++, left, top, right, bottom, right - left, bottom - top, boundTexture, stage1Texture, vertexFormat, gdPrimitiveType, count, viewportX, viewportY, viewportWidth, viewportHeight, minimumU, maximumU, minimumV, maximumV, (colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isAlphaFromVertexColour ? 1 : 0, isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, textureEnvironmentMode[0], isTextureStageEnabled[1] ? 1 : 0, lastTextureMatrixFlags);
 	}
 
 	void cVKDriver::SampleWindowDepth(int32_t count, int32_t first, void const* indices, bool isIndex32Bit, float& outMinimumDepth, float& outMaximumDepth) const
@@ -977,6 +975,7 @@ namespace scvk
 		flags |= IsGeneratingCoordinates(0) ? DRAW_FLAG_GENERATED : 0u;
 		flags |= isVertexColourAmbient ? DRAW_FLAG_AMBIENT_VERTEX : 0u;
 		flags |= isVertexColourDiffuse ? DRAW_FLAG_DIFFUSE_VERTEX : 0u;
+		flags |= isAlphaFromVertexColour ? DRAW_FLAG_ALPHA_VERTEX : 0u;
 		flags |= (indices != nullptr) ? DRAW_FLAG_INDEXED : 0u;
 
 		record.blendSource          = static_cast<uint8_t>(blendSourceFactor);
@@ -986,7 +985,6 @@ namespace scvk
 		record.environmentModes[0]  = static_cast<uint8_t>(textureEnvironmentMode[0]);
 		record.environmentModes[1]  = static_cast<uint8_t>(textureEnvironmentMode[1]);
 		record.alphaReference       = alphaReference;
-		record.diffuseLight         = diffuseLightFactor;
 		record.activeTextureStage   = static_cast<uint8_t>(activeTextureStage);
 		record.coordinateSources[0] = static_cast<uint8_t>(textureCoordinateSource[0]);
 		record.coordinateSources[1] = static_cast<uint8_t>(textureCoordinateSource[1]);
@@ -1184,7 +1182,7 @@ namespace scvk
 	void cVKDriver::WriteDrawRecords(char const* path)
 	{
 		// The reader unpacks one fixed layout, so a change here has to reach it too.
-		static_assert(sizeof(DrawRecord) == 176, "tools/draw-records.py expects 176 byte draw records");
+		static_assert(sizeof(DrawRecord) == 172, "tools/draw-records.py expects 172 byte draw records");
 
 		FILE* file = nullptr;
 		if (fopen_s(&file, path, "wb") != 0 || file == nullptr)

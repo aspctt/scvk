@@ -69,6 +69,12 @@ namespace scvk
 		// layout the fragment shader reads.
 		constexpr uint32_t MODULATE_WITH_PREVIOUS = 1u | (0u << 3) | (1u << 8);
 
+		// The texture environment mode for modulate, in the game's own order, and the
+		// lighting flags packed above the mode for the vertex stage.
+		constexpr uint32_t ENVIRONMENT_MODULATE    = 1;
+		constexpr uint32_t ALPHA_FROM_VERTEX_FLAG  = 8;
+		constexpr uint32_t COLOUR_FROM_VERTEX_FLAG = 16;
+
 		// OpenGL clip space and Vulkan clip space differ in two ways: Y points the other
 		// way, and depth runs 0..1 rather than -1..1. Column-major, like everything the
 		// game hands over.
@@ -699,13 +705,13 @@ namespace scvk
 		memcpy(drawFragmentState, fragmentState, sizeof(drawFragmentState));
 		memcpy(drawCombinerState, combinerState, sizeof(drawCombinerState));
 
-		// Pack the environment mode with the alpha source in a higher digit
+		// Pack the environment mode with the lighting sources in higher bits
 		//
-		// The push constant block is full at the guaranteed 128 bytes and both are small
-		// enough to share one slot. The shader reads its state as floats, and small
+		// The push constant block is full at the guaranteed 128 bytes and all three are
+		// small enough to share one slot. The shader reads its state as floats, and small
 		// integers convert exactly.
-		float const alphaSourceFlag = isAlphaFromVertex ? 8.0f : 0.0f;
-		drawFragmentState[2] = static_cast<float>(textureEnvironmentMode) + alphaSourceFlag;
+		uint32_t const lightingSources = (isAlphaFromVertex ? ALPHA_FROM_VERTEX_FLAG : 0u) | (isColourFromVertex ? COLOUR_FROM_VERTEX_FLAG : 0u);
+		drawFragmentState[2] = static_cast<float>(textureEnvironmentMode | lightingSources);
 
 		// Pass the primary colour through a disabled first stage
 		//
@@ -716,7 +722,7 @@ namespace scvk
 		// combiner could turn it anything.
 		if (!isStageEnabled[0])
 		{
-			drawFragmentState[2] = 1.0f + alphaSourceFlag;
+			drawFragmentState[2] = static_cast<float>(ENVIRONMENT_MODULATE | lightingSources);
 			drawCombinerState[0] = MODULATE_WITH_PREVIOUS;
 			drawCombinerState[1] = MODULATE_WITH_PREVIOUS;
 		}
@@ -874,14 +880,15 @@ namespace scvk
 		depthComparison     = comparison;
 	}
 
-	void VulkanBackend::SetSceneTint(float red, float green, float blue, float alpha, bool isAlphaFromVertexColour)
+	void VulkanBackend::SetSceneTint(float red, float green, float blue, float alpha, bool isColourFromVertexColour, bool isAlphaFromVertexColour)
 	{
 		sceneTint[0] = red;
 		sceneTint[1] = green;
 		sceneTint[2] = blue;
 		sceneTint[3] = alpha;
 
-		isAlphaFromVertex = isAlphaFromVertexColour;
+		isColourFromVertex = isColourFromVertexColour;
+		isAlphaFromVertex  = isAlphaFromVertexColour;
 	}
 
 	void VulkanBackend::SetConstantColour(float red, float green, float blue, float alpha)
