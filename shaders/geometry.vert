@@ -109,7 +109,13 @@ void main()
 	// weight the driver collapsed the ambient and diffuse terms into; the alpha comes from
 	// the vertex when colour material maps it onto the diffuse material, and from the
 	// alpha multiplier when it does not.
-	fragmentColour = vec4(vertexColour.rgb * push.sceneTint.rgb, (push.fragmentState.z >= ALPHA_FROM_VERTEX_THRESHOLD) ? vertexColour.a : push.sceneTint.a);
+	//
+	// OpenGL clamps the lit colour to 0 to 1 before texturing (2.1 spec, section 2.14.6).
+	// The weight reaches about 1.58 in daylight, ambient plus the diffuse term, so
+	// leaving it unclamped brightened every modulated texture past what the game's own
+	// drivers draw.
+	vec4 litColour = vec4(vertexColour.rgb * push.sceneTint.rgb, (push.fragmentState.z >= ALPHA_FROM_VERTEX_THRESHOLD) ? vertexColour.a : push.sceneTint.a);
+	fragmentColour = clamp(litColour, 0.0, 1.0);
 
 	// Pass the first coordinate set on
 	//
