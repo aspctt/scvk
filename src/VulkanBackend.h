@@ -271,6 +271,9 @@ namespace scvk
 		bool            isRenderPassActive      = false;
 		uint64_t        presentedFrames         = 0;
 
+		// The performance counter at the last heartbeat, for the frame rate it reports.
+		int64_t lastHeartbeatTicks = 0;
+
 		// Reused when a Flush arrives with no frame started, so the swapchain keeps
 		// cycling instead of stalling.
 		float lastClearColour[4] = { 0.0f, 0.0f, 0.0f, 1.0f };

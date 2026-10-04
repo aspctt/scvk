@@ -1491,7 +1491,27 @@ namespace scvk
 	{
 		// A heartbeat, so the log answers "is it still presenting?" without needing the
 		// trace. Cheap at one line per few hundred frames.
-		LogNote("Vulkan: %llu frames presented.", presentedFrames);
+		//
+		// The rate since the last one says whether presenting waits for the display. A
+		// rate far above the refresh rate means it does not, which the game does not
+		// expect.
+		LARGE_INTEGER now{};
+		LARGE_INTEGER frequency{};
+		QueryPerformanceCounter(&now);
+		QueryPerformanceFrequency(&frequency);
+
+		if (lastHeartbeatTicks != 0 && now.QuadPart > lastHeartbeatTicks && frequency.QuadPart > 0)
+		{
+			// The tick counts are far below the range where a double loses whole ticks.
+			double const seconds = static_cast<double>(now.QuadPart - lastHeartbeatTicks) / static_cast<double>(frequency.QuadPart);
+			LogNote("Vulkan: %llu frames presented, %.0f a second.", presentedFrames, static_cast<double>(HEARTBEAT_FRAMES) / seconds);
+		}
+		else
+		{
+			LogNote("Vulkan: %llu frames presented.", presentedFrames);
+		}
+
+		lastHeartbeatTicks = now.QuadPart;
 
 		if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 		{
