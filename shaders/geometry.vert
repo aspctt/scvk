@@ -156,8 +156,9 @@ void main()
 
 	// Pass the second coordinate set on
 	//
-	// A single set feeds both stages otherwise. Only geometry that carries two sets ever
-	// has a second stage bound, so that is never the one sampled.
+	// A single set feeds both stages otherwise. Only a vertex copy that carries two sets,
+	// the format's own or one the backend appended, ever has a second stage bound, so
+	// that is never the one sampled.
 #if SCVK_TEXTURE_COORDINATE_SETS >= 2
 	fragmentTextureCoordinate1 = inTextureCoordinate1;
 #else

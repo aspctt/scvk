@@ -81,6 +81,10 @@ namespace scvk
 			// pass drawn with writes off needs its own pipeline.
 			bool     isColourWriteEnabled;
 
+			// Whether the vertex copy carries a second coordinate set the format lacks,
+			// which changes both the stride and the attributes.
+			bool     hasAppendedCoordinateSet;
+
 			bool operator==(PipelineKey const& other) const = default;
 		};
 
@@ -98,9 +102,13 @@ namespace scvk
 			uint32_t colourOffset = 0;
 
 			// Coordinate sets, not components. Two means the geometry can feed a second
-			// texture stage; the terrain is the only thing that does.
+			// texture stage. The terrain carries both; buildings carry one and generate
+			// the second stage's coordinates, which the copy then appends.
 			uint32_t textureCoordinateSets      = 0;
 			uint32_t textureCoordinateOffset[2] = { 0, 0 };
+
+			// Whether the second set is the appended one rather than the format's own.
+			bool hasAppendedCoordinateSet = false;
 		};
 
 		/**
@@ -494,6 +502,12 @@ namespace scvk
 		/** Where a format's attributes live, from the game's packed encoding. */
 		static VertexLayout DecodeVertexLayout(uint32_t gdVertexFormat);
 
+		/** A layout with a second coordinate set added after the format's own attributes. */
+		static VertexLayout AppendCoordinateSet(VertexLayout layout);
+
+		/** The layout the vertex copy takes: the format's own, widened when the second stage needs a set it lacks. */
+		VertexLayout DecodeDrawLayout(VertexLayout const& sourceLayout) const;
+
 		/** The game's primitive numbering to a Vulkan topology. */
 		static bool MapTopology(uint32_t gdPrimitiveType, VkPrimitiveTopology& outTopology, bool& outIsQuadList);
 
@@ -509,7 +523,7 @@ namespace scvk
 		void DestroyArena(Arena& arena);
 
 		/** Copies a vertex range into the per-frame arena, with the coordinates the draw samples. */
-		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		/** Whether the second stage takes part in the draw. */
 		bool IsTwoStageDraw(uint32_t textureCoordinateSets) const;
@@ -518,10 +532,10 @@ namespace scvk
 		bool IsStageTransformed(uint32_t stage) const;
 
 		/** Writes each stage's final coordinates into its own set of the vertex copy. */
-		void WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& layout) const;
+		void WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout) const;
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
-		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, uint32_t textureCoordinateSets);
+		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout);
 
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
 		void PushDrawConstants(bool isTwoStage);
