@@ -81,13 +81,19 @@ namespace scvk
 
 	namespace
 	{
-		// Fullscreen, for the one game window there is at a time. It lives here rather
-		// than on the driver because the window procedure has to reach it, and Windows
-		// hands a procedure nothing but the window.
-		HWND     fullscreenWindow      = nullptr;
+		// The game's window and fullscreen, for the one window there is at a time. They
+		// live here rather than on the driver because the window procedure has to reach
+		// them, and Windows hands a procedure nothing but the window.
+		HWND     gameWindow            = nullptr;
 		WNDPROC  gameWindowProcedure   = nullptr;
+		bool     isFullscreenWindow    = false;
 		DEVMODEA fullscreenDisplayMode = {};
 		bool     isDisplayModeChanged  = false;
+
+		// How many more focus and size messages, and faults, the log describes.
+		int  windowMessageReportsRemaining = 48;
+		int  exceptionReportsRemaining     = 8;
+		bool isExceptionLogInstalled       = false;
 	}
 
 	//// Private Functions
@@ -144,15 +150,59 @@ namespace scvk
 			SetWindowPos(window, HWND_TOPMOST, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOACTIVATE);
 		}
 
-		// Sees the fullscreen window's messages before the game does
-		LRESULT CALLBACK FullscreenWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		// Describes the window's style, place and focus, for working out how another
+		// plugin has reshaped it
+		void LogWindowState(HWND window, char const* moment)
 		{
-			// Give the desktop back while the game is in the background
+			RECT bounds{};
+			RECT client{};
+			GetWindowRect(window, &bounds);
+			GetClientRect(window, &client);
+
+			// The style words are bit sets the API returns as signed integers.
+			unsigned long const style         = static_cast<unsigned long>(GetWindowLongA(window, GWL_STYLE));
+			unsigned long const extendedStyle = static_cast<unsigned long>(GetWindowLongA(window, GWL_EXSTYLE));
+
+			LogNote("Window %s: style 0x%08lx extended 0x%08lx, bounds %ld,%ld..%ld,%ld, client %ldx%ld, visible %d minimised %d maximised %d foreground %d focus %d.", moment, style, extendedStyle, bounds.left, bounds.top, bounds.right, bounds.bottom, client.right, client.bottom, IsWindowVisible(window) ? 1 : 0, IsIconic(window) ? 1 : 0, IsZoomed(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0, (GetFocus() == window) ? 1 : 0);
+		}
+
+		// Names the focus and size messages worth a log line, or returns null
+		char const* DescribeWindowMessage(UINT message)
+		{
+			switch (message)
+			{
+			case WM_ACTIVATEAPP:      return "WM_ACTIVATEAPP";
+			case WM_ACTIVATE:         return "WM_ACTIVATE";
+			case WM_SETFOCUS:         return "WM_SETFOCUS";
+			case WM_KILLFOCUS:        return "WM_KILLFOCUS";
+			case WM_SIZE:             return "WM_SIZE";
+			case WM_SHOWWINDOW:       return "WM_SHOWWINDOW";
+			case WM_DISPLAYCHANGE:    return "WM_DISPLAYCHANGE";
+			case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
+			default:                  return nullptr;
+			}
+		}
+
+		// Sees the game window's messages before the game does
+		LRESULT CALLBACK GameWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		{
+			// Report the first focus and size messages
+			//
+			// Both parameters are logged as raw words, whatever the message packs in them.
+			char const* const name = DescribeWindowMessage(message);
+
+			if (name != nullptr && windowMessageReportsRemaining > 0)
+			{
+				windowMessageReportsRemaining--;
+				LogNote("Window message %s, wParam 0x%lx, lParam 0x%lx.", name, static_cast<unsigned long>(wParam), static_cast<unsigned long>(lParam));
+			}
+
+			// Give the desktop back while a fullscreen game is in the background
 			//
 			// Switching away puts the desktop's mode back and minimises the game, since a
 			// window above every other one would otherwise hide whatever was switched to.
 			// Switching back sets the game's mode again.
-			if (message == WM_ACTIVATEAPP && window == fullscreenWindow)
+			if (message == WM_ACTIVATEAPP && isFullscreenWindow && window == gameWindow)
 			{
 				LogNote("Fullscreen: the game is %s.", (wParam != FALSE) ? "back in front" : "in the background");
 
@@ -180,19 +230,48 @@ namespace scvk
 		}
 
 		// Stops treating the window as fullscreen and puts the desktop's mode back
-		//
-		// The window goes back to sending its messages straight to the game. The API
-		// stores the procedure as an integer.
 		void EndFullscreen(void)
 		{
-			if (fullscreenWindow != nullptr && gameWindowProcedure != nullptr)
+			isFullscreenWindow = false;
+			LeaveDisplayMode();
+		}
+
+		// Describes a fault in the log before the game's own handler ends the process
+		//
+		// The game installs an exception filter of its own and exits without a word, so
+		// Windows records nothing either. A vectored handler runs before any filter. Only
+		// faults are reported, not the exceptions C++ code throws and catches.
+		LONG CALLBACK LogException(EXCEPTION_POINTERS* exception)
+		{
+			EXCEPTION_RECORD const* const record = exception->ExceptionRecord;
+			DWORD const                   code   = record->ExceptionCode;
+
+			bool const isFault = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_FLT_DIVIDE_BY_ZERO || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
+
+			if (!isFault || exceptionReportsRemaining <= 0)
 			{
-				SetWindowLongPtrA(fullscreenWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(gameWindowProcedure));
+				return EXCEPTION_CONTINUE_SEARCH;
 			}
 
-			fullscreenWindow    = nullptr;
-			gameWindowProcedure = nullptr;
-			LeaveDisplayMode();
+			exceptionReportsRemaining--;
+
+			// Name the module the fault happened in
+			HMODULE module               = nullptr;
+			char    modulePath[MAX_PATH] = "unknown";
+
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCSTR>(record->ExceptionAddress), &module) != 0)
+			{
+				GetModuleFileNameA(module, modulePath, MAX_PATH);
+			}
+
+			// Addresses are 32-bit in this process, so they fit an unsigned long. A module
+			// handle is the module's base address.
+			unsigned long const address = static_cast<unsigned long>(reinterpret_cast<uintptr_t>(record->ExceptionAddress));
+			unsigned long const base    = static_cast<unsigned long>(reinterpret_cast<uintptr_t>(module));
+			unsigned long const target  = (record->NumberParameters >= 2) ? static_cast<unsigned long>(record->ExceptionInformation[1]) : 0;
+
+			LogNote("Exception 0x%08lx at 0x%08lx (%s +0x%lx), data address 0x%08lx, thread %lu.", code, address, modulePath, address - base, target, GetCurrentThreadId());
+			return EXCEPTION_CONTINUE_SEARCH;
 		}
 	}
 
@@ -417,25 +496,35 @@ namespace scvk
 		}
 
 		windowHandle = window;
+		LogWindowState(window, "created");
+
+		// Start hidden, whatever made the window visible
+		//
+		// SC4GraphicsOptions' borderless mode creates the game's window visible and
+		// maximised. Shown during creation, the window was activated before the game's
+		// procedure was in place, so the game never heard it was active: it showed no
+		// interface, then crashed in its sound code the next time it was activated.
+		// Hidden again here and shown below, the game gets the same messages as in a
+		// window. The plugin turns every ShowWindow on this window into a maximise, so
+		// this hides it through SetWindowPos instead.
+		if (IsWindowVisible(window))
+		{
+			SetWindowPos(window, nullptr, 0, 0, 0, 0, SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+		}
 
 		// Route its messages to the game
 		//
 		// The game hands us its own window procedure and expects input to arrive through
-		// it. Without this the window exists but the game never sees a message. A
-		// fullscreen window sees them first, to give the desktop back on a switch away.
+		// it. Without this the window exists but the game never sees a message. Ours sees
+		// them first, to give the desktop back when a fullscreen game is switched away
+		// from, and to log the focus and size messages.
 		//
 		// The game passes the procedure as a plain pointer, and the API stores one as an
 		// integer.
-		if (isFullscreen)
-		{
-			fullscreenWindow    = window;
-			gameWindowProcedure = reinterpret_cast<WNDPROC>(windowProcedure);
-			SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&FullscreenWindowProcedure));
-		}
-		else if (windowProcedure != nullptr)
-		{
-			SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(windowProcedure));
-		}
+		gameWindow          = window;
+		gameWindowProcedure = reinterpret_cast<WNDPROC>(windowProcedure);
+		isFullscreenWindow  = isFullscreen;
+		SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&GameWindowProcedure));
 
 		// Show it, whatever the game's flags say
 		//
@@ -445,6 +534,7 @@ namespace scvk
 		// and presenting perfectly into something nobody could see. SCGL, which works,
 		// also ignores both flags and always shows. Whatever they mean, it is not this.
 		ShowWindow(window, SW_SHOWNORMAL);
+		LogWindowState(window, "shown");
 		return true;
 	}
 
@@ -461,7 +551,9 @@ namespace scvk
 
 		// The interface carries the window as a plain pointer.
 		DestroyWindow(static_cast<HWND>(windowHandle));
-		windowHandle = nullptr;
+		windowHandle        = nullptr;
+		gameWindow          = nullptr;
+		gameWindowProcedure = nullptr;
 	}
 
 	//// Public API
@@ -472,6 +564,14 @@ namespace scvk
 		SCVK_CALL("");
 
 		LogNote("scvk %s initialising.", SCVK_VERSION_STRING);
+
+		// Log faults, once for the process
+		//
+		// First in the chain, so it runs before any handler the game or another plugin adds.
+		if (!isExceptionLogInstalled)
+		{
+			isExceptionLogInstalled = AddVectoredExceptionHandler(1, &LogException) != nullptr;
+		}
 
 		// Decline when Vulkan is unavailable
 		//
