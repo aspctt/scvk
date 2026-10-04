@@ -1,4 +1,4 @@
-# scvk
+# <p align=center> scvk </p>
 
 A native Vulkan renderer for SimCity 4.
 
