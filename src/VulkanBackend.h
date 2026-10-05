@@ -157,6 +157,9 @@ namespace scvk
 			// The size of the memory backing the image, for the heartbeat's totals.
 			VkDeviceSize memoryBytes = 0;
 
+			// The texture pool its descriptor set came from, which is where it goes back.
+			uint32_t descriptorPoolIndex = 0;
+
 			// The highest level the game has actually filled, plus one. A declared level
 			// that was never uploaded is undefined memory, and sampling it is
 			// indistinguishable from sampling black.
@@ -183,10 +186,18 @@ namespace scvk
 		 */
 		struct RetiredImage
 		{
-			VkImage         image      = VK_NULL_HANDLE;
-			VkDeviceMemory  memory     = VK_NULL_HANDLE;
-			VkImageView     view       = VK_NULL_HANDLE;
-			VkDescriptorSet descriptor = VK_NULL_HANDLE;
+			VkImage         image               = VK_NULL_HANDLE;
+			VkDeviceMemory  memory              = VK_NULL_HANDLE;
+			VkImageView     view                = VK_NULL_HANDLE;
+			VkDescriptorSet descriptor          = VK_NULL_HANDLE;
+			uint32_t        descriptorPoolIndex = 0;
+		};
+
+		/** A descriptor pool holding only texture sets, and how many of them are out. */
+		struct TexturePool
+		{
+			VkDescriptorPool pool     = VK_NULL_HANDLE;
+			uint32_t         usedSets = 0;
 		};
 
 		/** A sampler and its set, keyed on the parameters that produced it. */
@@ -431,6 +442,11 @@ namespace scvk
 		VkDescriptorSetLayout samplerSetLayout = VK_NULL_HANDLE;
 		VkDescriptorPool      descriptorPool   = VK_NULL_HANDLE;
 
+		// Texture sets come from a chain of pools that grows when every pool is full,
+		// because a city with custom content keeps thousands of textures alive at once.
+		std::vector<TexturePool> texturePools;
+		uint32_t                 textureSetsPerPool = 0;
+
 		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by one instead
 		// of needing its own shader and pipeline.
 		std::vector<Texture>        textures;
@@ -627,6 +643,9 @@ namespace scvk
 
 		/** The sampler for one set of filter and wrap parameters. */
 		VkDescriptorSet GetSamplerSet(uint32_t const parameters[4]);
+
+		/** A descriptor set for a new texture, from the first texture pool with room. */
+		bool AllocateTextureSet(VkDescriptorSet& outSet, uint32_t& outPoolIndex);
 
 		/** Records a draw sampling a texture, and reports the hazards counted above. */
 		void NoteTextureUse(uint32_t handle);

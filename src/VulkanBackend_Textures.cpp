@@ -71,9 +71,15 @@ namespace scvk
 	namespace
 	{
 		// One descriptor set per texture, allocated when the texture is created and never
-		// rewritten, so nothing can be updated while the GPU is reading it. A session
-		// created 89 textures, so this has generous headroom.
-		constexpr uint32_t MAXIMUM_TEXTURES = 4096;
+		// rewritten, so nothing can be updated while the GPU is reading it. A pool holds
+		// this many, and another pool is added when they are all taken: an unmodded city
+		// already reached 2848 live textures within minutes.
+		constexpr uint32_t TEXTURE_SETS_PER_POOL = 4096;
+
+		// Shrinks every texture pool, so an ordinary session fills many of them and the
+		// chain gets exercised without needing thousands of custom buildings.
+		constexpr char const* SMALL_TEXTURE_POOLS_MARKER = "scvk-small-texture-pools";
+		constexpr uint32_t    SMALL_TEXTURE_SETS_PER_POOL = 64;
 
 		// The game's upload enumerations, from SCGL's translation tables. Formats: 0 RGB,
 		// 1 RGBA, 2 BGR, 3 BGRA. Types: 1 GL_UNSIGNED_BYTE, 8 GL_UNSIGNED_SHORT_4_4_4_4
@@ -184,25 +190,27 @@ namespace scvk
 			return false;
 		}
 
-		// Create the pool
+		// Create the sampler pool
 		//
 		// Samplers are their own descriptor type and their own sets, one per distinct
-		// filter and wrap combination the game asks for.
-		VkDescriptorPoolSize imagePoolSize{};
-		imagePoolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		imagePoolSize.descriptorCount = MAXIMUM_TEXTURES;
-
+		// filter and wrap combination the game asks for. Texture sets live in pools of
+		// their own, made by AllocateTextureSet as they are needed.
 		VkDescriptorPoolSize samplerPoolSize{};
 		samplerPoolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLER;
 		samplerPoolSize.descriptorCount = MAXIMUM_SAMPLERS;
 
-		VkDescriptorPoolSize const poolSizes[] = { imagePoolSize, samplerPoolSize };
-
 		VkDescriptorPoolCreateInfo poolInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		poolInformation.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-		poolInformation.maxSets       = MAXIMUM_TEXTURES + MAXIMUM_SAMPLERS;
-		poolInformation.poolSizeCount = _countof(poolSizes);
-		poolInformation.pPoolSizes    = poolSizes;
+		poolInformation.maxSets       = MAXIMUM_SAMPLERS;
+		poolInformation.poolSizeCount = 1;
+		poolInformation.pPoolSizes    = &samplerPoolSize;
+
+		textureSetsPerPool = TEXTURE_SETS_PER_POOL;
+		if (HasMarkerFile(SMALL_TEXTURE_POOLS_MARKER))
+		{
+			textureSetsPerPool = SMALL_TEXTURE_SETS_PER_POOL;
+			LogNote("Vulkan: %s present, texture pools hold %u sets.", SMALL_TEXTURE_POOLS_MARKER, textureSetsPerPool);
+		}
 
 		result = vkCreateDescriptorPool(device, &poolInformation, nullptr, &descriptorPool);
 		if (result != VK_SUCCESS)
@@ -298,6 +306,14 @@ namespace scvk
 		textures.clear();
 		currentTexture  = 0;
 		currentTexture1 = 0;
+
+		// Destroying a pool frees every set still allocated from it
+		for (TexturePool const& texturePool : texturePools)
+		{
+			vkDestroyDescriptorPool(device, texturePool.pool, nullptr);
+		}
+
+		texturePools.clear();
 	}
 
 	void VulkanBackend::FlushRetiredImages(void)
@@ -310,11 +326,13 @@ namespace scvk
 			if (retired.image != VK_NULL_HANDLE)  { vkDestroyImage(device, retired.image, nullptr); }
 			if (retired.memory != VK_NULL_HANDLE) { vkFreeMemory(device, retired.memory, nullptr); }
 
-			// The descriptor set matters as much as the image. Its pool is capped, and
-			// leaking sets exhausts it long before memory runs out.
-			if (retired.descriptor != VK_NULL_HANDLE)
+			// The descriptor set matters as much as the image. Each pool is capped, and
+			// leaking sets would add a pool every few thousand deletions.
+			if (retired.descriptor != VK_NULL_HANDLE && retired.descriptorPoolIndex < texturePools.size())
 			{
-				vkFreeDescriptorSets(device, descriptorPool, 1, &retired.descriptor);
+				TexturePool& texturePool = texturePools[retired.descriptorPoolIndex];
+				vkFreeDescriptorSets(device, texturePool.pool, 1, &retired.descriptor);
+				texturePool.usedSets--;
 			}
 		}
 
@@ -398,6 +416,63 @@ namespace scvk
 
 		samplers.push_back(entry);
 		return entry.set;
+	}
+
+	bool VulkanBackend::AllocateTextureSet(VkDescriptorSet& outSet, uint32_t& outPoolIndex)
+	{
+		// Find the first pool with room
+		//
+		// Counting is enough to know there is room. Vulkan 1.0 leaves going past a pool's
+		// limits undefined rather than promising an error, and fragmentation never fails
+		// an allocation when every set in the pool has the same descriptor counts, which
+		// a pool of nothing but texture sets guarantees.
+		uint32_t poolIndex = 0;
+		while (poolIndex < texturePools.size() && texturePools[poolIndex].usedSets >= textureSetsPerPool)
+		{
+			poolIndex++;
+		}
+
+		// Add a pool when they are all full
+		if (poolIndex == texturePools.size())
+		{
+			VkDescriptorPoolSize poolSize{};
+			poolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			poolSize.descriptorCount = textureSetsPerPool;
+
+			VkDescriptorPoolCreateInfo poolInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+			poolInformation.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+			poolInformation.maxSets       = textureSetsPerPool;
+			poolInformation.poolSizeCount = 1;
+			poolInformation.pPoolSizes    = &poolSize;
+
+			TexturePool texturePool;
+			VkResult const result = vkCreateDescriptorPool(device, &poolInformation, nullptr, &texturePool.pool);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkCreateDescriptorPool (textures)", result);
+				return false;
+			}
+
+			texturePools.push_back(texturePool);
+			LogNote("Vulkan: texture descriptor pool %u added, room for %u textures in all.", poolIndex + 1, (poolIndex + 1) * textureSetsPerPool);
+		}
+
+		// Take a set from it
+		VkDescriptorSetAllocateInfo setInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+		setInformation.descriptorPool     = texturePools[poolIndex].pool;
+		setInformation.descriptorSetCount = 1;
+		setInformation.pSetLayouts        = &imageSetLayout;
+
+		VkResult const result = vkAllocateDescriptorSets(device, &setInformation, &outSet);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateDescriptorSets", result);
+			return false;
+		}
+
+		texturePools[poolIndex].usedSets++;
+		outPoolIndex = poolIndex;
+		return true;
 	}
 
 	void VulkanBackend::NoteTextureUse(uint32_t handle)
@@ -718,15 +793,8 @@ namespace scvk
 		}
 
 		// Give it a descriptor set of its own
-		VkDescriptorSetAllocateInfo setInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-		setInformation.descriptorPool     = descriptorPool;
-		setInformation.descriptorSetCount = 1;
-		setInformation.pSetLayouts        = &imageSetLayout;
-
-		result = vkAllocateDescriptorSets(device, &setInformation, &texture.descriptor);
-		if (result != VK_SUCCESS)
+		if (!AllocateTextureSet(texture.descriptor, texture.descriptorPoolIndex))
 		{
-			Fail("vkAllocateDescriptorSets", result);
 			return 0;
 		}
 
@@ -941,10 +1009,11 @@ namespace scvk
 		Texture& texture = textures[handle];
 
 		RetiredImage retired;
-		retired.image      = texture.image;
-		retired.memory     = texture.memory;
-		retired.view       = texture.view;
-		retired.descriptor = texture.descriptor;
+		retired.image               = texture.image;
+		retired.memory              = texture.memory;
+		retired.view                = texture.view;
+		retired.descriptor          = texture.descriptor;
+		retired.descriptorPoolIndex = texture.descriptorPoolIndex;
 
 		retiredImages.push_back(retired);
 		texturesDestroyed++;

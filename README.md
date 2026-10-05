@@ -188,6 +188,8 @@ To see a debug view, put an empty file with one of these names next to
 - `scvk-record-tile-draws`: Scroll Lock also saves every recent draw of the
   parts of the scene the game redrew, and of the moving things drawn over it
   (`scvk-key-N-draws.bin`), which `tools/draw-records.py` reads (slow)
+- `scvk-small-texture-pools`: makes room for only 64 textures at a time before
+  scvk has to set aside more, so an ordinary session tests that it does
 
 ## Installing
 
