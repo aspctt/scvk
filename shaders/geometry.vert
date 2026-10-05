@@ -51,7 +51,8 @@ layout(push_constant) uniform PushConstants
 	// alpha source flags on top of the environment mode. w selects how the two aliased
 	// slots below are read:
 	//   1 one texture stage, coordinates from the vertex
-	//   2 two texture stages, coordinates from the vertex
+	//   2 the combiner network, on both stages or on the first alone, coordinates from
+	//     the vertex
 	//   3 one texture stage, coordinates generated from the eye-space position
 	vec4 fragmentState;
 

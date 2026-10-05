@@ -35,8 +35,8 @@
 //// Constants
 
 // Thresholds on the draw's path in fragmentState.w, halfway between the values the
-// backend sends: 1 and 3 take the single stage, 2 the two stages, 10 and up a pass
-// colour, 20 and up an input channel.
+// backend sends: 1 and 3 take the texture environment, 2 the combiner network, 10 and up
+// a pass colour, 20 and up an input channel.
 const float PATH_TWO_STAGES_MINIMUM = 1.5;
 const float PATH_TWO_STAGES_MAXIMUM = 2.5;
 const float PASS_COLOURS_MINIMUM    = 9.5;
@@ -64,7 +64,8 @@ layout(push_constant) uniform PushConstants
 	//    the mode.
 	// w: which path this draw takes.
 	//    1 one texture stage, coordinates from the vertex
-	//    2 two texture stages, coordinates from the vertex
+	//    2 the combiner network, on both stages or on the first alone,
+	//      coordinates from the vertex
 	//    3 one texture stage, coordinates generated from the eye-space position
 	//    10 and up: a diagnostic, see passColour and the channel view below
 	vec4 fragmentState;
@@ -250,8 +251,8 @@ void main()
 	{
 		// Apply the texture environment on one stage
 		//
-		// This is the path everything but the terrain is on. The game's own order is not
-		// the obvious one: replace comes first, then modulate, then decal.
+		// This is the path everything but the terrain and the shadows is on. The game's
+		// own order is not the obvious one: replace comes first, then modulate, then decal.
 		int mode = int(push.fragmentState.z) & ENVIRONMENT_MODE_BITS;
 
 		if (mode == 0)
@@ -274,7 +275,8 @@ void main()
 		// Run the combiner network on two stages
 		//
 		// The first stage has no predecessor, so the primary colour stands in as
-		// "previous", which is what the fixed function pipeline defines.
+		// "previous", which is what the fixed function pipeline defines. When the first
+		// stage combines alone, the backend sets the second to hand its result on.
 		vec4 texel1 = texture(sampler2D(textureImage1, textureSampler1), fragmentTextureCoordinate1);
 
 		uvec4 combiner = floatBitsToUint(push.aliasA);

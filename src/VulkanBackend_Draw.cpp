@@ -70,9 +70,14 @@ namespace scvk
 		// layout the fragment shader reads.
 		constexpr uint32_t MODULATE_WITH_PREVIOUS = 1u | (0u << 3) | (1u << 8);
 
-		// The texture environment mode for modulate, in the game's own order, and the
-		// lighting flags packed above the mode for the vertex stage.
+		// A combiner word that hands the previous stage's result on unchanged.
+		constexpr uint32_t PASS_PREVIOUS = 0u | (1u << 3);
+
+		// The texture environment modes, in the game's own order, and the lighting flags
+		// packed above the mode for the vertex stage.
 		constexpr uint32_t ENVIRONMENT_MODULATE    = 1;
+		constexpr uint32_t ENVIRONMENT_COMBINE     = 4;
+		constexpr uint32_t ENVIRONMENT_COMBINE4    = 5;
 		constexpr uint32_t ALPHA_FROM_VERTEX_FLAG  = 8;
 		constexpr uint32_t COLOUR_FROM_VERTEX_FLAG = 16;
 
@@ -640,14 +645,14 @@ namespace scvk
 			}
 		}
 
-		// Write the coordinates the two stage path cannot work out itself
+		// Write the coordinates the combiner path cannot work out itself
 		//
 		// Its push constant space holds the combiner, so it has no room for either
 		// stage's rows and samples the vertex sets as they are. The game still asks for
 		// more on that path: it projects building shadows onto the terrain with both
 		// stages generating, the second masking them through a 4x4 texture and its own
 		// matrix. An appended set is always written, since nothing else fills it.
-		if (IsTwoStageDraw(drawLayout.textureCoordinateSets) && (drawLayout.hasAppendedCoordinateSet || IsStageTransformed(0) || IsStageTransformed(1)))
+		if (IsCombinerDraw(drawLayout.textureCoordinateSets) && (drawLayout.hasAppendedCoordinateSet || IsStageTransformed(0) || IsStageTransformed(1)))
 		{
 			WriteStageCoordinates(destination, source, vertexCount, sourceLayout, drawLayout);
 		}
@@ -666,6 +671,21 @@ namespace scvk
 		bool const hasCoordinate = textureCoordinateSets >= 2 || (textureCoordinateSets == 1 && stageCoordinates[1].isGenerated);
 
 		return hasCoordinate && currentTexture1 != 0 && isStageEnabled[1];
+	}
+
+	bool VulkanBackend::IsCombinerDraw(uint32_t textureCoordinateSets) const
+	{
+		// The first stage runs its network alone when the second stage is off
+		//
+		// As Direct3D's first stage applies its operation whatever the second does. The
+		// game draws its building shadows that way when the graphics rules turn the second
+		// stage off: the network takes the shadow colour from the environment colour and
+		// only the alpha from the mask, so treating it as modulate drew them white. The
+		// copy needs a set to write the coordinates into, which every format the game
+		// combines with has.
+		bool const isFirstStageAlone = isFirstStageCombining && isStageEnabled[0] && textureCoordinateSets >= 1;
+
+		return IsTwoStageDraw(textureCoordinateSets) || isFirstStageAlone;
 	}
 
 	bool VulkanBackend::IsStageTransformed(uint32_t stage) const
@@ -687,7 +707,9 @@ namespace scvk
 			float position[3];
 			memcpy(position, sourceVertex, sizeof(position));
 
-			for (uint32_t stage = 0; stage < 2; stage++)
+			// Only the sets the copy carries. A first stage combining on its own may run on
+			// a single set, which has no room for the second stage's.
+			for (uint32_t stage = 0; stage < drawLayout.textureCoordinateSets; stage++)
 			{
 				StageCoordinates const& coordinates = stageCoordinates[stage];
 
@@ -747,17 +769,18 @@ namespace scvk
 
 		// Decide which of the shader's paths the draw takes
 		//
-		// A single stage draw has the first stage's rows in the aliased slots, applied to
-		// the position when it generates and to the first set when it does not. A two
-		// stage draw has its coordinates already written into the vertex copy.
+		// A texture environment draw has the first stage's rows in the aliased slots,
+		// applied to the position when it generates and to the first set when it does
+		// not. A combiner draw has its coordinates already written into the vertex copy.
 		bool const isTwoStage   = IsTwoStageDraw(drawLayout.textureCoordinateSets);
-		bool const isGenerating = stageCoordinates[0].isGenerated && !isTwoStage;
+		bool const isCombining  = IsCombinerDraw(drawLayout.textureCoordinateSets);
+		bool const isGenerating = stageCoordinates[0].isGenerated && !isCombining;
 
-		fragmentState[3] = isGenerating ? 3.0f : (isTwoStage ? 2.0f : 1.0f);
+		fragmentState[3] = isGenerating ? 3.0f : (isCombining ? 2.0f : 1.0f);
 
 		// Bind everything
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		PushDrawConstants(isTwoStage);
+		PushDrawConstants(isTwoStage, isCombining);
 		BindTextures(isTwoStage);
 
 		VkBuffer buffers[] = { vertexBuffer, fogBuffer };
@@ -767,7 +790,7 @@ namespace scvk
 		return true;
 	}
 
-	void VulkanBackend::PushDrawConstants(bool isTwoStage)
+	void VulkanBackend::PushDrawConstants(bool isTwoStage, bool isCombining)
 	{
 		// Copy the state this draw sends
 		//
@@ -798,6 +821,16 @@ namespace scvk
 			drawFragmentState[2] = static_cast<float>(ENVIRONMENT_MODULATE | lightingSources);
 			drawCombinerState[0] = MODULATE_WITH_PREVIOUS;
 			drawCombinerState[1] = MODULATE_WITH_PREVIOUS;
+		}
+
+		// Hand the first stage's result through an idle second stage
+		//
+		// The shader always runs both stages of the network, and the second still holds
+		// whatever the game last gave it.
+		if (isCombining && !isTwoStage)
+		{
+			drawCombinerState[2] = PASS_PREVIOUS;
+			drawCombinerState[3] = PASS_PREVIOUS;
 		}
 
 		// Apply the diagnostics
@@ -833,7 +866,7 @@ namespace scvk
 		// Push the two aliased slots, 32 bytes, filled according to the path
 		uint32_t const aliasOffset = sizeof(transform) + sizeof(fragmentState);
 
-		if (!isTwoStage)
+		if (!isCombining)
 		{
 			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset, sizeof(stageCoordinates[0].rows), stageCoordinates[0].rows);
 		}
@@ -974,8 +1007,10 @@ namespace scvk
 	void VulkanBackend::SetTextureEnvironmentMode(uint32_t mode)
 	{
 		// The game's own order: 0 replace, 1 modulate, 2 decal. Anything else falls back
-		// to modulate, which is the fixed function default.
-		textureEnvironmentMode = (mode <= 2u) ? mode : 1u;
+		// to modulate, which is the fixed function default, except that the combine modes
+		// are noted so the draw can run the network instead.
+		textureEnvironmentMode = (mode <= 2u) ? mode : ENVIRONMENT_MODULATE;
+		isFirstStageCombining  = (mode == ENVIRONMENT_COMBINE || mode == ENVIRONMENT_COMBINE4);
 	}
 
 	void VulkanBackend::SetColourWrite(bool isEnabled)

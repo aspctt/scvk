@@ -363,15 +363,19 @@ namespace scvk
 		uint32_t blendDestinationFactor = 0;
 		bool     isColourWriteEnabled   = true;
 
-		// The texture environment and lighting the fragment and vertex stages read.
+		// The texture environment and lighting the fragment and vertex stages read. The
+		// mode holds only the three the single stage path knows, so whether the first
+		// stage asked for its combiner network is kept beside it.
 		uint32_t textureEnvironmentMode = 1;
+		bool     isFirstStageCombining  = false;
 		bool     isColourFromVertex     = true;
 		bool     isAlphaFromVertex      = true;
 		float    sceneTint[4]           = { 1.0f, 1.0f, 1.0f, 1.0f };
 
-		// The second stage's combiner network and the environment colour a combiner may
-		// name. Only geometry carrying two coordinate sets can use them, which in
-		// practice means the terrain and the building shadows drawn over it.
+		// The combiner network and the environment colour a combiner may name. The second
+		// stage needs geometry carrying two coordinate sets, which in practice means the
+		// terrain and the building shadows drawn over it. Without the second stage the
+		// shadows run the first stage's network alone.
 		bool     isStageEnabled[2] = { false, false };
 		uint32_t combinerState[4]  = {};
 		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -567,6 +571,9 @@ namespace scvk
 		/** Whether the second stage takes part in the draw. */
 		bool IsTwoStageDraw(uint32_t textureCoordinateSets) const;
 
+		/** Whether the draw runs the combiner network, on both stages or on the first alone. */
+		bool IsCombinerDraw(uint32_t textureCoordinateSets) const;
+
 		/** Whether a stage's coordinates differ from the vertex set of its own number. */
 		bool IsStageTransformed(uint32_t stage) const;
 
@@ -577,7 +584,7 @@ namespace scvk
 		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout);
 
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
-		void PushDrawConstants(bool isTwoStage);
+		void PushDrawConstants(bool isTwoStage, bool isCombining);
 
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);

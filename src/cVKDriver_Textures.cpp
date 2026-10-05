@@ -28,9 +28,11 @@
  * and none of it needs to be known at pipeline creation.
  *
  * The second stage runs only for geometry that carries two texture coordinate sets and
- * has a texture bound to that stage, which in practice means the terrain. Everything else
- * stays on the texture environment path, which is already correct and does not gain
- * anything from being restated in terms of combiners.
+ * has a texture bound to that stage, which in practice means the terrain. A first stage
+ * given a network runs it alone when the second is off, which is how the shadows draw
+ * when the graphics rules turn the second stage off. Everything else stays on the texture
+ * environment path, which is already correct and does not gain anything from being
+ * restated in terms of combiners.
  */
 
 //// Dependencies
