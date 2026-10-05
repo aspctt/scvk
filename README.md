@@ -10,6 +10,10 @@ plugin system.
 This project is not affiliated with, endorsed by, or supported by Electronic
 Arts Inc. or Maxis.
 
+<p align=center>
+	<a alt="BuyMeACoffee" href="https://buymeacoffee.com/aspctt"><img src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/donate/buymeacoffee-singular_vector.svg"></a>
+</p>
+
 ## Status
 
 **Early, but playable.** The region view, cities and menus all draw, with a
