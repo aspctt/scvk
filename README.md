@@ -23,7 +23,7 @@ few visual bugs left.
 | Day and night lighting, cloud shadows | Working |
 | Loading screens | Working |
 | Fog | Not yet |
-| In-game screenshots | Not yet, they come out blank |
+| In-game photos | Working |
 
 Known issues:
 

@@ -282,6 +282,10 @@ namespace scvk
 		bool            isRenderPassActive      = false;
 		uint64_t        presentedFrames         = 0;
 
+		// Whether part of the frame has already been submitted, which consumed the wait for
+		// its swapchain image. A readback submits the frame early to wait for it.
+		bool            hasSubmittedImageWait   = false;
+
 		// The performance counter at the last heartbeat, for the frame rate it reports.
 		int64_t lastHeartbeatTicks = 0;
 
@@ -376,6 +380,11 @@ namespace scvk
 		VkFormat       depthFormat           = VK_FORMAT_UNDEFINED;
 		bool           isDepthLayoutPending  = false;
 
+		// A copy of each frame as it is presented, sized with the swapchain. The game
+		// reads the screen back between frames for a photo, expecting the frame it last
+		// showed, and a presented swapchain image cannot be read.
+		BufferRegion   lastFrame;
+
 		// Descriptor layouts: one set per texture, and one per sampler.
 		VkDescriptorSetLayout imageSetLayout   = VK_NULL_HANDLE;
 		VkDescriptorSetLayout samplerSetLayout = VK_NULL_HANDLE;
@@ -453,6 +462,9 @@ namespace scvk
 
 		/** Starts a frame if one is not already in progress. */
 		bool EnsureFrame(void);
+
+		/** Submits what the frame has recorded so far, waits for it, and carries on recording the same frame. */
+		bool SubmitFrameSoFar(void);
 
 		/** Barriers the swapchain image into a layout, tracking where it was. */
 		void TransitionTo(VkImageLayout newLayout);
@@ -590,6 +602,15 @@ namespace scvk
 		/** Clamps a copy between the window and a region to both images. Returns false when either origin is negative. */
 		bool ClampRegionCopy(BufferRegion const& region, int32_t regionX, int32_t regionY, int32_t screenX, int32_t screenY, int32_t& width, int32_t& height) const;
 
+		/** Creates a region's image and memory at the window's size, without giving it a handle. */
+		bool AllocateRegionImage(bool isDepth, BufferRegion& outRegion);
+
+		bool CreateLastFrame(void);
+		void DestroyLastFrame(void);
+
+		/** Records the copy of the frame into lastFrame, as the last thing before presenting. */
+		void SaveLastFrame(void);
+
 	public:
 		//// Public API
 
@@ -632,6 +653,21 @@ namespace scvk
 		 * rows still have to be strided by the full source width.
 		 */
 		void BlitPixels(int32_t destinationX, int32_t destinationY, uint32_t width, uint32_t height, uint32_t sourceWidth, void const* pixels);
+
+		/**
+		 * Copies a rectangle of the screen into tightly packed BGRA8 rows, top row first,
+		 * with every alpha opaque.
+		 *
+		 * Mid-frame that is what the frame has drawn so far, and the commands recorded so
+		 * far are submitted early to wait for them. Between frames it is the frame last
+		 * presented. The rectangle is in window coordinates measured from the top, and
+		 * has to lie inside the window.
+		 */
+		bool ReadFramePixels(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t* outPixels);
+
+		/** The window's size, which bounds what ReadFramePixels can read. */
+		uint32_t FrameWidth(void) const { return swapchainExtent.width; }
+		uint32_t FrameHeight(void) const { return swapchainExtent.height; }
 
 		/** Ends the frame, submits, and presents. */
 		void Present(void);

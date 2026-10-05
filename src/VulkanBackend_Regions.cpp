@@ -18,11 +18,15 @@
  */
 
 /*
- * The depth buffer and the buffer regions.
+ * The depth buffer, the buffer regions, and the copy of the last frame.
  *
  * The city view is drawn once into the framebuffer, saved into a region, and restored
  * from it every frame, with only what changed redrawn on top. Both copies go through
  * images the render pass does not track, so each one carries its own barriers.
+ *
+ * The copy of the last frame is a region of scvk's own. The game reads the screen back
+ * for a photo between frames, expecting to find the frame it last showed, which a
+ * DirectX back buffer still holds and a presented swapchain image cannot be read for.
  */
 
 //// Dependencies
@@ -296,6 +300,30 @@ namespace scvk
 
 		// Create an image the size of the window, in the format it copies
 		BufferRegion region;
+		if (!AllocateRegionImage(isDepth, region))
+		{
+			return 0;
+		}
+
+		// Reuse a dead slot before growing
+		//
+		// So a game that cycles regions does not walk the handle space upward forever.
+		for (size_t i = 0; i < bufferRegions.size(); i++)
+		{
+			if (!bufferRegions[i].isLive)
+			{
+				bufferRegions[i] = region;
+				return i + 1;
+			}
+		}
+
+		bufferRegions.push_back(region);
+		return bufferRegions.size();
+	}
+
+	bool VulkanBackend::AllocateRegionImage(bool isDepth, BufferRegion& outRegion)
+	{
+		BufferRegion region;
 		region.isDepth = isDepth;
 		region.format  = isDepth ? depthFormat : swapchainFormat;
 		region.width   = swapchainExtent.width;
@@ -317,7 +345,7 @@ namespace scvk
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkCreateImage (buffer region)", result);
-			return 0;
+			return false;
 		}
 
 		// Back it with device-local memory
@@ -328,7 +356,7 @@ namespace scvk
 		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
 		{
 			vkDestroyImage(device, region.image, nullptr);
-			return 0;
+			return false;
 		}
 
 		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -340,26 +368,66 @@ namespace scvk
 		{
 			Fail("vkAllocateMemory (buffer region)", result);
 			vkDestroyImage(device, region.image, nullptr);
-			return 0;
+			return false;
 		}
 
 		vkBindImageMemory(device, region.image, region.memory, 0);
 		region.isLive = true;
 
-		// Reuse a dead slot before growing
-		//
-		// So a game that cycles regions does not walk the handle space upward forever.
-		for (size_t i = 0; i < bufferRegions.size(); i++)
+		outRegion = region;
+		return true;
+	}
+
+	bool VulkanBackend::CreateLastFrame(void)
+	{
+		// The swapchain does not depend on it: only reading the screen back between
+		// frames needs it.
+		if (!AllocateRegionImage(false, lastFrame))
 		{
-			if (!bufferRegions[i].isLive)
-			{
-				bufferRegions[i] = region;
-				return i + 1;
-			}
+			LogNote("Vulkan: could not create the copy of the last frame; reading the screen back between frames will fail.");
+			lastFrame = BufferRegion{};
+			return false;
 		}
 
-		bufferRegions.push_back(region);
-		return bufferRegions.size();
+		return true;
+	}
+
+	void VulkanBackend::DestroyLastFrame(void)
+	{
+		if (lastFrame.image != VK_NULL_HANDLE)  { vkDestroyImage(device, lastFrame.image, nullptr); }
+		if (lastFrame.memory != VK_NULL_HANDLE) { vkFreeMemory(device, lastFrame.memory, nullptr); }
+
+		lastFrame = BufferRegion{};
+	}
+
+	void VulkanBackend::SaveLastFrame(void)
+	{
+		if (!lastFrame.isLive)
+		{
+			return;
+		}
+
+		// Copy the whole frame, after everything drawn into it
+		//
+		// Recorded last, just before the image is handed over for presenting. The two are
+		// made at the same size, and only a swapchain rebuild changes that, which
+		// recreates this as well.
+		EndRenderPassIfActive();
+		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		TransitionRegion(lastFrame, lastFrame.hasContent ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		VkImageCopy copy{};
+		copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.layerCount = 1;
+		copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.dstSubresource.layerCount = 1;
+		copy.extent = { std::min(lastFrame.width, swapchainExtent.width), std::min(lastFrame.height, swapchainExtent.height), 1 };
+
+		vkCmdCopyImage(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, lastFrame.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+		// Leave it ready to be read
+		TransitionRegion(lastFrame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		lastFrame.hasContent = true;
 	}
 
 	bool VulkanBackend::IsBufferRegion(uint32_t handle) const

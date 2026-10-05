@@ -610,8 +610,15 @@ namespace scvk
 		// Create what depends on the format, the images and the extent
 		//
 		// The render pass depends on the swapchain format, and the framebuffers on the
-		// images and extent, so both belong here rather than in one-time setup.
-		return CreateDepthResources() && CreateRenderPass() && CreateFramebuffers();
+		// images and extent, so both belong here rather than in one-time setup. The copy
+		// of the last frame is optional, so its failure does not fail the swapchain.
+		if (!CreateDepthResources() || !CreateRenderPass() || !CreateFramebuffers())
+		{
+			return false;
+		}
+
+		CreateLastFrame();
+		return true;
 	}
 
 	bool VulkanBackend::CreateRenderPass(void)
@@ -772,6 +779,7 @@ namespace scvk
 
 		DestroyFramebuffers();
 		DestroyDepthResources();
+		DestroyLastFrame();
 
 		if (swapchain != VK_NULL_HANDLE)
 		{
@@ -1047,8 +1055,9 @@ namespace scvk
 		// Safe here: the fence wait above means the previous submit is done.
 		FlushRetiredImages();
 
-		isFrameActive = true;
-		stagingUsed   = 0;
+		isFrameActive         = true;
+		hasSubmittedImageWait = false;
+		stagingUsed           = 0;
 		ArenaRewind(vertexArena);
 		ArenaRewind(indexArena);
 
@@ -1058,6 +1067,76 @@ namespace scvk
 		// is cheaper than preserving them.
 		currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		return true;
+	}
+
+	bool VulkanBackend::SubmitFrameSoFar(void)
+	{
+		if (!isFrameActive)
+		{
+			return false;
+		}
+
+		// Submit what has been recorded
+		//
+		// Only the first submit of a frame waits for its swapchain image. That wait
+		// consumes the semaphore, so a second one would never be satisfied. Nothing is
+		// signalled for presenting either: the rest of the frame does that when it ends.
+		EndRenderPassIfActive();
+
+		VkResult result = vkEndCommandBuffer(commandBuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkEndCommandBuffer", result);
+			isFrameActive = false;
+			return false;
+		}
+
+		VkPipelineStageFlags waitStages = ACQUIRE_STAGES;
+
+		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		submit.waitSemaphoreCount = hasSubmittedImageWait ? 0u : 1u;
+		submit.pWaitSemaphores    = &imageAvailableSemaphore;
+		submit.pWaitDstStageMask  = &waitStages;
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers    = &commandBuffer;
+
+		vkResetFences(device, 1, &frameFence);
+
+		result = vkQueueSubmit(queue, 1, &submit, frameFence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkQueueSubmit", result);
+			isFrameActive = false;
+			return false;
+		}
+
+		hasSubmittedImageWait = true;
+
+		// Wait for it
+		//
+		// Unbounded, as for a capture. The image was acquired before any of this was
+		// recorded, so the work only waits on the GPU, and a readback is deliberate and
+		// rare.
+		vkWaitForFences(device, 1, &frameFence, VK_TRUE, UINT64_MAX);
+
+		// Carry on recording the same frame
+		//
+		// Nothing needs binding again: every draw binds its own pipeline, constants,
+		// textures, vertices and indices, and opening the render pass applies the viewport.
+		vkResetCommandBuffer(commandBuffer, 0);
+
+		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		result = vkBeginCommandBuffer(commandBuffer, &beginInformation);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkBeginCommandBuffer", result);
+			isFrameActive = false;
+			return false;
+		}
 
 		return true;
 	}
@@ -1897,6 +1976,114 @@ namespace scvk
 		vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 	}
 
+	bool VulkanBackend::ReadFramePixels(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t* outPixels)
+	{
+		if (isDead || outPixels == nullptr || width == 0 || height == 0)
+		{
+			return false;
+		}
+
+		// Choose what to read
+		//
+		// Mid-frame, the frame drawn so far, the way the DirectX driver reads its back
+		// buffer. Between frames the swapchain image already belongs to the display, so
+		// the copy of the frame last presented stands in. That is when the game takes a
+		// photo, expecting the frame it last showed.
+		bool const isBetweenFrames = !isFrameActive;
+
+		if (isBetweenFrames && !lastFrame.hasContent)
+		{
+			return false;
+		}
+
+		uint32_t const sourceWidth  = isBetweenFrames ? lastFrame.width : swapchainExtent.width;
+		uint32_t const sourceHeight = isBetweenFrames ? lastFrame.height : swapchainExtent.height;
+		VkFormat const sourceFormat = isBetweenFrames ? lastFrame.format : swapchainFormat;
+
+		if (x >= sourceWidth || y >= sourceHeight || width > sourceWidth - x || height > sourceHeight - y)
+		{
+			return false;
+		}
+
+		// Refuse a source that is not BGRA
+		//
+		// The caller wants BGRA bytes, and only B8G8R8A8_UNORM holds them in that order.
+		// Windows always offers it for the swapchain, so this is not expected to happen.
+		if (sourceFormat != VK_FORMAT_B8G8R8A8_UNORM)
+		{
+			LogNote("Vulkan: the frame is format %d, not B8G8R8A8_UNORM; not reading it back.", sourceFormat);
+			return false;
+		}
+
+		VkDeviceSize const bytes = VkDeviceSize{ width } * height * 4u;
+
+		if (!EnsureReadbackBuffer(bytes))
+		{
+			return false;
+		}
+
+		// Describe the copy, and the barrier that makes it visible to the host
+		//
+		// Both coordinates were checked against the image above, which is far below
+		// INT32_MAX, so they convert to offsets unchanged. The fence wait only says the
+		// copy has finished; reading its result on the host also needs the write made
+		// visible there.
+		VkBufferImageCopy copy{};
+		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.imageSubresource.layerCount = 1;
+		copy.imageOffset = { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 };
+		copy.imageExtent = { width, height, 1 };
+
+		VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+
+		// Read the last frame on commands of its own
+		//
+		// Its copy rests ready to be read. The barrier that left it so orders this read
+		// after the frame that wrote it, which may still be running, since barriers reach
+		// across submissions to the same queue.
+		if (isBetweenFrames)
+		{
+			BeginUploadCommands();
+			vkCmdCopyImageToBuffer(uploadCommandBuffer, lastFrame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+			vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+			SubmitUploadCommands();
+		}
+		else
+		{
+			// Or read the frame drawn so far, submitting it early to wait for it
+			EndRenderPassIfActive();
+			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+			vkCmdCopyImageToBuffer(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+			if (!SubmitFrameSoFar())
+			{
+				return false;
+			}
+		}
+
+		// Hand the pixels over with every alpha opaque
+		//
+		// The swapchain's alpha holds whatever blending left there, which is not part of
+		// the picture, so it is replaced the way SCGL does. The readback memory holds
+		// bytes.
+		uint8_t const* const source = static_cast<uint8_t const*>(readbackMapped);
+		size_t const pixelCount = size_t{ width } * height;
+
+		for (size_t i = 0; i < pixelCount; i++)
+		{
+			outPixels[i * 4u + 0u] = source[i * 4u + 0u];
+			outPixels[i * 4u + 1u] = source[i * 4u + 1u];
+			outPixels[i * 4u + 2u] = source[i * 4u + 2u];
+			outPixels[i * 4u + 3u] = 0xff;
+		}
+
+		return true;
+	}
+
 	void VulkanBackend::Present(void)
 	{
 		if (isDead)
@@ -1947,6 +2134,9 @@ namespace scvk
 			isCaptureRequested = false;
 		}
 
+		// Keep a copy for reading back between frames
+		SaveLastFrame();
+
 		// Finish and submit the frame
 		TransitionTo(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
@@ -1958,10 +2148,12 @@ namespace scvk
 			return;
 		}
 
+		// Wait for the image unless a readback already submitted part of the frame, which
+		// waited for it then
 		VkPipelineStageFlags waitStages = ACQUIRE_STAGES;
 
 		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-		submit.waitSemaphoreCount   = 1;
+		submit.waitSemaphoreCount   = hasSubmittedImageWait ? 0u : 1u;
 		submit.pWaitSemaphores      = &imageAvailableSemaphore;
 		submit.pWaitDstStageMask    = &waitStages;
 		submit.commandBufferCount   = 1;

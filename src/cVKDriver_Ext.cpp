@@ -44,6 +44,14 @@
 #include "Logger.h"
 #include "VulkanBackend.h"
 
+#include <cIGZBuffer.h>
+#include <cIGZFrameWork.h>
+#include <cIGZGraphicSystem.h>
+#include <cRZCOMDllDirector.h>
+
+#include <algorithm>
+#include <string.h>
+
 namespace scvk
 {
 	//// Constants
@@ -54,6 +62,52 @@ namespace scvk
 		// buffer.
 		constexpr int32_t GD_BUFFER_REGION_COLOUR = 0;
 		constexpr int32_t GD_BUFFER_REGION_DEPTH  = 1;
+
+		// The graphic system's service ID, as the game itself asks the framework for it
+		// (0x66d240) and as SCGL does.
+		constexpr uint32_t RZSRVID_GRAPHIC_SYSTEM = 0xC416025C;
+
+		// The flags the DirectX driver locks a snapshot buffer with around its copy
+		// (0x883c20): the dirty update the interface names, and 0x80, which it does not.
+		constexpr uint32_t SNAPSHOT_LOCK_FLAGS = cIGZBuffer::IsDirtyUpdate | 0x80u;
+
+		// What a snapshot buffer holds where the rectangle ran off the window, in the
+		// buffer's A8R8G8B8 byte order.
+		constexpr uint8_t OPAQUE_BLACK[4] = { 0x00, 0x00, 0x00, 0xff };
+	}
+
+	//// Private Functions
+
+	namespace
+	{
+		/** A new, uninitialised buffer from the game's graphic system, or null. */
+		cIGZBuffer* CreateGameBuffer(void)
+		{
+			cIGZFrameWork* const frameWork = RZGetFrameWork();
+			if (frameWork == nullptr)
+			{
+				return nullptr;
+			}
+
+			// The framework hands the service out as a void pointer to the interface
+			// asked for, which is the graphic system's.
+			void* service = nullptr;
+			if (!frameWork->GetSystemService(RZSRVID_GRAPHIC_SYSTEM, GZIID_cIGZGraphicSystem, &service) || service == nullptr)
+			{
+				return nullptr;
+			}
+
+			cIGZGraphicSystem* const graphicSystem = static_cast<cIGZGraphicSystem*>(service);
+
+			cIGZBuffer* buffer = nullptr;
+			if (!graphicSystem->CreateBuffer(&buffer))
+			{
+				buffer = nullptr;
+			}
+
+			graphicSystem->Release();
+			return buffer;
+		}
 	}
 
 	//// Public API
@@ -170,9 +224,126 @@ namespace scvk
 	cIGZBuffer* cVKDriver::CopyColorBuffer(int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer)
 	{
 		// Nominally an extension, but declining it in QueryInterface crashes the game
-		// during load, so it has to exist. The caller's buffer is handed straight back
-		// untouched: a screenshot is blank rather than the game faulting on a null.
+		// during load, so it has to exist. This follows the DirectX driver (0x883950):
+		// the game usually passes no buffer and expects one back holding the rectangle,
+		// with its top left corner in the buffer's.
 		SCVK_CALL("%d,%d %dx%d, %p", x, y, width, height, buffer);
+
+		if (width <= 0 || height <= 0)
+		{
+			return buffer;
+		}
+
+		// Clip the rectangle to the window
+		//
+		// The window is far below INT32_MAX, so its size converts unchanged.
+		int32_t const frameWidth  = static_cast<int32_t>(vulkan->FrameWidth());
+		int32_t const frameHeight = static_cast<int32_t>(vulkan->FrameHeight());
+
+		int32_t const left   = std::max(x, 0);
+		int32_t const top    = std::max(y, 0);
+		int32_t const right  = std::min(x + width, frameWidth);
+		int32_t const bottom = std::min(y + height, frameHeight);
+
+		bool const isWhollyInside = left == x && top == y && right == x + width && bottom == y + height;
+		bool const hasOverlap     = right > left && bottom > top;
+
+		// Read the screen
+		//
+		// The extents are positive once there is an overlap, and both corners are inside
+		// the window, so not negative.
+		uint32_t const copyWidth  = hasOverlap ? static_cast<uint32_t>(right - left) : 0u;
+		uint32_t const copyHeight = hasOverlap ? static_cast<uint32_t>(bottom - top) : 0u;
+
+		std::vector<uint8_t> pixels(size_t{ copyWidth } * copyHeight * 4u);
+
+		bool const isRead = hasOverlap && vulkan->ReadFramePixels(static_cast<uint32_t>(left), static_cast<uint32_t>(top), copyWidth, copyHeight, pixels.data());
+
+		// Carry on with a black picture when nothing could be read
+		//
+		// The DirectX driver hands the caller's buffer back unchanged when it cannot lock
+		// its back buffer, which is null for a photo, and the game's photo code uses the
+		// result without checking it. An earlier version did the same and the game
+		// crashed taking a photo.
+		if (hasOverlap && !isRead)
+		{
+			LogNote("CopyColorBuffer: the screen could not be read back; handing over black.");
+		}
+
+		// Make a buffer when the game passes none, sized to the rectangle
+		//
+		// The width and height were checked positive above.
+		if (buffer == nullptr)
+		{
+			buffer = CreateGameBuffer();
+
+			if (buffer == nullptr)
+			{
+				LogNote("CopyColorBuffer: the graphic system made no buffer.");
+				return nullptr;
+			}
+		}
+
+		if (!buffer->IsReady() && !buffer->Init(static_cast<uint32_t>(width), static_cast<uint32_t>(height), cGZBufferColorType::A8R8G8B8, 32))
+		{
+			return buffer;
+		}
+
+		// Refuse a buffer that is not four bytes a pixel
+		//
+		// The DirectX driver writes 32-bit pixels whatever the buffer is. Every buffer it
+		// makes itself is A8R8G8B8, so only one the game passes in could differ.
+		if (buffer->GetBytesPerPixel() != 4 || !buffer->Lock(SNAPSHOT_LOCK_FLAGS))
+		{
+			return buffer;
+		}
+
+		// Find its pixels
+		//
+		// The interface declares the surface address as a 32-bit integer, which in this
+		// 32-bit process is the pointer itself.
+		uint8_t* const bits          = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(buffer->GetColorSurfaceBits()));
+		uint32_t const stride        = buffer->GetColorSurfaceStride();
+		uint32_t const bufferRows    = static_cast<uint32_t>(std::max(buffer->Height(), 0));
+		uint32_t const bufferColumns = static_cast<uint32_t>(std::max(buffer->Width(), 0));
+
+		if (bits != nullptr)
+		{
+			// Clear it to opaque black when the rectangle ran off the window
+			//
+			// What the DirectX driver does, so the part with nothing behind it is not
+			// whatever the buffer last held. The same goes for a screen that could not be
+			// read at all.
+			if (!isWhollyInside || !isRead)
+			{
+				for (uint32_t row = 0; row < bufferRows; row++)
+				{
+					for (uint32_t column = 0; column < bufferColumns; column++)
+					{
+						memcpy(bits + size_t{ row } * stride + size_t{ column } * 4u, OPAQUE_BLACK, sizeof(OPAQUE_BLACK));
+					}
+				}
+			}
+
+			// Copy the rows into its top left corner
+			//
+			// Kept inside the buffer, which the DirectX driver does not check.
+			uint32_t const rows    = isRead ? std::min(copyHeight, bufferRows) : 0u;
+			uint32_t const columns = std::min(copyWidth, bufferColumns);
+
+			for (uint32_t row = 0; row < rows; row++)
+			{
+				memcpy(bits + size_t{ row } * stride, pixels.data() + size_t{ row } * copyWidth * 4u, size_t{ columns } * 4u);
+			}
+		}
+
+		buffer->Unlock(SNAPSHOT_LOCK_FLAGS);
+
+		// Say what was handed over
+		//
+		// The call trace is long spent by the time anyone takes a photo, and these are
+		// rare enough to log every one.
+		LogNote("CopyColorBuffer: %d,%d %dx%d into a %dx%d buffer, %s.", x, y, width, height, buffer->Width(), buffer->Height(), isRead ? "read from the screen" : "black");
 		return buffer;
 	}
 
