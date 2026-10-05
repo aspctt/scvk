@@ -15,6 +15,13 @@ build/
 obj/
 logs/
 
+# Release archives and their notes
+# Built from a Release build for each version. Regenerated on demand, so there is no reason
+# to carry them in history. Not Release/, which is MSBuild's output for that configuration.
+Releases/
+*.zip
+*.7z
+
 ###################################################################################################
 # Local-only reference material. NOT for publication.
 #
