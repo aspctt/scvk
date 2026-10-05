@@ -169,6 +169,10 @@ screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
 during a session. Press Scroll Lock in game to save one on demand, along with
 the saved scene and its depth (`scvk-key-N-*`).
 
+Every 300 frames the log also notes the frame rate, the slowest frame, and how
+many textures are loaded and how many were created, deleted or uploaded since
+the last note.
+
 To see a debug view, put an empty file with one of these names next to
 `scvk.dll`, and delete it to go back to normal:
 

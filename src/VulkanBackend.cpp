@@ -55,6 +55,10 @@ namespace scvk
 		// A heartbeat line this many frames apart.
 		constexpr uint64_t HEARTBEAT_FRAMES = 300;
 
+		// A gap between presents long enough to see as a hitch. The game's own frame caps
+		// go no lower than 15 a second, about 67 ms, so a capped frame never counts.
+		constexpr int64_t SLOW_FRAME_MILLISECONDS = 100;
+
 		// The smallest limits every Vulkan implementation has to accept: a viewport at
 		// least 4096 wide and high, and bounds of at least -8192 to 8191.
 		constexpr int32_t MAXIMUM_VIEWPORT_DIMENSION = 4096;
@@ -290,7 +294,7 @@ namespace scvk
 				score = 1;
 			}
 
-			LogNote("Vulkan: found device \"%s\" (type %d, API %u.%u.%u)", properties.deviceName, properties.deviceType, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion));
+			LogNote("Vulkan: found device \"%s\" (type %d, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
 
 			if (score > bestScore)
 			{
@@ -311,6 +315,27 @@ namespace scvk
 		apiVersion = version;
 
 		LogNote("Vulkan: selected \"%s\".", deviceName.c_str());
+
+		// Record how far textures can go on it
+		//
+		// Each texture is an allocation of its own, so a large texBindMaxFree runs into
+		// the allocation limit or the memory itself, whichever comes first.
+		maximumMemoryAllocations = properties.limits.maxMemoryAllocationCount;
+
+		VkPhysicalDeviceMemoryProperties memory{};
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
+
+		VkDeviceSize largestLocalHeap = 0;
+		for (uint32_t i = 0; i < memory.memoryHeapCount; i++)
+		{
+			bool const isLocal = (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+			if (isLocal && memory.memoryHeaps[i].size > largestLocalHeap)
+			{
+				largestLocalHeap = memory.memoryHeaps[i].size;
+			}
+		}
+
+		LogNote("Vulkan: %llu MB of device-local memory, at most %u memory allocations.", largestLocalHeap / (1024u * 1024u), maximumMemoryAllocations);
 		return true;
 	}
 
@@ -1598,6 +1623,19 @@ namespace scvk
 
 		lastHeartbeatTicks = now.QuadPart;
 
+		// Report the worst gap between presents, then start the next interval
+		if (ticksPerSecond > 0)
+		{
+			// The tick counts are far below the range where a double loses whole ticks.
+			double const slowestMilliseconds = static_cast<double>(slowestFrameTicks) * 1000.0 / static_cast<double>(ticksPerSecond);
+			LogNote("Vulkan: slowest frame %.0f ms, %u over %lld ms.", slowestMilliseconds, slowFrames, SLOW_FRAME_MILLISECONDS);
+		}
+
+		slowestFrameTicks = 0;
+		slowFrames        = 0;
+
+		LogTextureTraffic();
+
 		if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 		{
 			LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);
@@ -2213,6 +2251,34 @@ namespace scvk
 			Fail("vkQueuePresentKHR", result);
 			return;
 		}
+
+		// Time the gap since the last present
+		LARGE_INTEGER now{};
+		QueryPerformanceCounter(&now);
+
+		if (ticksPerSecond == 0)
+		{
+			LARGE_INTEGER frequency{};
+			QueryPerformanceFrequency(&frequency);
+			ticksPerSecond = frequency.QuadPart;
+		}
+
+		if (lastPresentTicks != 0 && now.QuadPart > lastPresentTicks)
+		{
+			int64_t const frameTicks = now.QuadPart - lastPresentTicks;
+
+			if (frameTicks > slowestFrameTicks)
+			{
+				slowestFrameTicks = frameTicks;
+			}
+
+			if (frameTicks * 1000 > SLOW_FRAME_MILLISECONDS * ticksPerSecond)
+			{
+				slowFrames++;
+			}
+		}
+
+		lastPresentTicks = now.QuadPart;
 
 		// Count the frame
 		presentedFrames++;

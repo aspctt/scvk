@@ -154,6 +154,9 @@ namespace scvk
 			bool            isCompressed = false;
 			bool            isLive       = false;
 
+			// The size of the memory backing the image, for the heartbeat's totals.
+			VkDeviceSize memoryBytes = 0;
+
 			// The highest level the game has actually filled, plus one. A declared level
 			// that was never uploaded is undefined memory, and sampling it is
 			// indistinguishable from sampling black.
@@ -274,6 +277,9 @@ namespace scvk
 		std::string              apiVersion;
 		bool                     isDead         = false;
 
+		// Every texture is one allocation, and Vulkan only promises 4096 of them.
+		uint32_t maximumMemoryAllocations = 0;
+
 		// The window, the swapchain and what renders into it
 		void*                      windowHandle    = nullptr;
 		VkSurfaceKHR               surface         = VK_NULL_HANDLE;
@@ -303,6 +309,13 @@ namespace scvk
 
 		// The performance counter at the last heartbeat, for the frame rate it reports.
 		int64_t lastHeartbeatTicks = 0;
+
+		// The gaps between presents since the last heartbeat. A stall shows up here even
+		// when the average rate hides it, which is what a texture reload looks like.
+		int64_t  ticksPerSecond    = 0;
+		int64_t  lastPresentTicks  = 0;
+		int64_t  slowestFrameTicks = 0;
+		uint32_t slowFrames        = 0;
 
 		// Reused when a Flush arrives with no frame started, so the swapchain keeps
 		// cycling instead of stalling.
@@ -440,6 +453,14 @@ namespace scvk
 		uint64_t uploadsAfterDraw      = 0;
 		int      hazardNotesRemaining  = 40;
 		int      textureDumpsRemaining = 8;
+
+		// Texture traffic since the last heartbeat, which says how often the game reloads
+		// textures and so whether its texture cache (texBindMaxFree) is big enough.
+		uint32_t     texturesCreated    = 0;
+		uint32_t     texturesDestroyed  = 0;
+		uint32_t     textureUploads     = 0;
+		VkDeviceSize textureUploadBytes = 0;
+		int64_t      textureWorkTicks   = 0;
 
 		// Handle n is index n - 1, matching what the game is handed back, and leaving 0
 		// free to mean failure.
@@ -612,6 +633,9 @@ namespace scvk
 
 		/** Converts one level's texels into the image's own layout. Returns false for a format it cannot read. */
 		bool StageTexels(Texture const& texture, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels, std::vector<uint8_t>& outStaged);
+
+		/** The heartbeat's line on live textures and the traffic since the last one. */
+		void LogTextureTraffic(void);
 
 		/** Writes an uploaded interface texture to a file, a handful of times per session. */
 		void DumpUploadedTexture(Texture const& texture, uint32_t handle, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);

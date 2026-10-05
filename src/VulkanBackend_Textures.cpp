@@ -36,6 +36,36 @@
 
 namespace scvk
 {
+	//// Types
+
+	namespace
+	{
+		/**
+		 * Adds the time between its construction and its destruction to a running total,
+		 * so a function with several early returns is timed on every path.
+		 */
+		class TickAccumulator
+		{
+		public:
+			explicit TickAccumulator(int64_t& total) : total(total), startTicks(ReadTicks()) {}
+			~TickAccumulator() { total += ReadTicks() - startTicks; }
+
+			TickAccumulator(TickAccumulator const&) = delete;
+			TickAccumulator& operator=(TickAccumulator const&) = delete;
+
+		private:
+			static int64_t ReadTicks(void)
+			{
+				LARGE_INTEGER now{};
+				QueryPerformanceCounter(&now);
+				return now.QuadPart;
+			}
+
+			int64_t& total;
+			int64_t  startTicks;
+		};
+	}
+
 	//// Constants
 
 	namespace
@@ -65,6 +95,10 @@ namespace scvk
 
 		// A texture this small keeps the start of its top level for the log.
 		constexpr uint32_t TINY_TEXTURE_TEXELS = 16;
+
+		// A live texture no draw has sampled for this many frames counts as idle. It
+		// matches the heartbeat interval, so idle means unused since the last heartbeat.
+		constexpr uint64_t IDLE_TEXTURE_FRAMES = 300;
 	}
 
 	//// Private Functions
@@ -524,6 +558,59 @@ namespace scvk
 		LogNote("Vulkan: wrote texture %u (%ux%u) to %s", handle, width, height, path);
 	}
 
+	void VulkanBackend::LogTextureTraffic(void)
+	{
+		// Total the live textures, and the idle ones among them
+		//
+		// Idle means no draw has sampled it lately. That covers textures the game released
+		// into its texture cache, but mostly ones it still holds for things out of view: an
+		// unmodded city kept 43 MB idle with an 8 MB cache.
+		uint32_t     liveCount = 0;
+		VkDeviceSize liveBytes = 0;
+		uint32_t     idleCount = 0;
+		VkDeviceSize idleBytes = 0;
+
+		for (Texture const& texture : textures)
+		{
+			if (!texture.isLive)
+			{
+				continue;
+			}
+
+			liveCount++;
+			liveBytes += texture.memoryBytes;
+
+			bool const isIdle = (texture.lastDrawnFrame == UINT64_MAX) || (texture.lastDrawnFrame + IDLE_TEXTURE_FRAMES <= presentedFrames);
+			if (isIdle)
+			{
+				idleCount++;
+				idleBytes += texture.memoryBytes;
+			}
+		}
+
+		// The tick counts are far below the range where a double loses whole ticks.
+		double const workMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(textureWorkTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
+
+		// Byte totals stay far below the range where a double loses whole megabytes.
+		double const megabyte = 1024.0 * 1024.0;
+		LogNote("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, workMilliseconds);
+
+		// Warn when the textures near the device's allocation limit
+		//
+		// Each texture is an allocation of its own, and going past the limit is undefined.
+		// Some drivers allow billions; the spec only promises 4096.
+		if (maximumMemoryAllocations != 0 && static_cast<uint64_t>(liveCount) * 10u >= static_cast<uint64_t>(maximumMemoryAllocations) * 9u)
+		{
+			LogNote("Vulkan: WARNING: %u live textures against a limit of %u memory allocations.", liveCount, maximumMemoryAllocations);
+		}
+
+		texturesCreated    = 0;
+		texturesDestroyed  = 0;
+		textureUploads     = 0;
+		textureUploadBytes = 0;
+		textureWorkTicks   = 0;
+	}
+
 	void VulkanBackend::BeginUploadCommands(void)
 	{
 		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -558,6 +645,8 @@ namespace scvk
 		{
 			return 0;
 		}
+
+		TickAccumulator const timer(textureWorkTicks);
 
 		// Create the image
 		Texture texture;
@@ -610,6 +699,7 @@ namespace scvk
 		}
 
 		vkBindImageMemory(device, texture.image, texture.memory, 0);
+		texture.memoryBytes = requirements.size;
 
 		// Create its view
 		VkImageViewCreateInfo viewInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -677,6 +767,7 @@ namespace scvk
 		SubmitUploadCommands();
 
 		// Hand out the next slot
+		texturesCreated++;
 		textures.push_back(texture);
 		return textures.size() - 1;
 	}
@@ -693,6 +784,8 @@ namespace scvk
 		{
 			return;
 		}
+
+		TickAccumulator const timer(textureWorkTicks);
 
 		// Count an upload that lands after a draw this frame already recorded
 		if (texture.lastDrawnFrame == presentedFrames)
@@ -746,6 +839,9 @@ namespace scvk
 		}
 
 		memcpy(uploadMapped, staged.data(), staged.size());
+
+		textureUploads++;
+		textureUploadBytes += staged.size();
 
 		// Copy it into the level, out of and back into the sampled layout
 		BeginUploadCommands();
@@ -851,6 +947,7 @@ namespace scvk
 		retired.descriptor = texture.descriptor;
 
 		retiredImages.push_back(retired);
+		texturesDestroyed++;
 
 		// Clear the slot at once, so the handle no longer resolves to anything
 		texture = Texture{};
