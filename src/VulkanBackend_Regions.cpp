@@ -522,10 +522,19 @@ namespace scvk
 			return;
 		}
 
+		// Retire the image rather than destroying it here
+		//
+		// The game deletes its regions as it shuts down, while the frame it last submitted
+		// may still be copying from them, which the validation layers reported. A frame
+		// in progress may also have recorded copies that are not submitted yet, so the
+		// image has to outlive that frame too, the same as a deleted texture.
 		BufferRegion& region = bufferRegions[handle - 1];
 
-		if (region.image != VK_NULL_HANDLE)  { vkDestroyImage(device, region.image, nullptr); }
-		if (region.memory != VK_NULL_HANDLE) { vkFreeMemory(device, region.memory, nullptr); }
+		RetiredImage retired;
+		retired.image  = region.image;
+		retired.memory = region.memory;
+
+		retiredImages.push_back(retired);
 
 		region = BufferRegion{};
 	}

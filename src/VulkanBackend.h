@@ -159,8 +159,11 @@ namespace scvk
 			uint64_t lastDrawnFrame = UINT64_MAX;
 		};
 
-		/** A deleted texture's objects, waiting for the GPU to finish with them. */
-		struct RetiredTexture
+		/**
+		 * A deleted texture's or buffer region's objects, waiting for the GPU to finish
+		 * with them. A region has no view or descriptor, so those stay null.
+		 */
+		struct RetiredImage
 		{
 			VkImage         image      = VK_NULL_HANDLE;
 			VkDeviceMemory  memory     = VK_NULL_HANDLE;
@@ -381,7 +384,7 @@ namespace scvk
 		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by one instead
 		// of needing its own shader and pipeline.
 		std::vector<Texture>        textures;
-		std::vector<RetiredTexture> retiredTextures;
+		std::vector<RetiredImage>   retiredImages;
 		std::vector<SamplerEntry>   samplers;
 		uint32_t                    currentTexture  = 0;
 		uint32_t                    currentTexture1 = 0;
@@ -550,7 +553,7 @@ namespace scvk
 		void DestroyTextures(void);
 
 		/** Destroys everything retired since the last frame. */
-		void FlushRetiredTextures(void);
+		void FlushRetiredImages(void);
 
 		/** The sampler for one set of filter and wrap parameters. */
 		VkDescriptorSet GetSamplerSet(uint32_t const parameters[4]);

@@ -252,8 +252,6 @@ namespace scvk
 
 	void VulkanBackend::DestroyTextures(void)
 	{
-		FlushRetiredTextures();
-
 		for (Texture& texture : textures)
 		{
 			if (texture.view != VK_NULL_HANDLE)   { vkDestroyImageView(device, texture.view, nullptr); }
@@ -268,11 +266,11 @@ namespace scvk
 		currentTexture1 = 0;
 	}
 
-	void VulkanBackend::FlushRetiredTextures(void)
+	void VulkanBackend::FlushRetiredImages(void)
 	{
-		// Called once a frame's fence has been waited on, which means every command that
-		// could still have been reading these has completed.
-		for (RetiredTexture const& retired : retiredTextures)
+		// Called once a frame's fence, or the whole device, has been waited on, which means
+		// every command that could still have been reading these has completed.
+		for (RetiredImage const& retired : retiredImages)
 		{
 			if (retired.view != VK_NULL_HANDLE)   { vkDestroyImageView(device, retired.view, nullptr); }
 			if (retired.image != VK_NULL_HANDLE)  { vkDestroyImage(device, retired.image, nullptr); }
@@ -286,7 +284,7 @@ namespace scvk
 			}
 		}
 
-		retiredTextures.clear();
+		retiredImages.clear();
 	}
 
 	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t const parameters[4])
@@ -846,13 +844,13 @@ namespace scvk
 		// the game deletes textures hundreds of times a session.
 		Texture& texture = textures[handle];
 
-		RetiredTexture retired;
+		RetiredImage retired;
 		retired.image      = texture.image;
 		retired.memory     = texture.memory;
 		retired.view       = texture.view;
 		retired.descriptor = texture.descriptor;
 
-		retiredTextures.push_back(retired);
+		retiredImages.push_back(retired);
 
 		// Clear the slot at once, so the handle no longer resolves to anything
 		texture = Texture{};

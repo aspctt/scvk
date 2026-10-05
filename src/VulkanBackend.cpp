@@ -814,12 +814,14 @@ namespace scvk
 	{
 		if (device != VK_NULL_HANDLE)
 		{
-			// Destroy what renders, then the textures and their descriptors
+			// Destroy what renders, then everything retired, then the textures and their
+			// descriptors
 			vkDeviceWaitIdle(device);
 
 			DestroySwapchain();
 			DestroyAllBufferRegions();
 			DestroyPipelines();
+			FlushRetiredImages();
 			DestroyTextures();
 
 			if (uploadFence != VK_NULL_HANDLE) { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
@@ -1043,7 +1045,7 @@ namespace scvk
 		// Release what the previous frame was using
 		//
 		// Safe here: the fence wait above means the previous submit is done.
-		FlushRetiredTextures();
+		FlushRetiredImages();
 
 		isFrameActive = true;
 		stagingUsed   = 0;
