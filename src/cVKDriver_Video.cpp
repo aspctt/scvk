@@ -122,6 +122,19 @@ namespace scvk
 			}
 
 			isDisplayModeChanged = true;
+
+			// Report the mode the display took
+			//
+			// The request names no refresh rate, as SCGL's does not, so Windows picks one.
+			// Off the monitor's native size it is worth knowing which.
+			DEVMODEA current{};
+			current.dmSize = sizeof(current);
+
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &current) != 0)
+			{
+				LogNote("Fullscreen: the display is now %lux%lu %lubpp at %lu Hz.", current.dmPelsWidth, current.dmPelsHeight, current.dmBitsPerPel, current.dmDisplayFrequency);
+			}
+
 			return true;
 		}
 
@@ -220,6 +233,7 @@ namespace scvk
 					}
 
 					CoverMainMonitor(window);
+					LogWindowState(window, "back in front");
 				}
 				else
 				{
