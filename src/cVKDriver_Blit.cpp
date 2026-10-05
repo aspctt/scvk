@@ -23,20 +23,22 @@
  * Six entry points covering the cross product of stretched/unstretched and
  * plain/alpha/alpha-modulated.
  *
- * An earlier version of this comment guessed these were incidental. The first real trace
- * says otherwise: StretchBlt is how the game puts its startup and loading screens on the
- * display. Every call is identical,
+ * The first traces, from a build that could not yet draw textures, had the game put its
+ * startup screen on the display with StretchBlt. Every call was identical,
  *
  *     StretchBlt(576,240 768x600 from 768x600, fmt 3, type 1)
  *
- * which is a 768x600 image centred in a 1920x1080 window, unscaled. It is called
- * continuously while the game sits on that screen, and refusing it accounted for 899,697
- * log lines in a single session.
+ * which is a 768x600 image centred in a 1920x1080 window, unscaled, and it was called
+ * continuously while the game sat on that screen.
  *
- * So these are on the critical path for anything visible before a city loads. They are
- * implemented as a staged upload followed by vkCmdCopyBufferToImage straight into the
- * swapchain image, which works because the game's BGRA8 pixels match the swapchain format
- * exactly. No conversion, no shader, no render pass.
+ * Since textures work the game draws that screen as textured tiles in a 768x600 viewport
+ * instead, and no later session has called any of these. The DirectX driver implements
+ * none of the six either: each only sets the not supported error (0x882050 to 0x882080).
+ * So this is a fallback, kept for the case where the game takes that path again.
+ *
+ * They are implemented as a staged upload followed by vkCmdCopyBufferToImage straight into
+ * the swapchain image, which works because the game's BGRA8 pixels match the swapchain
+ * format exactly. No conversion, no shader, no render pass.
  *
  * One thing remains unresolved: the interface hands over two void pointers and names
  * neither. See UploadBlit.

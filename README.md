@@ -21,7 +21,7 @@ few visual bugs left.
 | Terrain, buildings, interface | Working |
 | Textures, blending, depth | Working |
 | Day and night lighting, cloud shadows | Working |
-| Loading screens | Working, unscaled only |
+| Loading screens | Working |
 | Fog | Not yet |
 | In-game screenshots | Not yet, they come out blank |
 
