@@ -61,6 +61,25 @@ namespace scvk
 		// The tint is reported quantised to eighths, so the day and night cycle reports
 		// as a handful of steps rather than once per frame.
 		constexpr float TINT_REPORT_STEPS = 8.0f;
+
+		// The game's fog parameter types, in the order of SCGL's table and of the
+		// DirectX driver's switch: mode, colour, density, start, end. Only the mode
+		// arrives as an integer.
+		constexpr uint32_t GD_FOG_MODE    = 0;
+		constexpr uint32_t GD_FOG_COLOUR  = 1;
+		constexpr uint32_t GD_FOG_DENSITY = 2;
+		constexpr uint32_t GD_FOG_START   = 3;
+		constexpr uint32_t GD_FOG_END     = 4;
+
+		// The game's fog modes run exponential, squared exponential, linear.
+		constexpr uint32_t GD_FOG_MODE_LINEAR = 2;
+
+		// The fog the 3D view's constructor (0x7c9b10) sets up and sends whenever its own
+		// fog is switched on: linear and white, from 10000 to 15000 units in front of the
+		// camera. A city sits around 9500 units out.
+		constexpr float FORCED_FOG_START     = 10000.0f;
+		constexpr float FORCED_FOG_END       = 15000.0f;
+		constexpr float FORCED_FOG_COLOUR[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	}
 
 	//// Private Functions
@@ -99,6 +118,11 @@ namespace scvk
 		if (gdCapability == kGDCapability_DepthTest)
 		{
 			PushDepthState();
+		}
+
+		if (gdCapability == kGDCapability_Fog)
+		{
+			PushFog();
 		}
 	}
 
@@ -162,6 +186,22 @@ namespace scvk
 		// vertex colour wherever diffuse is mapped. scvk did that once, and it washed the
 		// sea out to white and brightened the shaded cliff faces by half.
 		vulkan->SetSceneTint(colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient, isAlphaFromVertexColour);
+	}
+
+	void cVKDriver::PushFog(void)
+	{
+		// Stand in the 3D view's own fog while the marker forces it
+		//
+		// Only where the game has the fog off, so fog the game does send still draws as
+		// sent. The interface lies at or just behind the camera and never reaches the
+		// start distance, so it stays clear.
+		if (shouldForceFog && !isCapabilityEnabled[kGDCapability_Fog])
+		{
+			vulkan->SetFog(true, GD_FOG_MODE_LINEAR, 1.0f, FORCED_FOG_START, FORCED_FOG_END, FORCED_FOG_COLOUR);
+			return;
+		}
+
+		vulkan->SetFog(isCapabilityEnabled[kGDCapability_Fog], fogMode, fogDensity, fogStart, fogEnd, fogColour);
 	}
 
 	//// Public API
@@ -290,11 +330,70 @@ namespace scvk
 	void cVKDriver::Fog(uint32_t gdFogParameterType, uint32_t gdFogParameter)
 	{
 		SCVK_CALL("%u, %u", gdFogParameterType, gdFogParameter);
+
+		// Only the mode is an integer
+		//
+		// The DirectX driver refuses the other types through this overload too. The game
+		// sets linear fog, and only when its 3D view's fog is on.
+		if (gdFogParameterType != GD_FOG_MODE || gdFogParameter > GD_FOG_MODE_LINEAR)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		fogMode = gdFogParameter;
+		PushFog();
 	}
 
 	void cVKDriver::Fog(uint32_t gdFogParameterType, float const* parameters)
 	{
 		SCVK_CALL("%u, %p", gdFogParameterType, parameters);
+
+		if (parameters == nullptr)
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+
+		// Record the parameter
+		//
+		// OpenGL clamps each colour component to 0 to 1 as it is set, and refuses a
+		// negative density (OpenGL 2.1 spec, section 3.10).
+		switch (gdFogParameterType)
+		{
+		case GD_FOG_COLOUR:
+			for (int component = 0; component < 4; component++)
+			{
+				float const value = parameters[component];
+				fogColour[component] = (value < 0.0f) ? 0.0f : ((value > 1.0f) ? 1.0f : value);
+			}
+
+			break;
+
+		case GD_FOG_DENSITY:
+			if (parameters[0] < 0.0f)
+			{
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+
+			fogDensity = parameters[0];
+			break;
+
+		case GD_FOG_START:
+			fogStart = parameters[0];
+			break;
+
+		case GD_FOG_END:
+			fogEnd = parameters[0];
+			break;
+
+		default:
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		PushFog();
 	}
 
 	void cVKDriver::ColorMultiplier(float red, float green, float blue)

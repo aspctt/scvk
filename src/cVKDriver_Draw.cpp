@@ -85,6 +85,15 @@ namespace scvk
 		}
 
 		vulkan->SetTransform(modelViewProjection);
+
+		// Hand over the fog's distance row
+		//
+		// The fog measures distance as the depth in front of the camera, minus the
+		// eye-space z, as Direct3D does: the game's DirectX driver loads the modelview as
+		// the world matrix under a view matrix that flips z. Eye z is the modelview's
+		// third row, which column-major storage spreads across every fourth float.
+		float const fogDistanceRow[4] = { -modelViewMatrix[2], -modelViewMatrix[6], -modelViewMatrix[10], -modelViewMatrix[14] };
+		vulkan->SetFogDistanceRow(fogDistanceRow);
 	}
 
 	void cVKDriver::PushStageCoordinates(void)

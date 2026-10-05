@@ -338,9 +338,21 @@ namespace scvk
 		uint32_t    vertexStride  = 0;
 		void const* vertexPointer = nullptr;
 
+		// The fog, in OpenGL's defaults until the game sets it: exponential, density one,
+		// from zero to one, transparent black. The mode is the game's own numbering, 0
+		// exponential, 1 squared exponential, 2 linear.
+		uint32_t fogMode      = 0;
+		float    fogDensity   = 1.0f;
+		float    fogStart     = 0.0f;
+		float    fogEnd       = 1.0f;
+		float    fogColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
 		// Set by the scvk-skip-cloud-shadows marker file, to see the picture without that
 		// pass.
 		bool shouldSkipCloudShadows = false;
+
+		// Set by the scvk-force-fog marker file, to draw the fog the game never asks for.
+		bool shouldForceFog = false;
 
 		// Configurations already reported once, and the last multitextured one, so an
 		// unchanged one costs a compare rather than a search.
@@ -458,6 +470,9 @@ namespace scvk
 
 		/** Forwards the ambient light and where the lit colour and alpha come from. */
 		void PushLighting(void);
+
+		/** Forwards the fog, or the 3D view's own while the marker forces it. */
+		void PushFog(void);
 
 		// Draws, in cVKDriver_Draw.cpp
 

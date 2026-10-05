@@ -63,6 +63,10 @@ namespace scvk
 		constexpr char const* DEBUG_PASSES_MARKER       = "scvk-debug-passes";
 		constexpr char const* SKIP_CLOUD_SHADOWS_MARKER = "scvk-skip-cloud-shadows";
 
+		// Draws the fog the game's 3D view would send if its fog were switched on, which
+		// no code in the game was found to do. It is the only way to see the fog at all.
+		constexpr char const* FORCE_FOG_MARKER = "scvk-force-fog";
+
 		// Keeps every draw of the saved tiles for Scroll Lock to write out. It changes
 		// nothing on screen but costs time and memory, so it is opt-in too.
 		constexpr char const* RECORD_TILE_DRAWS_MARKER = "scvk-record-tile-draws";
@@ -304,6 +308,14 @@ namespace scvk
 		{
 			LogNote("Diagnostic: skipping the cloud shadow pass.");
 			shouldSkipCloudShadows = true;
+		}
+
+		// Fog the scene as the 3D view would
+		if (HasMarkerFile(FORCE_FOG_MARKER))
+		{
+			LogNote("Diagnostic: forcing the 3D view's own fog.");
+			shouldForceFog = true;
+			PushFog();
 		}
 
 		// Record the draws of the saved tiles

@@ -22,7 +22,7 @@ few visual bugs left.
 | Textures, blending, depth | Working |
 | Day and night lighting, cloud shadows | Working |
 | Loading screens | Working |
-| Fog | Not yet |
+| Fog | Working, though the game never turns it on |
 | In-game photos | Working |
 
 Known issues:
@@ -173,6 +173,8 @@ To see a debug view, put an empty file with one of these names next to
 - `scvk-debug-vertex-colour` or `scvk-debug-vertex-alpha`: the lit vertex
   colour alone
 - `scvk-skip-cloud-shadows`: leaves out the cloud shadows
+- `scvk-force-fog`: draws the fog the city view would use if its fog were on, which
+  fades the far distance to white
 - `scvk-validate-sync`: in Debug builds, also checks the GPU work is correctly
   ordered (slow)
 - `scvk-record-tile-draws`: Scroll Lock also saves every recent draw of the

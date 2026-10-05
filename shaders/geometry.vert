@@ -31,6 +31,12 @@ const float PATH_TWO_STAGES_MINIMUM    = 1.5;
 const int ALPHA_FROM_VERTEX_FLAG  = 8;
 const int COLOUR_FROM_VERTEX_FLAG = 16;
 
+// Thresholds on the fog record's mode, halfway between the values the backend sends: 0
+// off, 1 exponential, 2 squared exponential, 3 linear.
+const float FOG_ENABLED_MINIMUM     = 0.5;
+const float FOG_EXPONENTIAL_MAXIMUM = 1.5;
+const float FOG_SQUARED_MAXIMUM     = 2.5;
+
 //// References
 
 // Must match the fragment stage exactly: a push constant block is shared across the
@@ -74,9 +80,19 @@ layout(location = 2) in vec2 inTextureCoordinate0;
 layout(location = 3) in vec2 inTextureCoordinate1;
 #endif
 
+// The fog, one record per draw on a second binding read per instance, since the push
+// constant block has no room left. Every draw is a single instance, so every vertex reads
+// the same record. The row gives the eye distance as a dot product with the position;
+// parameters holds the mode, the density, and the linear equation's scale and offset.
+layout(location = 4) in vec4 inFogDistanceRow;
+layout(location = 5) in vec4 inFogParameters;
+layout(location = 6) in vec4 inFogColour;
+
 layout(location = 0) out vec4 fragmentColour;
 layout(location = 1) out vec2 fragmentTextureCoordinate0;
 layout(location = 2) out vec2 fragmentTextureCoordinate1;
+layout(location = 3) flat out vec3 fragmentFogColour;
+layout(location = 4) out float fragmentFogFactor;
 
 // The terrain is drawn in several passes over the same geometry, each on its own pipeline,
 // and each later pass depth tests against the first. OpenGL's fixed function transform is
@@ -164,4 +180,36 @@ void main()
 #else
 	fragmentTextureCoordinate1 = fragmentTextureCoordinate0;
 #endif
+
+	// Work out the fog factor
+	//
+	// Per vertex and interpolated, as the game's DirectX driver gets from Direct3D's vertex
+	// fog, which OpenGL allows too (OpenGL 2.1 spec, section 3.10). The distance is the
+	// eye-space depth in front of the camera, which is what Direct3D measures and what
+	// OpenGL lets stand in for the true distance. The result is clamped to 0 to 1 in all
+	// three equations, and one means no fog at all.
+	float fogMode   = inFogParameters.x;
+	float fogFactor = 1.0;
+
+	if (fogMode > FOG_ENABLED_MINIMUM)
+	{
+		float distance = dot(inFogDistanceRow, vec4(inPosition, 1.0));
+		float scaled   = inFogParameters.y * distance;
+
+		if (fogMode < FOG_EXPONENTIAL_MAXIMUM)
+		{
+			fogFactor = exp(-scaled);
+		}
+		else if (fogMode < FOG_SQUARED_MAXIMUM)
+		{
+			fogFactor = exp(-scaled * scaled);
+		}
+		else
+		{
+			fogFactor = inFogParameters.z * distance + inFogParameters.w;
+		}
+	}
+
+	fragmentFogFactor = clamp(fogFactor, 0.0, 1.0);
+	fragmentFogColour = inFogColour.rgb;
 }

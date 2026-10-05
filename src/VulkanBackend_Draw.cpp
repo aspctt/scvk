@@ -35,6 +35,7 @@
 #include <VertexFormatUtils.h>
 
 #include <algorithm>
+#include <stddef.h>
 #include <string.h>
 
 namespace scvk
@@ -74,6 +75,11 @@ namespace scvk
 		constexpr uint32_t ENVIRONMENT_MODULATE    = 1;
 		constexpr uint32_t ALPHA_FROM_VERTEX_FLAG  = 8;
 		constexpr uint32_t COLOUR_FROM_VERTEX_FLAG = 16;
+
+		// The last of the game's fog modes, which run exponential, squared exponential and
+		// linear, and the mode the vertex stage reads as no fog.
+		constexpr uint32_t GD_FOG_MODE_LINEAR = 2;
+		constexpr float    FOG_MODE_OFF       = 0.0f;
 
 		// OpenGL clip space and Vulkan clip space differ in two ways: Y points the other
 		// way, and depth runs 0..1 rather than -1..1. Column-major, like everything the
@@ -296,12 +302,18 @@ namespace scvk
 		// are added at the offsets the format itself declares, which is not the same
 		// across formats: V3F_C4UB_T2F puts the colour at 12 and V3F_N3F_C4UB puts it at
 		// 24.
-		VkVertexInputBindingDescription binding{};
-		binding.binding   = 0;
-		binding.stride    = layout.stride;
-		binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+		VkVertexInputBindingDescription bindings[2]{};
+		bindings[0].binding   = 0;
+		bindings[0].stride    = layout.stride;
+		bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-		VkVertexInputAttributeDescription attributes[4]{};
+		// The fog record is read per instance, and every draw is one instance, so all of a
+		// draw's vertices read the same record.
+		bindings[1].binding   = 1;
+		bindings[1].stride    = sizeof(FogRecord);
+		bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+		VkVertexInputAttributeDescription attributes[7]{};
 		uint32_t attributeCount = 0;
 
 		attributes[attributeCount].location = 0;
@@ -328,9 +340,20 @@ namespace scvk
 			attributeCount++;
 		}
 
+		uint32_t const fogOffsets[] = { offsetof(FogRecord, distanceRow), offsetof(FogRecord, parameters), offsetof(FogRecord, colour) };
+
+		for (uint32_t part = 0; part < _countof(fogOffsets); part++)
+		{
+			attributes[attributeCount].location = 4 + part;
+			attributes[attributeCount].binding  = 1;
+			attributes[attributeCount].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+			attributes[attributeCount].offset   = fogOffsets[part];
+			attributeCount++;
+		}
+
 		VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-		vertexInput.vertexBindingDescriptionCount   = 1;
-		vertexInput.pVertexBindingDescriptions      = &binding;
+		vertexInput.vertexBindingDescriptionCount   = _countof(bindings);
+		vertexInput.pVertexBindingDescriptions      = bindings;
 		vertexInput.vertexAttributeDescriptionCount = attributeCount;
 		vertexInput.pVertexAttributeDescriptions    = attributes;
 
@@ -704,6 +727,14 @@ namespace scvk
 			return false;
 		}
 
+		// Find the fog record's copy
+		VkBuffer     fogBuffer = VK_NULL_HANDLE;
+		VkDeviceSize fogOffset = 0;
+		if (!GetFogRecordCopy(fogBuffer, fogOffset))
+		{
+			return false;
+		}
+
 		// Open the pass and apply the viewport
 		//
 		// Per draw, not once per render pass. The game changes the viewport between draws
@@ -729,9 +760,9 @@ namespace scvk
 		PushDrawConstants(isTwoStage);
 		BindTextures(isTwoStage);
 
-		VkBuffer buffers[] = { vertexBuffer };
-		VkDeviceSize offsets[] = { vertexOffset };
-		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+		VkBuffer buffers[] = { vertexBuffer, fogBuffer };
+		VkDeviceSize offsets[] = { vertexOffset, fogOffset };
+		vkCmdBindVertexBuffers(commandBuffer, 0, _countof(buffers), buffers, offsets);
 
 		return true;
 	}
@@ -851,6 +882,43 @@ namespace scvk
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);
 	}
 
+	void VulkanBackend::UpdateFogRecord(FogRecord const& record)
+	{
+		if (memcmp(&record, &fogRecord, sizeof(FogRecord)) == 0)
+		{
+			return;
+		}
+
+		fogRecord       = record;
+		fogRecordBuffer = VK_NULL_HANDLE;
+	}
+
+	bool VulkanBackend::GetFogRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	{
+		// Write a copy when there is none
+		//
+		// Once per change rather than once per draw. The game changes the fog with the
+		// view, not with every draw, and with the fog off the record never changes at all,
+		// so a frame usually writes one.
+		if (fogRecordBuffer == VK_NULL_HANDLE)
+		{
+			uint8_t* destination = nullptr;
+
+			if (!ArenaAllocate(vertexArena, sizeof(FogRecord), VERTEX_ALIGNMENT, fogRecordBuffer, fogRecordOffset, destination))
+			{
+				fogRecordBuffer = VK_NULL_HANDLE;
+				LogNote("Vulkan: no room for per-frame vertex data; dropping a draw for want of its fog.");
+				return false;
+			}
+
+			memcpy(destination, &fogRecord, sizeof(FogRecord));
+		}
+
+		outBuffer = fogRecordBuffer;
+		outOffset = fogRecordOffset;
+		return true;
+	}
+
 	//// Public API
 
 	void VulkanBackend::SetTransform(float const* openGlModelViewProjection)
@@ -964,6 +1032,51 @@ namespace scvk
 		coordinates.sourceSet   = sourceSet;
 		memcpy(coordinates.rows, rowS, sizeof(float) * 4);
 		memcpy(coordinates.rows + 4, rowT, sizeof(float) * 4);
+	}
+
+	void VulkanBackend::SetFog(bool isEnabled, uint32_t gdMode, float density, float start, float end, float const* colour)
+	{
+		if (colour == nullptr)
+		{
+			return;
+		}
+
+		FogRecord record = fogRecord;
+
+		// Number the mode the way the vertex stage reads it
+		//
+		// One higher than the game's, leaving zero for off. The game's modes run 0 to 2,
+		// and the small values convert to floats exactly.
+		isFogEnabled         = isEnabled && gdMode <= GD_FOG_MODE_LINEAR;
+		record.parameters[0] = isFogEnabled ? static_cast<float>(gdMode + 1u) : FOG_MODE_OFF;
+		record.parameters[1] = density;
+
+		// Reduce the linear equation to a scale and an offset
+		//
+		// f = (end - distance) / (end - start). OpenGL leaves equal start and end
+		// undefined, and they are taken as no fog here rather than as a division by zero.
+		float const range = end - start;
+		record.parameters[2] = (range != 0.0f) ? -1.0f / range : 0.0f;
+		record.parameters[3] = (range != 0.0f) ? end / range : 1.0f;
+
+		memcpy(record.colour, colour, sizeof(record.colour));
+		UpdateFogRecord(record);
+	}
+
+	void VulkanBackend::SetFogDistanceRow(float const* row)
+	{
+		// Leave the record alone while the fog is off
+		//
+		// The row changes with nearly every draw of a moving scene, and a record nothing
+		// reads would only be copied again each time.
+		if (!isFogEnabled || row == nullptr)
+		{
+			return;
+		}
+
+		FogRecord record = fogRecord;
+		memcpy(record.distanceRow, row, sizeof(record.distanceRow));
+		UpdateFogRecord(record);
 	}
 
 	void VulkanBackend::SetDebugPassColours(bool isEnabled)

@@ -125,6 +125,21 @@ namespace scvk
 			float    rows[8]     = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
 		};
 
+		/**
+		 * The fog every vertex of a draw reads, as three per-instance attributes.
+		 *
+		 * The dot product of the row with the object position is the eye-space depth in
+		 * front of the camera. The parameters are the mode (0 off, 1 exponential, 2
+		 * squared exponential, 3 linear), the density, and the scale and offset the linear
+		 * equation reduces to.
+		 */
+		struct FogRecord
+		{
+			float distanceRow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			float parameters[4]  = { 0.0f, 1.0f, 0.0f, 1.0f };
+			float colour[4]      = { 0.0f, 0.0f, 0.0f, 0.0f };
+		};
+
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
@@ -367,6 +382,15 @@ namespace scvk
 		// instead.
 		StageCoordinates stageCoordinates[2] = { StageCoordinates{}, StageCoordinates{ false, 1, { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f } } };
 
+		// The fog, which reaches the vertex stage through a second vertex binding because
+		// the push constant block is full. The record is written into the vertex arena
+		// when it changes and every draw until the next change binds the same copy; a
+		// null buffer means there is no current copy.
+		FogRecord    fogRecord;
+		bool         isFogEnabled    = false;
+		VkBuffer     fogRecordBuffer = VK_NULL_HANDLE;
+		VkDeviceSize fogRecordOffset = 0;
+
 		// Diagnostics that replace every colour on screen.
 		bool shouldShowPassColours = false;
 		int  debugChannel          = -1;
@@ -557,6 +581,12 @@ namespace scvk
 
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);
+
+		/** Changes the fog record, so the next draw writes a fresh copy of it. */
+		void UpdateFogRecord(FogRecord const& record);
+
+		/** The current fog record's copy in the vertex arena, written first if there is none. */
+		bool GetFogRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		// Textures, in VulkanBackend_Textures.cpp
 
@@ -776,6 +806,20 @@ namespace scvk
 		 * texture coordinate of a stage by its matrix, not only generated ones.
 		 */
 		void SetStageCoordinates(uint32_t stage, bool isGenerated, uint32_t sourceSet, float const* rowS, float const* rowT);
+
+		/**
+		 * Sets the fog for subsequent draws.
+		 *
+		 * The mode is the game's own enumeration, 0 exponential, 1 squared exponential and
+		 * 2 linear, which follows OpenGL's EXP, EXP2 and LINEAR. The colour is four floats.
+		 */
+		void SetFog(bool isEnabled, uint32_t gdMode, float density, float start, float end, float const* colour);
+
+		/**
+		 * Sets the row whose dot product with an object position is its distance in
+		 * front of the camera, for the fog. Ignored while the fog is off.
+		 */
+		void SetFogDistanceRow(float const* row);
 
 		/** Replaces draw colours with a flat colour per blend configuration. */
 		void SetDebugPassColours(bool isEnabled);

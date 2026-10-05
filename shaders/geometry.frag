@@ -6,7 +6,7 @@
  *
  * Fragment stage for the fixed function geometry path.
  *
- * Reproduces three things Vulkan has no equivalent for.
+ * Reproduces four things Vulkan has no equivalent for.
  *
  * The texture environment: modulate multiplies the texture by the vertex colour, replace
  * ignores the vertex colour entirely. The game uses both, and an untextured build renders
@@ -21,6 +21,10 @@
  * The alpha test: a fixed function comparison that discards fragments below a threshold.
  * It was removed from the programmable pipeline, so it becomes an explicit discard here,
  * driven by the comparison and reference the game sets.
+ *
+ * Fog: a blend toward a fixed colour by distance from the camera. The game asks for it
+ * only when something switches on its 3D view's fog, which no code in the game was found
+ * to do, so in normal play the factor is always one.
  *
  * Draws with no texture bound sample a 1x1 white texture, so the multiply is a no-op and
  * no shader variant is needed for them.
@@ -106,6 +110,11 @@ layout(set = 3, binding = 0) uniform sampler   textureSampler1;
 layout(location = 0) in vec4 fragmentColour;
 layout(location = 1) in vec2 fragmentTextureCoordinate0;
 layout(location = 2) in vec2 fragmentTextureCoordinate1;
+
+// The fog colour and how much of the fragment survives it, one meaning no fog. See the
+// vertex stage.
+layout(location = 3) flat in vec3 fragmentFogColour;
+layout(location = 4) in float fragmentFogFactor;
 
 layout(location = 0) out vec4 outColour;
 
@@ -274,6 +283,12 @@ void main()
 	}
 
 	result = clamp(result, 0.0, 1.0);
+
+	// Apply the fog
+	//
+	// To the post-texturing colour, leaving the alpha alone (OpenGL 2.1 spec, section
+	// 3.10). The alpha test therefore sees the same value either way.
+	result.rgb = mix(fragmentFogColour, result.rgb, fragmentFogFactor);
 
 	// Apply the alpha test
 	int   comparison = int(push.fragmentState.x);
