@@ -174,7 +174,22 @@ if (-not (Test-Path $logDirectory)) { New-Item -ItemType Directory -Path $logDir
 $timestamp   = Get-Date -Format "yyyyMMdd-HHmmss"
 $suffix      = if ($Label) { "-$Label" } else { "" }
 $capturedLog = Join-Path $logDirectory "scvk-$timestamp$suffix.log"
-Copy-Item $liveLog $capturedLog
+
+# Copy it, retrying for a few seconds
+#
+# The file can still be held for a moment after the game has exited, which once made the
+# copy fail and left the log behind in Plugins.
+$copyDeadline = (Get-Date).AddSeconds(15)
+
+while ($true) {
+	try {
+		Copy-Item $liveLog $capturedLog -ErrorAction Stop
+		break
+	} catch {
+		if ((Get-Date) -ge $copyDeadline) { throw }
+		Start-Sleep -Milliseconds 500
+	}
+}
 
 # Collect the captures
 #
