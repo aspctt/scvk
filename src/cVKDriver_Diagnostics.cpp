@@ -940,8 +940,13 @@ namespace scvk
 
 	void cVKDriver::RecordTileDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit)
 	{
-		// Only draws that can land in a saved tile
-		if (drawRing.empty() || !IsSubViewport() || count <= 0 || vertexPointer == nullptr || vertexStride == 0)
+		// Only draws that can land in a saved tile, or that go over the restored scene
+		//
+		// Moving things such as cars and whales are drawn across the whole window each
+		// frame, after the saved scene is put back and depth tested against its depth.
+		bool const isSubViewport = IsSubViewport();
+
+		if (drawRing.empty() || (!isSubViewport && !hasRegionFrameRestored) || count <= 0 || vertexPointer == nullptr || vertexStride == 0)
 		{
 			return;
 		}
@@ -977,6 +982,8 @@ namespace scvk
 		flags |= isVertexColourDiffuse ? DRAW_FLAG_DIFFUSE_VERTEX : 0u;
 		flags |= isAlphaFromVertexColour ? DRAW_FLAG_ALPHA_VERTEX : 0u;
 		flags |= (indices != nullptr) ? DRAW_FLAG_INDEXED : 0u;
+		flags |= isSubViewport ? 0u : DRAW_FLAG_FULL_VIEWPORT;
+		flags |= isCapabilityEnabled[kGDCapability_CullFace] ? DRAW_FLAG_CULL_FACE : 0u;
 
 		record.blendSource          = static_cast<uint8_t>(blendSourceFactor);
 		record.blendDestination     = static_cast<uint8_t>(blendDestinationFactor);

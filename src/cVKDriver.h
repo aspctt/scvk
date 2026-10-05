@@ -218,6 +218,8 @@ namespace scvk
 		static constexpr uint32_t DRAW_FLAG_BEHIND_CAMERA   = 1u << 12;
 		static constexpr uint32_t DRAW_FLAG_VERTICES_CAPPED = 1u << 13;
 		static constexpr uint32_t DRAW_FLAG_ALPHA_VERTEX    = 1u << 14;
+		static constexpr uint32_t DRAW_FLAG_FULL_VIEWPORT   = 1u << 15;
+		static constexpr uint32_t DRAW_FLAG_CULL_FACE       = 1u << 16;
 
 		// The kinds of configuration NoteOnce reports, each keyed separately.
 		static constexpr uint32_t NOTE_COMBINER            = 1;

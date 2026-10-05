@@ -4,10 +4,14 @@
 #   python tools/draw-records.py <scvk-key-N-draws.bin> tiles
 #   python tools/draw-records.py <scvk-key-N-draws.bin> pixel <x> <y>
 #   python tools/draw-records.py <scvk-key-N-draws.bin> tile <index>
+#   python tools/draw-records.py <scvk-key-N-draws.bin> moving <x> <y>
 #
 # Pixels are counted from the top-left of the window, as in the captures. A draw counts as
 # reaching a pixel when its window bounds contain it, which is an over-estimate: the bounds
 # are a rectangle around the vertices, not the triangles themselves.
+#
+# "moving" lists the draws of the newest recorded frame that went over the whole window after
+# the saved scene was put back, which is where cars, boats and whales are drawn.
 
 #// Dependencies
 
@@ -42,7 +46,7 @@ DRAW_FIELDS = [
 FLAG_NAMES = [
 	"stage0", "stage1", "blend", "depth_test", "depth_write", "colour_write", "alpha_test",
 	"generated", "ambient_vertex", "diffuse_vertex", "indexed", "texture_live", "behind_camera", "vertices_capped",
-	"alpha_vertex",
+	"alpha_vertex", "full_viewport", "cull_face",
 ]
 
 # The game's comparison enumeration follows OpenGL's order.
@@ -99,7 +103,7 @@ def pass_key(draw):
 	depth = COMPARISON_NAMES[draw["depth_comparison"] & 7] if "depth_test" in flags else "no-test"
 	write = "w" if "depth_write" in flags else "-"
 	stages = ("T" if "stage0" in flags else "-") + ("T" if "stage1" in flags else "-")
-	extras = "".join([" gen" if "generated" in flags else "", " atest" if "alpha_test" in flags else "", " nocolour" if "colour_write" not in flags else ""])
+	extras = "".join([" gen" if "generated" in flags else "", " atest" if "alpha_test" in flags else "", " nocolour" if "colour_write" not in flags else "", " cull" if "cull_face" in flags else ""])
 	return "fmt 0x%-2x %-11s %-7s%s tex %s%s" % (draw["vertex_format"], blend, depth, write, stages, extras)
 
 
@@ -125,7 +129,7 @@ def describe_tile(index, tile, draws):
 #// Entry Point
 
 if len(sys.argv) < 3:
-	raise SystemExit("usage: draw-records.py <file> tiles | pixel <x> <y> | tile <index>")
+	raise SystemExit("usage: draw-records.py <file> tiles | pixel <x> <y> | tile <index> | moving <x> <y>")
 
 window, tiles, draws = read_records(sys.argv[1])
 command = sys.argv[2]
@@ -162,6 +166,22 @@ elif command == "tile":
 
 	for draw in tile_draws(tile, draws):
 		print("  " + describe_draw(draw))
+
+elif command == "moving":
+	x, y = int(sys.argv[3]), int(sys.argv[4])
+
+	# Keep the newest frame's whole-window draws that could reach the pixel
+	moving = [draw for draw in draws.values() if "full_viewport" in draw["flag_set"]]
+	if not moving:
+		raise SystemExit("no whole-window draws in the file")
+
+	newest = max(draw["frame"] for draw in moving)
+	reaching = [draw for draw in moving if draw["frame"] == newest and draw["left"] <= x <= draw["right"] and draw["top"] <= y <= draw["bottom"]]
+
+	print("frame %u, %d whole-window draws, %d reach %d,%d" % (newest, sum(1 for draw in moving if draw["frame"] == newest), len(reaching), x, y))
+
+	for draw in sorted(reaching, key=lambda draw: draw["sequence"]):
+		print("  %s  tint %.2f %.2f %.2f  env %u/%u" % (describe_draw(draw), draw["tint_red"], draw["tint_green"], draw["tint_blue"], draw["environment0"], draw["environment1"]))
 
 else:
 	raise SystemExit("unknown command " + command)
