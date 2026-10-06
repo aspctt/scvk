@@ -497,12 +497,13 @@ namespace scvk
 
 	VulkanBackend::VertexLayout VulkanBackend::DecodeDrawLayout(VertexLayout const& sourceLayout) const
 	{
-		// Widen the copy when the second stage generates from a format with one set
+		// Widen the copy when the second stage runs on a format with one set
 		//
-		// Buildings carry a single set, but some of their materials add a second texture
-		// projected from the eye-space position and weighed in by its alpha. The DirectX
-		// driver draws it. The two stage path has no push constant room to generate in
-		// the shader, so the copy gains a set the coordinates are written into instead.
+		// Buildings carry a single set, but some of their materials add a second texture,
+		// either projected from the eye-space position or laid over the first through the
+		// same set, and weighed in by its alpha. The DirectX driver draws both. The two
+		// stage path has no push constant room to transform in the shader, so the copy
+		// gains a set the coordinates are written into instead.
 		if (sourceLayout.textureCoordinateSets == 1 && IsTwoStageDraw(sourceLayout.textureCoordinateSets))
 		{
 			return AppendCoordinateSet(sourceLayout);
@@ -663,12 +664,17 @@ namespace scvk
 	bool VulkanBackend::IsTwoStageDraw(uint32_t textureCoordinateSets) const
 	{
 		// The second stage runs only when it is switched on, has a texture, and has a
-		// coordinate to sample with: a set of its own in the geometry, or one generated
-		// from the position next to the first stage's set. All three matter: the game
-		// leaves a 4x4 placeholder bound to the stage for the whole session and turns the
-		// stage itself off, so taking the binding as the signal modulates the city
+		// coordinate to sample with: a set of its own in the geometry, one generated from
+		// the position, or the first set when the stage asks for it. All three matter: the
+		// game leaves a 4x4 placeholder bound to the stage for the whole session and turns
+		// the stage itself off, so taking the binding as the signal modulates the city
 		// terrain down to black.
-		bool const hasCoordinate = textureCoordinateSets >= 2 || (textureCoordinateSets == 1 && stageCoordinates[1].isGenerated);
+		//
+		// Buildings carry one set and light their windows at night by laying a second
+		// texture over the first through that same set, as a decal. Requiring a set of its
+		// own skipped the stage, and no window ever lit.
+		bool const hasSharedSet  = stageCoordinates[1].isGenerated || stageCoordinates[1].sourceSet == 0;
+		bool const hasCoordinate = textureCoordinateSets >= 2 || (textureCoordinateSets == 1 && hasSharedSet);
 
 		return hasCoordinate && currentTexture1 != 0 && isStageEnabled[1];
 	}
