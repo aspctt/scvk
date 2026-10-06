@@ -8,8 +8,10 @@
 # seconds without loading a single plugin. Going through Steam costs one confirmation
 # click per run, after which the whole session is unattended however long it lasts.
 #
-# The Plugins folder defaults to this machine's layout and can be overridden with the
-# SCVK_SC4_PLUGINS environment variable or the parameter below.
+# scvk.dll goes into the Plugins folder of the game's own install, whose plugins load
+# before those in the user dir, and the game is started with a separate user dir. Both
+# default to this machine's layout and can be overridden with the SCVK_SC4_PLUGINS and
+# SCVK_SC4_USERDIR environment variables or the parameters below.
 
 param(
 	[int]$Seconds = 30,
@@ -29,7 +31,11 @@ param(
 
 	[int]$AppId = 24780,
 
-	[string]$PluginsDir = $null
+	# Where scvk.dll is copied, and so where its log, settings and captures live.
+	[string]$PluginsDir = $null,
+
+	# The game's user dir, which holds its saves, regions and a Plugins folder of its own.
+	[string]$UserDir = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,19 +45,21 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 
 if (-not $PluginsDir) {
-	$PluginsDir = if ($env:SCVK_SC4_PLUGINS) { $env:SCVK_SC4_PLUGINS } else { "S:\SimCity4Data\_ModdingData\Plugins" }
+	$PluginsDir = if ($env:SCVK_SC4_PLUGINS) { $env:SCVK_SC4_PLUGINS } else { "S:\SteamLibrary\steamapps\common\SimCity 4 Deluxe\Plugins" }
 }
 
-$userDirectory = Split-Path $PluginsDir -Parent
+if (-not $UserDir) {
+	$UserDir = if ($env:SCVK_SC4_USERDIR) { $env:SCVK_SC4_USERDIR } else { "S:\SimCity4Data\_ModdingData" }
+}
+
+$userDirectory = $UserDir.TrimEnd("\")
 $builtDll      = Join-Path $repositoryRoot "$Configuration\scvk.dll"
 $liveDll       = Join-Path $PluginsDir "scvk.dll"
 $liveLog       = Join-Path $PluginsDir "scvk.log"
 $logDirectory  = Join-Path $repositoryRoot "logs"
 
-# The game's own arguments, matching the shortcut this replaces. The trailing separator on
-# UserDir matters to the game's parser.
+# The game's own arguments. The trailing separator on UserDir matters to the game's parser.
 $gameArguments = @(
-	"-BackgroundLoader:on",
 	"-ExceptionHandling:off",
 	"-UserDir:$userDirectory\"
 )
@@ -91,6 +99,7 @@ function Stop-SimCity {
 #// Entry Point
 
 if (-not (Test-Path $PluginsDir)) { throw "Not found: $PluginsDir" }
+if (-not (Test-Path $userDirectory)) { throw "Not found: $userDirectory" }
 
 # Stop a game left over from an earlier run
 #
