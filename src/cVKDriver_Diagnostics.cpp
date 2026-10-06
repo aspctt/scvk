@@ -423,7 +423,7 @@ namespace scvk
 
 		// Describe the draw
 		LogNote("  SHADOWMASK fmt 0x%x prim %u n=%d  tex %u/%u  coordsrc %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.3f  depth test %d func %u write %d", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureCoordinateSource[0], textureCoordinateSource[1], isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, depthComparison, isDepthWriteEnabled ? 1 : 0);
-		LogNote("    combiners 0x%05x 0x%05x / 0x%05x 0x%05x  env colours %.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f", packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3], environmentColours[0][0], environmentColours[0][1], environmentColours[0][2], environmentColours[0][3], environmentColours[1][0], environmentColours[1][1], environmentColours[1][2], environmentColours[1][3]);
+		LogNote("    combiners 0x%05x 0x%05x / 0x%05x 0x%05x  env colour %.3f %.3f %.3f %.3f", packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3], environmentColour[0], environmentColour[1], environmentColour[2], environmentColour[3]);
 
 		// Write each matrix a row per line
 		//
@@ -538,7 +538,7 @@ namespace scvk
 			return;
 		}
 
-		float const alpha     = environmentColours[0][3];
+		float const alpha     = environmentColour[3];
 		float const reference = isCapabilityEnabled[kGDCapability_AlphaTest] ? alphaReference : 0.0f;
 
 		// Widen the ranges, starting them from the first draw of the interval
@@ -556,7 +556,7 @@ namespace scvk
 		shadowReferenceRange[1] = fmaxf(shadowReferenceRange[1], reference);
 
 		// Keep the last colour and tint
-		memcpy(lastShadowColour, environmentColours[0], sizeof(lastShadowColour));
+		memcpy(lastShadowColour, environmentColour, sizeof(lastShadowColour));
 		memcpy(lastShadowTint, colourMultiplier, sizeof(lastShadowTint));
 
 		shadowDrawsSinceSummary++;

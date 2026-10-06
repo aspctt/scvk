@@ -292,8 +292,8 @@ namespace scvk
 		int32_t  textureEnvironmentMode[2] = { kGDTextureEnvParam_Modulate, kGDTextureEnvParam_Modulate };
 		uint32_t rawCombiner[4]            = {};
 
-		// Each stage's environment colour, which a combiner may name as a source.
-		float environmentColours[2][4] = {};
+		// The environment colour a combiner may name as a source, one for all stages.
+		float environmentColour[4] = {};
 
 		// The combiner network as the shader will read it, kept so a draw can report the
 		// configuration that was actually in force for it.

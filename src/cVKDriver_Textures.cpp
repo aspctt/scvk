@@ -68,9 +68,6 @@ namespace scvk
 		// Argument 2 is the texture, read through its alpha.
 		constexpr uint32_t ARGUMENT2_TEXTURE_ALPHA = (0u << 13) | (2u << 15);
 
-		// The source that names the environment colour, after texture and previous.
-		constexpr uint32_t SOURCE_CONSTANT = 2;
-
 		constexpr float IDENTITY_MATRIX[16] = {
 			1, 0, 0, 0,
 			0, 1, 0, 0,
@@ -109,20 +106,6 @@ namespace scvk
 
 			packed |= (scale & 3u) << 18u;
 			return packed;
-		}
-
-		/** Whether a packed combiner channel reads the environment colour. */
-		bool NamesConstantSource(uint32_t packed)
-		{
-			for (uint32_t i = 0; i < 3; i++)
-			{
-				if (((packed >> (3u + i * 5u)) & 3u) == SOURCE_CONSTANT)
-				{
-					return true;
-				}
-			}
-
-			return false;
 		}
 
 		/**
@@ -187,16 +170,8 @@ namespace scvk
 			vulkan->SetCombinerState(stage, rgb, alpha);
 		}
 
-		// Send the environment colour of the stage that reads one
-		//
-		// Each stage has its own, but the shader has room for one. The first stage wins
-		// when both read theirs, which the game has not been seen doing: its shadows read
-		// the first stage's colour and nothing reads the second's.
-		bool const isFirstStageReading = NamesConstantSource(packedCombiner[0]) || NamesConstantSource(packedCombiner[1]);
-		bool const isSecondStageReading = NamesConstantSource(packedCombiner[2]) || NamesConstantSource(packedCombiner[3]);
-
-		float const* const colour = environmentColours[(!isFirstStageReading && isSecondStageReading) ? 1 : 0];
-		vulkan->SetConstantColour(colour[0], colour[1], colour[2], colour[3]);
+		// Send the environment colour
+		vulkan->SetConstantColour(environmentColour[0], environmentColour[1], environmentColour[2], environmentColour[3]);
 	}
 
 	//// Public API
@@ -256,14 +231,19 @@ namespace scvk
 	{
 		SCVK_CALL("%u, %u, %p", gdTextureEnvironmentTarget, gdTextureEnvironmentParameterType, parameters);
 
-		// The environment colour, which a combiner may name as a source. It belongs to
-		// the active stage, as OpenGL's does to the active unit.
 		if (gdTextureEnvironmentParameterType != kGDTextureEnvParamType_Color || parameters == nullptr)
 		{
 			return;
 		}
 
-		memcpy(environmentColours[activeTextureStage], parameters, sizeof(environmentColours[activeTextureStage]));
+		// Set the environment colour every stage shares
+		//
+		// The DirectX driver (0x8830a0) writes it to the one texture factor whatever stage
+		// is selected. The building shadows rely on that: the game fades each patch's
+		// shadow by setting the colour again while the second stage is selected, and the
+		// first stage reads it. Keeping a colour per stage, as OpenGL does, left the first
+		// stage at full strength and drew every shadow too dark and too blue.
+		memcpy(environmentColour, parameters, sizeof(environmentColour));
 		PushCombinerState();
 	}
 
