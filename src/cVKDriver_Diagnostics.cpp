@@ -39,6 +39,7 @@
 #include <VertexFormatUtils.h>
 
 #include <Windows.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,10 @@ namespace scvk
 		// between.
 		constexpr uint32_t CAPTURE_INTERVAL_FRAMES = 2000;
 		constexpr uint32_t REGION_CAPTURE_OFFSET   = 1000;
+
+		// The building shadow summary is written this often, matching the backend's
+		// heartbeat.
+		constexpr uint32_t SHADOW_SUMMARY_FRAMES = 300;
 
 		// The FNV-1a constants, for hashing the projection.
 		constexpr uint32_t FNV_OFFSET_BASIS = 2166136261u;
@@ -409,7 +414,7 @@ namespace scvk
 		// second stage's sampler, and the full coordinates the first vertices end up
 		// with, q included. Requiring the first stage to generate as well skips the draws
 		// with one coordinate set, which used up the reports before.
-		if (shadowMaskReportsRemaining <= 0 || !isTextureStageEnabled[0] || !isTextureStageEnabled[1] || stage1Texture == 0 || !IsGeneratingCoordinates(0) || !IsGeneratingCoordinates(1))
+		if (shadowMaskReportsRemaining <= 0 || !IsBuildingShadowDraw())
 		{
 			return;
 		}
@@ -488,6 +493,85 @@ namespace scvk
 				LogNote("      stage %u strq %.4f %.4f %.4f %.4f  s/q t/q %.4f %.4f", stage, coordinates[0], coordinates[1], coordinates[2], q, isDivisible ? coordinates[0] / q : 0.0f, isDivisible ? coordinates[1] / q : 0.0f);
 			}
 		}
+	}
+
+	void cVKDriver::NoteSharedSetDraw(uint32_t gdPrimitiveType, int32_t count)
+	{
+		// Name the draws whose second stage shares the only coordinate set
+		//
+		// scvk used to skip that stage, and buildings light their windows through it. Each
+		// kind is described once along with the texture the stage samples, so anything
+		// else drawn that way shows up. The low three bits of the source name the set.
+		bool const isSharingSet = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) == 1 && isTextureStageEnabled[1] && stage1Texture != 0 && !IsGeneratingCoordinates(1) && (textureCoordinateSource[1] & 7u) == 0;
+
+		if (!isSharingSet)
+		{
+			return;
+		}
+
+		bool const isBlending = isCapabilityEnabled[kGDCapability_Blend];
+
+		// The environment modes are small and never negative, so their low bits convert
+		// to unsigned unchanged.
+		uint32_t const key = (vertexFormat << 12) ^ (static_cast<uint32_t>(textureEnvironmentMode[0] & 0xf) << 4) ^ static_cast<uint32_t>(textureEnvironmentMode[1] & 0xf) ^ (isBlending ? 0x100u : 0u) ^ (blendSourceFactor << 16) ^ (blendDestinationFactor << 20);
+
+		if (!NoteOnce(NOTE_SHARED_SET, key))
+		{
+			return;
+		}
+
+		LogNote("  SHARED SET fmt 0x%x prim %u n=%d  tex %u/%u  env %d/%d  blend %d(%u,%u)  tint %.3f %.3f %.3f a %.3f", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureEnvironmentMode[0], textureEnvironmentMode[1], isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3]);
+		vulkan->LogTextureInformation(stage1Texture, "shared set stage 1");
+	}
+
+	void cVKDriver::NoteShadowStrength(void)
+	{
+		// Track how strong the game asks the building shadows to be
+		//
+		// It sets the shadow colour again for each patch of ground, with the alpha faded by
+		// distance and scaled by a lighting value, and tests the alpha against a reference
+		// scaled the same way. At night scvk's shadows came out darker and bluer than
+		// DirectX's, and the first few reports alone could not say whether the game had
+		// asked for that.
+		if (!IsBuildingShadowDraw())
+		{
+			return;
+		}
+
+		float const alpha     = environmentColours[0][3];
+		float const reference = isCapabilityEnabled[kGDCapability_AlphaTest] ? alphaReference : 0.0f;
+
+		// Widen the ranges, starting them from the first draw of the interval
+		if (shadowDrawsSinceSummary == 0)
+		{
+			shadowAlphaRange[0]     = alpha;
+			shadowAlphaRange[1]     = alpha;
+			shadowReferenceRange[0] = reference;
+			shadowReferenceRange[1] = reference;
+		}
+
+		shadowAlphaRange[0]     = fminf(shadowAlphaRange[0], alpha);
+		shadowAlphaRange[1]     = fmaxf(shadowAlphaRange[1], alpha);
+		shadowReferenceRange[0] = fminf(shadowReferenceRange[0], reference);
+		shadowReferenceRange[1] = fmaxf(shadowReferenceRange[1], reference);
+
+		// Keep the last colour and tint
+		memcpy(lastShadowColour, environmentColours[0], sizeof(lastShadowColour));
+		memcpy(lastShadowTint, colourMultiplier, sizeof(lastShadowTint));
+
+		shadowDrawsSinceSummary++;
+	}
+
+	void cVKDriver::LogShadowSummary(void)
+	{
+		if (shadowDrawsSinceSummary == 0)
+		{
+			return;
+		}
+
+		LogNote("  SHADOWS %u draws, colour %.3f %.3f %.3f, alpha %.3f to %.3f, alpha test reference %.3f to %.3f, ambient %.3f %.3f %.3f", shadowDrawsSinceSummary, lastShadowColour[0], lastShadowColour[1], lastShadowColour[2], shadowAlphaRange[0], shadowAlphaRange[1], shadowReferenceRange[0], shadowReferenceRange[1], lastShadowTint[0], lastShadowTint[1], lastShadowTint[2]);
+
+		shadowDrawsSinceSummary = 0;
 	}
 
 	void cVKDriver::NoteMultitexturedDraw(uint32_t gdVertexFormat)
@@ -1266,6 +1350,11 @@ namespace scvk
 		// Close the trace and move to the next frame
 		FlushRegionTrace();
 		frameCounter++;
+
+		if (frameCounter % SHADOW_SUMMARY_FRAMES == 0)
+		{
+			LogShadowSummary();
+		}
 
 		RequestPeriodicCaptures();
 		PollKeyCapture();

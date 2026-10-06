@@ -233,6 +233,7 @@ namespace scvk
 		static constexpr uint32_t NOTE_CLOUD_SHADOW        = 9;
 		static constexpr uint32_t NOTE_COORDINATE_SOURCE   = 10;
 		static constexpr uint32_t NOTE_TERRAIN_TEXTURE     = 11;
+		static constexpr uint32_t NOTE_SHARED_SET          = 12;
 
 		//// State
 
@@ -377,6 +378,15 @@ namespace scvk
 		int      indexTypeWarningsRemaining   = 4;
 		uint32_t lastTextureMatrixFlags       = 0;
 
+		// The building shadows since the last summary: how many, the range of the alpha in
+		// the colour the game gave them and of their alpha test reference, and the colour
+		// and ambient tint of the last one.
+		uint32_t shadowDrawsSinceSummary = 0;
+		float    shadowAlphaRange[2]     = {};
+		float    shadowReferenceRange[2] = {};
+		float    lastShadowColour[4]     = {};
+		float    lastShadowTint[3]       = {};
+
 		// The frame dump. A dump waits for the terrain pass rather than starting on a
 		// frame boundary. Most frames restore the scene from a buffer region and contain
 		// nothing but interface, and those were filling the budget before a redraw ever
@@ -490,6 +500,9 @@ namespace scvk
 		/** The cloud shadow pass, the only single stage pass that generates its coordinates. */
 		bool IsCloudShadowDraw(void) const;
 
+		/** The building shadow pass, the one whose two stages both generate their coordinates. */
+		bool IsBuildingShadowDraw(void) const;
+
 		// Textures, in cVKDriver_Textures.cpp
 
 		/** Applies a texture enable to the stage TexStage last selected. */
@@ -546,6 +559,15 @@ namespace scvk
 
 		/** Describes the first few draws whose two stages both generate their coordinates. */
 		void ReportShadowMaskDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit);
+
+		/** Reports each kind of draw whose second stage reads the only coordinate set. */
+		void NoteSharedSetDraw(uint32_t gdPrimitiveType, int32_t count);
+
+		/** Adds a building shadow draw to the summary written every few hundred frames. */
+		void NoteShadowStrength(void);
+
+		/** Writes the building shadow summary and starts the next one. */
+		void LogShadowSummary(void);
 
 		/** Reports the combiner in force, once per distinct multitextured draw. */
 		void NoteMultitexturedDraw(uint32_t gdVertexFormat);

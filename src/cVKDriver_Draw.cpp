@@ -147,6 +147,13 @@ namespace scvk
 		return isTextureStageEnabled[0] && !isTextureStageEnabled[1] && IsGeneratingCoordinates(0);
 	}
 
+	bool cVKDriver::IsBuildingShadowDraw(void) const
+	{
+		// The first stage projects the building's own texture and the second samples the
+		// mask that keeps each shadow to one copy.
+		return isTextureStageEnabled[0] && isTextureStageEnabled[1] && stage1Texture != 0 && IsGeneratingCoordinates(0) && IsGeneratingCoordinates(1);
+	}
+
 	//// Public API
 
 	void cVKDriver::DrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
@@ -173,6 +180,8 @@ namespace scvk
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimitiveType, count);
 		ReportShadowMaskDraw(gdPrimitiveType, count, first, nullptr, false);
+		NoteShadowStrength();
+		NoteSharedSetDraw(gdPrimitiveType, count);
 
 		// Draw it
 		//
@@ -222,6 +231,8 @@ namespace scvk
 		NoteMultitexturedDraw(vertexFormat);
 		NoteDarkTintedDraw(gdPrimitiveType, count);
 		ReportShadowMaskDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+		NoteShadowStrength();
+		NoteSharedSetDraw(gdPrimitiveType, count);
 		MaybeArmDump();
 		DumpDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
 
