@@ -248,7 +248,8 @@ namespace scvk
 		 *
 		 * Split into blocks and grown a block at a time. A single fixed buffer overflowed
 		 * at the widest zoom, where one frame redraws the whole city, and every draw past
-		 * that point was dropped, which left holes in the saved scene.
+		 * that point was dropped, which left holes in the saved scene. A frame that fills
+		 * every block is submitted part way and the arena reused.
 		 */
 		struct Arena
 		{
@@ -597,10 +598,16 @@ namespace scvk
 		/** Reserves space, moving to the next block, or adding one, when this one is full. */
 		bool ArenaAllocate(Arena& arena, VkDeviceSize bytes, VkDeviceSize alignment, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress);
 
+		/** Whether an arena can hand out this much, in one piece, before it is rewound. */
+		static bool ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment);
+
 		/** Rewinds an arena to its first block. */
 		static void ArenaRewind(Arena& arena);
 
 		void DestroyArena(Arena& arena);
+
+		/** Makes room for one draw's vertices and indices, submitting the frame so far when the arenas are full. */
+		bool ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes);
 
 		/** Copies a vertex range into the per-frame arena, with the coordinates the draw samples. */
 		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout, VkBuffer& outBuffer, VkDeviceSize& outOffset);

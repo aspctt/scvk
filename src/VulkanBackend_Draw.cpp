@@ -51,8 +51,8 @@ namespace scvk
 
 		// Two vertex blocks up front, the 64 MB a city frame usually fits in. A frame of
 		// the whole city at the widest zoom needs more, and gets it one block at a time.
-		// The cap keeps a runaway from eating the address space of what is a 32-bit
-		// process.
+		// The cap keeps the arena from eating the address space of what is a 32-bit
+		// process; a frame that needs more still is submitted part way instead.
 		constexpr VkDeviceSize VERTEX_BLOCK_SIZE     = 32u * 1024u * 1024u;
 		constexpr int          VERTEX_INITIAL_BLOCKS = 2;
 		constexpr VkDeviceSize INDEX_BLOCK_SIZE      = 8u * 1024u * 1024u;
@@ -593,6 +593,20 @@ namespace scvk
 		return true;
 	}
 
+	bool VulkanBackend::ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment)
+	{
+		// The same test ArenaAllocate makes: the rest of this block, or a block after it
+		// that is kept from an earlier frame or may still be added.
+		VkDeviceSize const aligned = (arena.usedBytes + alignment - 1u) & ~(alignment - 1u);
+
+		if (aligned + bytes <= arena.blockSize)
+		{
+			return true;
+		}
+
+		return arena.currentBlock + 1 < arena.blocks.size() || arena.blocks.size() < arena.maximumBlocks;
+	}
+
 	void VulkanBackend::ArenaRewind(Arena& arena)
 	{
 		arena.currentBlock = 0;
@@ -610,6 +624,43 @@ namespace scvk
 
 		arena.blocks.clear();
 		ArenaRewind(arena);
+	}
+
+	bool VulkanBackend::ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes)
+	{
+		// Count the fog record in with the vertices
+		//
+		// It comes from the same arena when the draw has to write a fresh copy, with
+		// alignment padding before it.
+		VkDeviceSize const vertexArenaBytes = vertexBytes + VERTEX_ALIGNMENT + sizeof(FogRecord);
+
+		bool const hasVertexRoom = ArenaHasRoom(vertexArena, vertexArenaBytes, VERTEX_ALIGNMENT);
+		bool const hasIndexRoom  = indexBytes == 0 || ArenaHasRoom(indexArena, indexBytes, sizeof(uint32_t));
+
+		if (hasVertexRoom && hasIndexRoom)
+		{
+			return true;
+		}
+
+		// Submit the frame so far and reuse the arenas
+		//
+		// Done before the draw takes any space, so nothing it writes is rewound under it.
+		// A full redraw of a large city at the widest zoom fills every block. Dropping the
+		// rest of the frame lost whatever the game draws last, the sea above all, and the
+		// game then saved that scene and kept restoring it without the water.
+		if (!SubmitFrameSoFar())
+		{
+			return false;
+		}
+
+		ArenaRewind(vertexArena);
+		ArenaRewind(indexArena);
+
+		// The fog record's copy lived in the vertex arena
+		fogRecordBuffer = VK_NULL_HANDLE;
+
+		LogNote("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", presentedFrames);
+		return true;
 	}
 
 	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout, VkBuffer& outBuffer, VkDeviceSize& outOffset)
@@ -1151,6 +1202,11 @@ namespace scvk
 			return;
 		}
 
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * drawLayout.stride, 0))
+		{
+			return;
+		}
+
 		// Copy the vertices and bind the state
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
@@ -1232,9 +1288,27 @@ namespace scvk
 			highest = std::max(highest, index);
 		}
 
-		// Copy that range of vertices
+		// Count the indices, expanded when they describe quads
+		//
+		// Quads are expanded here rather than being drawn through the shared quad index
+		// buffer, because that buffer describes consecutive vertices and these do not
+		// have to be consecutive.
 		uint32_t const vertexCount = highest - lowest + 1u;
+		uint32_t const emitted     = isQuadList ? (indexCount / 4u) * 6u : indexCount;
 
+		if (emitted == 0)
+		{
+			return;
+		}
+
+		size_t const indexBytes = size_t{ emitted } * sizeof(uint32_t);
+
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * drawLayout.stride, indexBytes))
+		{
+			return;
+		}
+
+		// Copy that range of vertices
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
 		if (!UploadVertices(vertices, lowest, vertexCount, layout, drawLayout, vertexBuffer, vertexOffset))
@@ -1242,18 +1316,7 @@ namespace scvk
 			return;
 		}
 
-		// Reserve space for the indices, expanded when they describe quads
-		//
-		// Quads are expanded here rather than being drawn through the shared quad index
-		// buffer, because that buffer describes consecutive vertices and these do not
-		// have to be consecutive.
-		uint32_t const emitted = isQuadList ? (indexCount / 4u) * 6u : indexCount;
-		if (emitted == 0)
-		{
-			return;
-		}
-
-		size_t const indexBytes = size_t{ emitted } * sizeof(uint32_t);
+		// Reserve space for the indices
 		VkBuffer     indexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize indexOffset = 0;
 		uint8_t*     indexDestination = nullptr;
