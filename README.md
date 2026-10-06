@@ -225,6 +225,10 @@ display modes, so every mode scvk can enumerate is 32bpp, while SC4 defaults to
 A `scvk.log` file is written next to the DLL, falling back to the temp
 directory if the Plugins folder is not writable.
 
+To turn scvk off without removing it, keep `scvk.ini` next to the DLL and set
+`Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk
+is never loaded at all.
+
 ## License
 
 scvk is licensed under the **GNU Lesser General Public License, version 2.1 or
