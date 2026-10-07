@@ -545,6 +545,14 @@ namespace scvk
 		int64_t      textureWorkTicks   = 0;
 		int64_t      textureMemoryTicks = 0;
 
+		// Vertex traffic since the last heartbeat, and the most any one frame copied, which
+		// is what the vertex arena has to hold.
+		uint32_t     vertexUploads           = 0;
+		VkDeviceSize vertexUploadBytes       = 0;
+		int64_t      vertexCopyTicks         = 0;
+		VkDeviceSize frameVertexBytes        = 0;
+		VkDeviceSize largestFrameVertexBytes = 0;
+
 		// Handle n is index n - 1, matching what the game is handed back, and leaving 0
 		// free to mean failure.
 		std::vector<BufferRegion> bufferRegions;
@@ -696,6 +704,9 @@ namespace scvk
 
 		/** Writes each stage's final coordinates into its own set of the vertex copy. */
 		void WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout) const;
+
+		/** The heartbeat's line on vertex traffic since the last one. */
+		void LogVertexTraffic(void);
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
 		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout);

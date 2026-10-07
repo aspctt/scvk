@@ -688,6 +688,9 @@ namespace scvk
 		// time, leaving the appended set for the coordinates written below.
 		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * sourceLayout.stride;
 
+		LARGE_INTEGER copyStart{};
+		QueryPerformanceCounter(&copyStart);
+
 		if (!drawLayout.hasAppendedCoordinateSet)
 		{
 			memcpy(destination, source, static_cast<size_t>(bytes));
@@ -712,7 +715,32 @@ namespace scvk
 			WriteStageCoordinates(destination, source, vertexCount, sourceLayout, drawLayout);
 		}
 
+		// Count the copy for the heartbeat
+		LARGE_INTEGER copyEnd{};
+		QueryPerformanceCounter(&copyEnd);
+
+		vertexCopyTicks += copyEnd.QuadPart - copyStart.QuadPart;
+		vertexUploads++;
+		vertexUploadBytes      += bytes;
+		frameVertexBytes       += bytes;
+		largestFrameVertexBytes = std::max(largestFrameVertexBytes, frameVertexBytes);
+
 		return true;
+	}
+
+	void VulkanBackend::LogVertexTraffic(void)
+	{
+		// The tick counts are far below the range where a double loses whole ticks.
+		double const copyMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(vertexCopyTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
+
+		// Byte totals stay far below the range where a double loses whole megabytes.
+		double const megabyte = 1024.0 * 1024.0;
+		LogNote("Vulkan: vertices since the last heartbeat %u copies (%.1f MB) taking %.0f ms, largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, copyMilliseconds, static_cast<double>(largestFrameVertexBytes) / megabyte);
+
+		vertexUploads           = 0;
+		vertexUploadBytes       = 0;
+		vertexCopyTicks         = 0;
+		largestFrameVertexBytes = 0;
 	}
 
 	bool VulkanBackend::IsTwoStageDraw(uint32_t textureCoordinateSets) const

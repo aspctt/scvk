@@ -1110,6 +1110,7 @@ namespace scvk
 		stagingUsed           = 0;
 		ArenaRewind(vertexArena);
 		ArenaRewind(indexArena);
+		frameVertexBytes = 0;
 
 		// The fog record's copy lived in the arena just rewound
 		fogRecordBuffer = VK_NULL_HANDLE;
@@ -1662,6 +1663,7 @@ namespace scvk
 		slowFrames        = 0;
 
 		LogTextureTraffic();
+		LogVertexTraffic();
 
 		if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 		{
