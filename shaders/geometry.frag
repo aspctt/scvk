@@ -2,7 +2,7 @@
  * scvk - a native Vulkan renderer for SimCity 4
  *
  * Copyright (C) 2026 aspctt
- * SPDX-License-Identifier: LGPL-3.0-or-later
+ * SPDX-License-Identifier: LGPL-2.1-or-later
  *
  * Fragment stage for the fixed function geometry path.
  *

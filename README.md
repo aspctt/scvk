@@ -236,17 +236,15 @@ is never loaded at all.
 
 ## License
 
-scvk is licensed under the **GNU Lesser General Public License, version 3 or
-(at your option) any later version**. See [COPYING.LESSER](COPYING.LESSER), and
-[COPYING](COPYING) for the GNU General Public License it adds its permissions to.
+scvk is licensed under the **GNU Lesser General Public License, version 2.1 or
+(at your option) any later version**. See [LICENSE](LICENSE).
 
 You may link it dynamically with proprietary software such as SimCity 4, which
 is the entire point of the LGPL. Changes to scvk itself must be shared under
 the same terms.
 
 Third-party sources are vendored in [`vendor/`](vendor/README.md), each
-retaining its original notice. All are LGPL-2.1-or-later, which lets scvk use
-them under version 3:
+retaining its original notice, all LGPL-2.1-or-later:
 
 - [gzcom-dll](https://github.com/nsgomez/gzcom-dll) for the plugin ABI and
   driver interface declarations
