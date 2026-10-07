@@ -57,32 +57,9 @@ ubershader reproducing the combiner network in fragment code.
 
 ## Compatibility with other mods
 
-### SC4Fix: fully compatible
-
-[SC4Fix](https://github.com/nsgomez/sc4fix) is safe to run alongside scvk, and
-this is guaranteed by construction rather than by testing. The two touch
-completely disjoint parts of the game.
-
-SC4Fix works by patching machine code at hardcoded addresses. On game version
-641 it touches four places:
-
-| Address | What it fixes |
-|---|---|
-| `0x87B3D1` | Stops the game unloading plugin DLLs |
-| `0x65EE3E`, `0x65EE66` | Null dereference on puzzle pieces over LE lots |
-| `0x96DA1D` | The same crash, second site |
-| `0x5D3DE0` | Prop pox, a save corruption bug |
-
-**Rendering needs no patches.** scvk registers a COM class and implements an
-interface, which is the mechanism the game itself provides for replacing a
-renderer. The only game code it changes is frame pacing, below: five bytes in
-the simulator's frame tick and two in the animation clock by default, and a few
-more in the simulator if you turn the frame rate settings on. None of it is
-near an SC4Fix address.
-
-SC4Fix's DLL unload patch is mildly helpful to scvk: it stops the game
-unloading plugins it does not recognise, which removes a class of shutdown
-race entirely.
+- [SC4Fix](https://github.com/nsgomez/sc4fix): fully compatible.
+- [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options): fully
+  compatible, and the easiest way to select scvk. See [Installing](#installing).
 
 ### FPS limits: built in
 
