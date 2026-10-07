@@ -4,7 +4,7 @@
  * cIGZString.h
  *
  * Copyright (C) 2016 Nelson Gomez
- * Copyright (C) 2023 Nicholas Hayes
+ * Copyright (C) 2023, 2026 Nicholas Hayes
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -31,8 +31,8 @@ static const uint32_t GZIID_cIGZString = 0x89b7dc8;
 class cIGZString : public cIGZUnknown
 {
 	public:
-		virtual uint32_t FromChar(char const* pszSource) = 0;
-		virtual uint32_t FromChar(char const* pszSource, uint32_t dwLength) = 0;
+		virtual void FromChar(char const* pszSource) = 0;
+		virtual void FromChar(char const* pszSource, uint32_t dwLength) = 0;
 		virtual char const* ToChar(void) const = 0;
 		virtual char const* Data(void) const = 0;
 
@@ -46,8 +46,8 @@ class cIGZString : public cIGZUnknown
 
 		virtual cIGZString& operator=(cIGZString const& szOther) = 0;
 		
-		virtual int32_t Copy(cIGZString const& szOther) = 0;
-		virtual int32_t Resize(uint32_t dwNewSize) = 0;
+		virtual void Copy(cIGZString const& szOther) = 0;
+		virtual void Resize(uint32_t dwNewSize) = 0;
 		
 		virtual cIGZString* Append(char const* pszOther, uint32_t dwLength) = 0;
 		virtual cIGZString* Append(cIGZString const& szOther) = 0;

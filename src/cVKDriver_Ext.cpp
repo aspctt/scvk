@@ -300,9 +300,9 @@ namespace scvk
 
 		// Find its pixels
 		//
-		// The interface declares the surface address as a 32-bit integer, which in this
-		// 32-bit process is the pointer itself.
-		uint8_t* const bits          = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(buffer->GetColorSurfaceBits()));
+		// The interface hands the surface over untyped. Rows are found by a stride in bytes,
+		// so it is addressed as bytes.
+		uint8_t* const bits          = static_cast<uint8_t*>(buffer->GetColorSurfaceBits());
 		uint32_t const stride        = buffer->GetColorSurfaceStride();
 		uint32_t const bufferRows    = static_cast<uint32_t>(std::max(buffer->Height(), 0));
 		uint32_t const bufferColumns = static_cast<uint32_t>(std::max(buffer->Width(), 0));

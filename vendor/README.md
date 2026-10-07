@@ -24,7 +24,8 @@ interface declaration.
 ### gzcom-dll (19 files)
 
 <https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
-(C) 2024 memo, and contributors · LGPL-2.1-or-later
+(C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
+(2026-10-05)
 
 The GZCOM plugin SDK. Source of the plugin ABI and the graphics-driver
 interfaces.
@@ -47,7 +48,7 @@ interfaces.
 ### Scion (2 files)
 
 <https://github.com/nsgomez/scion> · Copyright (C) 2021 Nelson Gomez ·
-LGPL-2.1-or-later
+LGPL-2.1-or-later · matches `1fec95c` (2025-06-01)
 
 | Path | Role |
 |---|---|
@@ -66,7 +67,7 @@ framework at runtime. Scion is otherwise reference material only.
 ### SCGL (7 files)
 
 <https://github.com/nsgomez/scgl> · Copyright (C) 2025 Nelson Gomez ·
-LGPL-2.1-or-later
+LGPL-2.1-or-later · matches `dc80fae` (2026-02-16)
 
 Declarations for the optional driver extensions, which do not appear in
 gzcom-dll, plus the vertex format decoder.
