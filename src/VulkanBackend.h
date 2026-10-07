@@ -140,11 +140,59 @@ namespace scvk
 			float colour[4]      = { 0.0f, 0.0f, 0.0f, 0.0f };
 		};
 
+		/** A stretch of a texture block, by offset and size. */
+		struct MemoryRange
+		{
+			VkDeviceSize offset = 0;
+			VkDeviceSize size   = 0;
+		};
+
+		/**
+		 * One device-local allocation that textures are bound into side by side.
+		 *
+		 * Vulkan only promises 4096 allocations and some drivers stop there, while a city
+		 * with custom content keeps over 10000 textures alive, so giving each texture an
+		 * allocation of its own runs out. Blocks are kept until the device goes, like the
+		 * arenas: the game's texture count levels off, and a freed range is reused.
+		 */
+		struct TextureBlock
+		{
+			VkDeviceMemory memory          = VK_NULL_HANDLE;
+			uint32_t       memoryTypeIndex = 0;
+			VkDeviceSize   usedBytes       = 0;
+
+			// The unused ranges, sorted by offset with no two touching, so a range handed
+			// back merges with its neighbours.
+			std::vector<MemoryRange> freeRanges;
+
+			// No free range is larger than this. Exact after a search that found no room,
+			// raised when a range is handed back, so a full block is passed over without
+			// walking its ranges.
+			VkDeviceSize largestFreeBound = 0;
+		};
+
+		/**
+		 * Where an image's memory lives: a range of a texture block, or an allocation of
+		 * its own, which buffer regions and any texture too large for a block have.
+		 */
+		struct ImageMemory
+		{
+			VkDeviceMemory memory      = VK_NULL_HANDLE;
+			VkDeviceSize   offset      = 0;
+			VkDeviceSize   size        = 0;
+			uint32_t       blockIndex  = 0;
+			bool           isDedicated = true;
+
+			// The stretch of the block taken, which starts before the offset when the
+			// image needed aligning.
+			MemoryRange    range;
+		};
+
 		/** A texture, its view, and the descriptor set that binds it. */
 		struct Texture
 		{
-			VkImage        image      = VK_NULL_HANDLE;
-			VkDeviceMemory  memory     = VK_NULL_HANDLE;
+			VkImage         image      = VK_NULL_HANDLE;
+			ImageMemory     memory;
 			VkImageView     view       = VK_NULL_HANDLE;
 			VkDescriptorSet descriptor = VK_NULL_HANDLE;
 			VkFormat        format     = VK_FORMAT_UNDEFINED;
@@ -153,9 +201,6 @@ namespace scvk
 			uint32_t        levels     = 1;
 			bool            isCompressed = false;
 			bool            isLive       = false;
-
-			// The size of the memory backing the image, for the heartbeat's totals.
-			VkDeviceSize memoryBytes = 0;
 
 			// The texture pool its descriptor set came from, which is where it goes back.
 			uint32_t descriptorPoolIndex = 0;
@@ -187,7 +232,7 @@ namespace scvk
 		struct RetiredImage
 		{
 			VkImage         image               = VK_NULL_HANDLE;
-			VkDeviceMemory  memory              = VK_NULL_HANDLE;
+			ImageMemory     memory;
 			VkImageView     view                = VK_NULL_HANDLE;
 			VkDescriptorSet descriptor          = VK_NULL_HANDLE;
 			uint32_t        descriptorPoolIndex = 0;
@@ -289,8 +334,10 @@ namespace scvk
 		std::string              apiVersion;
 		bool                     isDead         = false;
 
-		// Every texture is one allocation, and Vulkan only promises 4096 of them.
+		// Vulkan only promises 4096 allocations, so every one is counted against the
+		// device's own limit.
 		uint32_t maximumMemoryAllocations = 0;
+		uint32_t liveMemoryAllocations    = 0;
 
 		// The window, the swapchain and what renders into it
 		void*                      windowHandle    = nullptr;
@@ -451,6 +498,7 @@ namespace scvk
 		// Index 0 is a 1x1 white texture, so an untextured draw multiplies by one instead
 		// of needing its own shader and pipeline.
 		std::vector<Texture>        textures;
+		std::vector<TextureBlock>   textureBlocks;
 		std::vector<RetiredImage>   retiredImages;
 		std::vector<SamplerEntry>   samplers;
 		uint32_t                    currentTexture  = 0;
@@ -478,6 +526,7 @@ namespace scvk
 		uint32_t     textureUploads     = 0;
 		VkDeviceSize textureUploadBytes = 0;
 		int64_t      textureWorkTicks   = 0;
+		int64_t      textureMemoryTicks = 0;
 
 		// Handle n is index n - 1, matching what the game is handed back, and leaving 0
 		// free to mean failure.
@@ -520,6 +569,13 @@ namespace scvk
 		void DestroyDevice(void);
 
 		bool FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, uint32_t& outIndex) const;
+
+		/** vkAllocateMemory, counting the allocation against the device's limit. */
+		VkResult AllocateDeviceMemory(VkMemoryAllocateInfo const& information, VkDeviceMemory& outMemory);
+
+		/** vkFreeMemory for memory from AllocateDeviceMemory, clearing the handle. Does nothing for a null one. */
+		void FreeDeviceMemory(VkDeviceMemory& memory);
+
 		bool CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& outBuffer, VkDeviceMemory& outMemory, void*& outMapped);
 
 		/** The swapchain extent as signed numbers, for arithmetic against the game's signed rectangles. */
@@ -644,6 +700,18 @@ namespace scvk
 		bool CreateDescriptorResources(void);
 		bool CreateDefaultTexture(void);
 		void DestroyTextures(void);
+
+		/** Finds memory for a texture image, in a texture block unless it is larger than one. */
+		bool AllocateTextureMemory(VkMemoryRequirements const& requirements, ImageMemory& outMemory);
+
+		/** Takes the first free range of a block that fits, aligned. Returns false when none does. */
+		static bool TakeBlockRange(TextureBlock& block, VkDeviceSize size, VkDeviceSize alignment, MemoryRange& outRange, VkDeviceSize& outOffset);
+
+		/** Gives a range back to its block, merging it with the free ranges either side. */
+		static void ReturnBlockRange(TextureBlock& block, MemoryRange range);
+
+		/** Gives an image's memory back, to its block or to the device, and clears it. */
+		void ReleaseImageMemory(ImageMemory& memory);
 
 		/** Destroys everything retired since the last frame. */
 		void FlushRetiredImages(void);

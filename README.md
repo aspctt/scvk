@@ -171,7 +171,9 @@ the saved scene and its depth (`scvk-key-N-*`).
 
 Every 300 frames the log also notes the frame rate, the slowest frame, how many
 textures are loaded and how many were created, deleted or uploaded since the
-last note, and how strong the game asked the building shadows to be.
+last note, how many blocks of graphics memory the textures share, how many
+memory allocations scvk holds against the graphics driver's limit, and how
+strong the game asked the building shadows to be.
 
 To see a debug view, put an empty file with one of these names next to
 `scvk.dll`, and delete it to go back to normal:

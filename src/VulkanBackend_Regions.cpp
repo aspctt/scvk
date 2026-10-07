@@ -114,7 +114,7 @@ namespace scvk
 		allocationInformation.allocationSize  = requirements.size;
 		allocationInformation.memoryTypeIndex = typeIndex;
 
-		result = vkAllocateMemory(device, &allocationInformation, nullptr, &depthMemory);
+		result = AllocateDeviceMemory(allocationInformation, depthMemory);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkAllocateMemory (depth)", result);
@@ -154,7 +154,7 @@ namespace scvk
 	{
 		if (depthView != VK_NULL_HANDLE)   { vkDestroyImageView(device, depthView, nullptr); depthView = VK_NULL_HANDLE; }
 		if (depthImage != VK_NULL_HANDLE)  { vkDestroyImage(device, depthImage, nullptr); depthImage = VK_NULL_HANDLE; }
-		if (depthMemory != VK_NULL_HANDLE) { vkFreeMemory(device, depthMemory, nullptr); depthMemory = VK_NULL_HANDLE; }
+		FreeDeviceMemory(depthMemory);
 	}
 
 	void VulkanBackend::BarrierDepthImage(VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess, VkPipelineStageFlags sourceStages, VkPipelineStageFlags destinationStages)
@@ -363,7 +363,7 @@ namespace scvk
 		allocationInformation.allocationSize  = requirements.size;
 		allocationInformation.memoryTypeIndex = typeIndex;
 
-		result = vkAllocateMemory(device, &allocationInformation, nullptr, &region.memory);
+		result = AllocateDeviceMemory(allocationInformation, region.memory);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkAllocateMemory (buffer region)", result);
@@ -395,7 +395,7 @@ namespace scvk
 	void VulkanBackend::DestroyLastFrame(void)
 	{
 		if (lastFrame.image != VK_NULL_HANDLE)  { vkDestroyImage(device, lastFrame.image, nullptr); }
-		if (lastFrame.memory != VK_NULL_HANDLE) { vkFreeMemory(device, lastFrame.memory, nullptr); }
+		FreeDeviceMemory(lastFrame.memory);
 
 		lastFrame = BufferRegion{};
 	}
@@ -600,7 +600,7 @@ namespace scvk
 
 		RetiredImage retired;
 		retired.image  = region.image;
-		retired.memory = region.memory;
+		retired.memory.memory = region.memory;
 
 		retiredImages.push_back(retired);
 

@@ -20,9 +20,10 @@
 /*
  * Textures and samplers.
  *
- * Each texture owns an image, a view and a descriptor set that never changes. Filter and
- * wrap live on each stage, as they do on a Direct3D texture stage, and pick a sampler
- * from a small cache when a draw binds them.
+ * Each texture owns an image, a view and a descriptor set that never changes, and a range
+ * of a memory block it shares with other textures. Filter and wrap live on each stage, as
+ * they do on a Direct3D texture stage, and pick a sampler from a small cache when a draw
+ * binds them.
  */
 
 //// Dependencies
@@ -80,6 +81,12 @@ namespace scvk
 		// chain gets exercised without needing thousands of custom buildings.
 		constexpr char const* SMALL_TEXTURE_POOLS_MARKER = "scvk-small-texture-pools";
 		constexpr uint32_t    SMALL_TEXTURE_SETS_PER_POOL = 64;
+
+		// Textures share device-local blocks of this size. A modded city held 10195
+		// textures in 142 MB, three blocks, where it had been 10195 allocations. The
+		// memory is never mapped, so unlike the arenas it costs the 32-bit process no
+		// address space.
+		constexpr VkDeviceSize TEXTURE_BLOCK_SIZE = 64ull * 1024 * 1024;
 
 		// The game's upload enumerations, from SCGL's translation tables. Formats: 0 RGB,
 		// 1 RGBA, 2 BGR, 3 BGRA. Types: 1 GL_UNSIGNED_BYTE, 8 GL_UNSIGNED_SHORT_4_4_4_4
@@ -296,9 +303,9 @@ namespace scvk
 	{
 		for (Texture& texture : textures)
 		{
-			if (texture.view != VK_NULL_HANDLE)   { vkDestroyImageView(device, texture.view, nullptr); }
-			if (texture.image != VK_NULL_HANDLE)  { vkDestroyImage(device, texture.image, nullptr); }
-			if (texture.memory != VK_NULL_HANDLE) { vkFreeMemory(device, texture.memory, nullptr); }
+			if (texture.view != VK_NULL_HANDLE)  { vkDestroyImageView(device, texture.view, nullptr); }
+			if (texture.image != VK_NULL_HANDLE) { vkDestroyImage(device, texture.image, nullptr); }
+			ReleaseImageMemory(texture.memory);
 
 			texture = Texture{};
 		}
@@ -306,6 +313,14 @@ namespace scvk
 		textures.clear();
 		currentTexture  = 0;
 		currentTexture1 = 0;
+
+		// Free the blocks, now that no image is bound into them
+		for (TextureBlock& block : textureBlocks)
+		{
+			FreeDeviceMemory(block.memory);
+		}
+
+		textureBlocks.clear();
 
 		// Destroying a pool frees every set still allocated from it
 		for (TexturePool const& texturePool : texturePools)
@@ -320,11 +335,11 @@ namespace scvk
 	{
 		// Called once a frame's fence, or the whole device, has been waited on, which means
 		// every command that could still have been reading these has completed.
-		for (RetiredImage const& retired : retiredImages)
+		for (RetiredImage& retired : retiredImages)
 		{
-			if (retired.view != VK_NULL_HANDLE)   { vkDestroyImageView(device, retired.view, nullptr); }
-			if (retired.image != VK_NULL_HANDLE)  { vkDestroyImage(device, retired.image, nullptr); }
-			if (retired.memory != VK_NULL_HANDLE) { vkFreeMemory(device, retired.memory, nullptr); }
+			if (retired.view != VK_NULL_HANDLE)  { vkDestroyImageView(device, retired.view, nullptr); }
+			if (retired.image != VK_NULL_HANDLE) { vkDestroyImage(device, retired.image, nullptr); }
+			ReleaseImageMemory(retired.memory);
 
 			// The descriptor set matters as much as the image. Each pool is capped, and
 			// leaking sets would add a pool every few thousand deletions.
@@ -337,6 +352,214 @@ namespace scvk
 		}
 
 		retiredImages.clear();
+	}
+
+	bool VulkanBackend::AllocateTextureMemory(VkMemoryRequirements const& requirements, ImageMemory& outMemory)
+	{
+		TickAccumulator const timer(textureMemoryTicks);
+
+		uint32_t typeIndex = 0;
+		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		{
+			LogNote("Vulkan: no device-local memory type for textures.");
+			return false;
+		}
+
+		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocationInformation.memoryTypeIndex = typeIndex;
+
+		// Give a texture larger than a block an allocation of its own
+		if (requirements.size > TEXTURE_BLOCK_SIZE)
+		{
+			allocationInformation.allocationSize = requirements.size;
+
+			ImageMemory dedicated;
+			VkResult const result = AllocateDeviceMemory(allocationInformation, dedicated.memory);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkAllocateMemory (texture)", result);
+				return false;
+			}
+
+			dedicated.size = requirements.size;
+			outMemory = dedicated;
+			return true;
+		}
+
+		// Take the first block of the same memory type with room
+		//
+		// Every image here has optimal tiling, so the spacing bufferImageGranularity
+		// demands between linear and optimal resources never comes into it.
+		for (uint32_t i = 0; i < textureBlocks.size(); i++)
+		{
+			TextureBlock& block = textureBlocks[i];
+
+			MemoryRange  range;
+			VkDeviceSize offset = 0;
+			if (block.memoryTypeIndex != typeIndex || !TakeBlockRange(block, requirements.size, requirements.alignment, range, offset))
+			{
+				continue;
+			}
+
+			outMemory.memory      = block.memory;
+			outMemory.offset      = offset;
+			outMemory.size        = requirements.size;
+			outMemory.blockIndex  = i;
+			outMemory.isDedicated = false;
+			outMemory.range       = range;
+			return true;
+		}
+
+		// Add a block when none has room
+		TextureBlock block;
+		block.memoryTypeIndex  = typeIndex;
+		block.largestFreeBound = TEXTURE_BLOCK_SIZE;
+		block.freeRanges.push_back(MemoryRange{ 0, TEXTURE_BLOCK_SIZE });
+
+		allocationInformation.allocationSize = TEXTURE_BLOCK_SIZE;
+
+		VkResult const result = AllocateDeviceMemory(allocationInformation, block.memory);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateMemory (texture block)", result);
+			return false;
+		}
+
+		// A fresh block starts at offset 0, which suits any alignment.
+		MemoryRange  range;
+		VkDeviceSize offset = 0;
+		TakeBlockRange(block, requirements.size, requirements.alignment, range, offset);
+
+		textureBlocks.push_back(block);
+		LogNote("Vulkan: textures now take %u blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
+
+		outMemory.memory      = block.memory;
+		outMemory.offset      = offset;
+		outMemory.size        = requirements.size;
+		outMemory.blockIndex  = textureBlocks.size() - 1;
+		outMemory.isDedicated = false;
+		outMemory.range       = range;
+		return true;
+	}
+
+	bool VulkanBackend::TakeBlockRange(TextureBlock& block, VkDeviceSize size, VkDeviceSize alignment, MemoryRange& outRange, VkDeviceSize& outOffset)
+	{
+		// Pass over a block with no range large enough
+		if (size > block.largestFreeBound)
+		{
+			return false;
+		}
+
+		VkDeviceSize largestSeen = 0;
+
+		for (std::vector<MemoryRange>::iterator range = block.freeRanges.begin(); range != block.freeRanges.end(); ++range)
+		{
+			if (range->size > largestSeen)
+			{
+				largestSeen = range->size;
+			}
+
+			// Skip a range the aligned start leaves too little of
+			//
+			// Vulkan guarantees the alignment is a power of two.
+			VkDeviceSize const aligned = (range->offset + alignment - 1u) & ~(alignment - 1u);
+			VkDeviceSize const end     = range->offset + range->size;
+
+			if (aligned >= end || end - aligned < size)
+			{
+				continue;
+			}
+
+			// Take the alignment gap along with the image
+			//
+			// Left free, every gap became a range of its own, too small for most
+			// textures, and every later search walked all of them: a city with 14000
+			// textures took 1.8 ms to create each one. The gaps came to 2 KB a texture at
+			// most, and the whole stretch goes back when the texture is deleted.
+			outRange  = MemoryRange{ range->offset, aligned + size - range->offset };
+			outOffset = aligned;
+
+			if (end > aligned + size)
+			{
+				*range = MemoryRange{ aligned + size, end - (aligned + size) };
+			}
+			else
+			{
+				block.freeRanges.erase(range);
+			}
+
+			block.usedBytes += outRange.size;
+			return true;
+		}
+
+		// The whole list was walked, so its largest range is now known exactly
+		block.largestFreeBound = largestSeen;
+		return false;
+	}
+
+	void VulkanBackend::ReturnBlockRange(TextureBlock& block, MemoryRange range)
+	{
+		// Find the first free range after it
+		std::vector<MemoryRange>::iterator next = block.freeRanges.begin();
+		while (next != block.freeRanges.end() && next->offset < range.offset)
+		{
+			++next;
+		}
+
+		block.usedBytes -= range.size;
+
+		// Merge it with the range before, the range after, or both
+		bool const touchesBefore = next != block.freeRanges.begin() && (next - 1)->offset + (next - 1)->size == range.offset;
+		bool const touchesAfter  = next != block.freeRanges.end() && range.offset + range.size == next->offset;
+
+		VkDeviceSize mergedSize = range.size;
+
+		if (touchesBefore && touchesAfter)
+		{
+			(next - 1)->size += range.size + next->size;
+			mergedSize = (next - 1)->size;
+			block.freeRanges.erase(next);
+		}
+		else if (touchesBefore)
+		{
+			(next - 1)->size += range.size;
+			mergedSize = (next - 1)->size;
+		}
+		else if (touchesAfter)
+		{
+			next->offset = range.offset;
+			next->size  += range.size;
+			mergedSize = next->size;
+		}
+		else
+		{
+			block.freeRanges.insert(next, range);
+		}
+
+		// Keep the bound above every free range
+		if (mergedSize > block.largestFreeBound)
+		{
+			block.largestFreeBound = mergedSize;
+		}
+	}
+
+	void VulkanBackend::ReleaseImageMemory(ImageMemory& memory)
+	{
+		if (memory.memory == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
+		if (memory.isDedicated)
+		{
+			FreeDeviceMemory(memory.memory);
+		}
+		else if (memory.blockIndex < textureBlocks.size())
+		{
+			ReturnBlockRange(textureBlocks[memory.blockIndex], memory.range);
+		}
+
+		memory = ImageMemory{};
 	}
 
 	VkDescriptorSet VulkanBackend::GetSamplerSet(uint32_t const parameters[4])
@@ -653,13 +876,13 @@ namespace scvk
 			}
 
 			liveCount++;
-			liveBytes += texture.memoryBytes;
+			liveBytes += texture.memory.size;
 
 			bool const isIdle = (texture.lastDrawnFrame == UINT64_MAX) || (texture.lastDrawnFrame + IDLE_TEXTURE_FRAMES <= presentedFrames);
 			if (isIdle)
 			{
 				idleCount++;
-				idleBytes += texture.memoryBytes;
+				idleBytes += texture.memory.size;
 			}
 		}
 
@@ -670,13 +893,27 @@ namespace scvk
 		double const megabyte = 1024.0 * 1024.0;
 		LogNote("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, workMilliseconds);
 
-		// Warn when the textures near the device's allocation limit
-		//
-		// Each texture is an allocation of its own, and going past the limit is undefined.
-		// Some drivers allow billions; the spec only promises 4096.
-		if (maximumMemoryAllocations != 0 && static_cast<uint64_t>(liveCount) * 10u >= static_cast<uint64_t>(maximumMemoryAllocations) * 9u)
+		// Say how the texture memory is laid out
+		VkDeviceSize blockUsedBytes = 0;
+		size_t       freeRanges     = 0;
+		for (TextureBlock const& block : textureBlocks)
 		{
-			LogNote("Vulkan: WARNING: %u live textures against a limit of %u memory allocations.", liveCount, maximumMemoryAllocations);
+			blockUsedBytes += block.usedBytes;
+			freeRanges     += block.freeRanges.size();
+		}
+
+		// The tick counts are far below the range where a double loses whole ticks.
+		double const memoryMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(textureMemoryTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
+
+		LogNote("Vulkan: texture blocks %u (%.0f MB in use, %u free ranges, %.0f ms finding room); %u memory allocations of %u allowed.", textureBlocks.size(), static_cast<double>(blockUsedBytes) / megabyte, freeRanges, memoryMilliseconds, liveMemoryAllocations, maximumMemoryAllocations);
+
+		// Warn when the allocations near the device's limit
+		//
+		// Going past it is undefined. Some drivers allow billions; the spec only promises
+		// 4096. Widened so the products cannot overflow.
+		if (maximumMemoryAllocations != 0 && uint64_t{ liveMemoryAllocations } * 10u >= uint64_t{ maximumMemoryAllocations } * 9u)
+		{
+			LogNote("Vulkan: WARNING: %u memory allocations against a limit of %u.", liveMemoryAllocations, maximumMemoryAllocations);
 		}
 
 		texturesCreated    = 0;
@@ -684,6 +921,7 @@ namespace scvk
 		textureUploads     = 0;
 		textureUploadBytes = 0;
 		textureWorkTicks   = 0;
+		textureMemoryTicks = 0;
 	}
 
 	void VulkanBackend::BeginUploadCommands(void)
@@ -749,32 +987,17 @@ namespace scvk
 			return 0;
 		}
 
-		// Back it with device-local memory
+		// Back it with device-local memory, shared with other textures
 		VkMemoryRequirements requirements{};
 		vkGetImageMemoryRequirements(device, texture.image, &requirements);
 
-		uint32_t typeIndex = 0;
-		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		if (!AllocateTextureMemory(requirements, texture.memory))
 		{
 			vkDestroyImage(device, texture.image, nullptr);
-			LogNote("Vulkan: no device-local memory type for textures.");
 			return 0;
 		}
 
-		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-		allocationInformation.allocationSize  = requirements.size;
-		allocationInformation.memoryTypeIndex = typeIndex;
-
-		result = vkAllocateMemory(device, &allocationInformation, nullptr, &texture.memory);
-		if (result != VK_SUCCESS)
-		{
-			vkDestroyImage(device, texture.image, nullptr);
-			Fail("vkAllocateMemory (texture)", result);
-			return 0;
-		}
-
-		vkBindImageMemory(device, texture.image, texture.memory, 0);
-		texture.memoryBytes = requirements.size;
+		vkBindImageMemory(device, texture.image, texture.memory.memory, texture.memory.offset);
 
 		// Create its view
 		VkImageViewCreateInfo viewInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -953,7 +1176,7 @@ namespace scvk
 
 		// Release the host buffer
 		vkUnmapMemory(device, uploadMemory);
-		vkFreeMemory(device, uploadMemory, nullptr);
+		FreeDeviceMemory(uploadMemory);
 		vkDestroyBuffer(device, uploadBuffer, nullptr);
 	}
 

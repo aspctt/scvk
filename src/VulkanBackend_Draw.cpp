@@ -618,7 +618,7 @@ namespace scvk
 		for (ArenaBlock& block : arena.blocks)
 		{
 			if (block.mapped != nullptr)        { vkUnmapMemory(device, block.memory); }
-			if (block.memory != VK_NULL_HANDLE) { vkFreeMemory(device, block.memory, nullptr); }
+			FreeDeviceMemory(block.memory);
 			if (block.buffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, block.buffer, nullptr); }
 		}
 

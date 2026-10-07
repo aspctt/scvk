@@ -490,7 +490,7 @@ namespace scvk
 		allocationInformation.allocationSize  = requirements.size;
 		allocationInformation.memoryTypeIndex = typeIndex;
 
-		result = vkAllocateMemory(device, &allocationInformation, nullptr, &stagingMemory);
+		result = AllocateDeviceMemory(allocationInformation, stagingMemory);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkAllocateMemory", result);
@@ -885,13 +885,13 @@ namespace scvk
 			DestroyArena(indexArena);
 			fogRecordBuffer = VK_NULL_HANDLE;
 
-			if (quadIndexMemory != VK_NULL_HANDLE) { vkFreeMemory(device, quadIndexMemory, nullptr); quadIndexMemory = VK_NULL_HANDLE; }
+			FreeDeviceMemory(quadIndexMemory);
 			if (quadIndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, quadIndexBuffer, nullptr); quadIndexBuffer = VK_NULL_HANDLE; }
 
 			DestroyReadbackBuffer();
 
 			if (stagingMapped != nullptr)          { vkUnmapMemory(device, stagingMemory); stagingMapped = nullptr; }
-			if (stagingMemory != VK_NULL_HANDLE)   { vkFreeMemory(device, stagingMemory, nullptr); stagingMemory = VK_NULL_HANDLE; }
+			FreeDeviceMemory(stagingMemory);
 			if (stagingBuffer != VK_NULL_HANDLE)   { vkDestroyBuffer(device, stagingBuffer, nullptr); stagingBuffer = VK_NULL_HANDLE; }
 
 			// Destroy the frame's synchronisation and commands, then the device
@@ -936,6 +936,29 @@ namespace scvk
 		return false;
 	}
 
+	VkResult VulkanBackend::AllocateDeviceMemory(VkMemoryAllocateInfo const& information, VkDeviceMemory& outMemory)
+	{
+		VkResult const result = vkAllocateMemory(device, &information, nullptr, &outMemory);
+		if (result == VK_SUCCESS)
+		{
+			liveMemoryAllocations++;
+		}
+
+		return result;
+	}
+
+	void VulkanBackend::FreeDeviceMemory(VkDeviceMemory& memory)
+	{
+		if (memory == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
+		vkFreeMemory(device, memory, nullptr);
+		memory = VK_NULL_HANDLE;
+		liveMemoryAllocations--;
+	}
+
 	bool VulkanBackend::CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& outBuffer, VkDeviceMemory& outMemory, void*& outMapped)
 	{
 		// Create the buffer
@@ -967,7 +990,7 @@ namespace scvk
 		allocationInformation.allocationSize  = requirements.size;
 		allocationInformation.memoryTypeIndex = typeIndex;
 
-		result = vkAllocateMemory(device, &allocationInformation, nullptr, &outMemory);
+		result = AllocateDeviceMemory(allocationInformation, outMemory);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkAllocateMemory", result);
@@ -1482,7 +1505,7 @@ namespace scvk
 	void VulkanBackend::DestroyReadbackBuffer(void)
 	{
 		if (readbackMapped != nullptr)        { vkUnmapMemory(device, readbackMemory); readbackMapped = nullptr; }
-		if (readbackMemory != VK_NULL_HANDLE) { vkFreeMemory(device, readbackMemory, nullptr); readbackMemory = VK_NULL_HANDLE; }
+		FreeDeviceMemory(readbackMemory);
 		if (readbackBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, readbackBuffer, nullptr); readbackBuffer = VK_NULL_HANDLE; }
 
 		readbackSize = 0;
