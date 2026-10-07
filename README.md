@@ -75,9 +75,9 @@ SC4Fix works by patching machine code at hardcoded addresses. On game version
 **Rendering needs no patches.** scvk registers a COM class and implements an
 interface, which is the mechanism the game itself provides for replacing a
 renderer. The only game code it changes is frame pacing, below: five bytes in
-the simulator's frame tick by default, and a few more there and in its speed
-settings if you turn the frame rate settings on. None of it is near an SC4Fix
-address.
+the simulator's frame tick and two in the animation clock by default, and a few
+more in the simulator if you turn the frame rate settings on. None of it is
+near an SC4Fix address.
 
 SC4Fix's DLL unload patch is mildly helpful to scvk: it stops the game
 unloading plugins it does not recognise, which removes a class of shutdown
@@ -91,7 +91,10 @@ A paused city is held at 30 the same way, though there is nothing to simulate.
 That is the 30 a still camera settles at; the game skips the padding while the
 camera moves.
 
-scvk always lifts the paused 30. It can also raise the speed caps itself, so
+scvk always lifts the paused 30. A paused city can then run at hundreds of
+frames a second, where the game's animation clock rounded each frame up to 2 ms
+and sped lot animations up, so scvk also lets it count short frames as they
+are. It can also raise the speed caps itself, so
 [sc4-disable-fps-limits](https://github.com/caspervg/sc4-disable-fps-limits) is
 not required, though it remains compatible.
 

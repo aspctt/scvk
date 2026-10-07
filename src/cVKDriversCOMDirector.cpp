@@ -82,7 +82,8 @@ namespace scvk
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
 
 			// Change the game's frame pacing, the only place scvk writes to game memory.
-			// Only the paused padding changes without scvk.ini asking.
+			// Only the paused padding and the animation clock's floor change without
+			// scvk.ini asking.
 			ApplyFpsLimitSettings();
 			return true;
 		}

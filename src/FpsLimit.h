@@ -32,12 +32,14 @@ namespace scvk
 	 *
 	 * The game's simulator pads every frame with simulation and idle work until it has
 	 * lasted 1000 / rate milliseconds. The rate is the speed's cap, 30 at Turtle, 20 at
-	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Three changes, each
+	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Four changes, each
 	 * a few bytes of the game's code:
 	 *
 	 * - A paused city's frames are no longer padded, always. The padding only gives the
 	 *   idle agents time while nothing is simulated, and it held a paused city at 30
 	 *   frames a second that no setting could raise.
+	 * - The animation clock counts frames shorter than 2 ms as they are, always. It used
+	 *   to round them up, so lot animations ran fast above 500 frames a second.
 	 * - The speed caps become MaxFPS, when it is set. Each is a one-byte immediate.
 	 * - The 15 ms of padding every running frame gets becomes 3 ms, when UnlockRunningFPS
 	 *   is true, so MaxFPS can go past about 60. That time is the simulation's, so the

@@ -87,8 +87,23 @@ namespace scvk
 		constexpr uint8_t   MINIMUM_BUDGET_ORIGINAL[]  = { 0x83, 0xF8, 0x0F, 0x7F, 0x05, 0xB8, 0x0F, 0x00, 0x00, 0x00 };
 		constexpr uint8_t   MINIMUM_BUDGET_PATCHED[]   = { 0x83, 0xF8, TICK_BUDGET_MILLISECONDS, 0x7F, 0x05, 0xB8, TICK_BUDGET_MILLISECONDS, 0x00, 0x00, 0x00 };
 
+		// The animation clock (cSC4AnimationTickManager) hands lot animations the time since
+		// its last tick, once a frame, but counts any tick shorter than 2 ms as 2 ms. Above
+		// 500 frames a second, which an unpadded paused city reaches, the animations run
+		// ahead of real time, up to twice as fast. Its constructor (0x448E30) stores that
+		// floor in microseconds with MOV [ESI+0x50],2000, and nothing changes it after.
+		//
+		// The floor it gets instead, which keeps the time exact up to 10,000 frames a second.
+		// Some floor stays, so a tick never reports no time at all.
+		constexpr uint8_t ANIMATION_FLOOR_MICROSECONDS = 100;
+
+		constexpr uintptr_t ANIMATION_FLOOR_ADDRESS_641 = 0x448EA2;
+		constexpr uint8_t   ANIMATION_FLOOR_ORIGINAL[]  = { 0xC7, 0x46, 0x50, 0xD0, 0x07, 0x00, 0x00 };
+		constexpr uint8_t   ANIMATION_FLOOR_PATCHED[]   = { 0xC7, 0x46, 0x50, ANIMATION_FLOOR_MICROSECONDS, 0x00, 0x00, 0x00 };
+
 		static_assert(sizeof(PAUSED_RATE_ORIGINAL) == sizeof(PAUSED_RATE_PATCHED), "a patch must replace exactly the bytes it checked");
 		static_assert(sizeof(MINIMUM_BUDGET_ORIGINAL) == sizeof(MINIMUM_BUDGET_PATCHED), "a patch must replace exactly the bytes it checked");
+		static_assert(sizeof(ANIMATION_FLOOR_ORIGINAL) == sizeof(ANIMATION_FLOOR_PATCHED), "a patch must replace exactly the bytes it checked");
 	}
 
 	//// Private Functions
@@ -233,6 +248,13 @@ namespace scvk
 		// Always, since the padding only gives the idle agents time while nothing is being
 		// simulated.
 		PatchCode("paused frame padding", PAUSED_RATE_ADDRESS_641, PAUSED_RATE_ORIGINAL, PAUSED_RATE_PATCHED, sizeof(PAUSED_RATE_ORIGINAL));
+
+		// Let the animation clock count short frames as they are
+		//
+		// Always, since without the paused padding a paused city easily runs fast enough
+		// for the old floor to speed its animations up. The game builds its clocks after
+		// scvk starts, so they all get the new floor.
+		PatchCode("animation clock floor", ANIMATION_FLOOR_ADDRESS_641, ANIMATION_FLOOR_ORIGINAL, ANIMATION_FLOOR_PATCHED, sizeof(ANIMATION_FLOOR_ORIGINAL));
 
 		// Lower the running city's minimum padding, when asked
 		if (shouldUnlockRunningFrames)
