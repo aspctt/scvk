@@ -21,9 +21,10 @@
  * Textures and samplers.
  *
  * Each texture owns an image, a view and a descriptor set that never changes, and a range
- * of a memory block it shares with other textures. Filter and wrap live on each stage, as
- * they do on a Direct3D texture stage, and pick a sampler from a small cache when a draw
- * binds them.
+ * of a memory block it shares with other textures. Uploads are gathered into batches that
+ * run ahead of the frame drawing with them. Filter and wrap live on each stage, as they
+ * do on a Direct3D texture stage, and pick a sampler from a small cache when a draw binds
+ * them.
  */
 
 //// Dependencies
@@ -87,6 +88,16 @@ namespace scvk
 		// memory is never mapped, so unlike the arenas it costs the 32-bit process no
 		// address space.
 		constexpr VkDeviceSize TEXTURE_BLOCK_SIZE = 64ull * 1024 * 1024;
+
+		// Staging for a batch of texture uploads. A block holds a 2048x2048 RGBA level,
+		// past anything the game was seen to upload; a larger one gets a buffer of its own.
+		// A batch that fills both blocks is submitted and waited for early.
+		constexpr VkDeviceSize TEXTURE_UPLOAD_BLOCK_SIZE     = 16ull * 1024 * 1024;
+		constexpr size_t       TEXTURE_UPLOAD_MAXIMUM_BLOCKS = 2;
+
+		// A copy's buffer offset must be a multiple of the texel block size, which is 16
+		// bytes at most here (DXT3 and DXT5).
+		constexpr VkDeviceSize TEXTURE_UPLOAD_ALIGNMENT = 16;
 
 		// The game's upload enumerations, from SCGL's translation tables. Formats: 0 RGB,
 		// 1 RGBA, 2 BGR, 3 BGRA. Types: 1 GL_UNSIGNED_BYTE, 8 GL_UNSIGNED_SHORT_4_4_4_4
@@ -244,9 +255,9 @@ namespace scvk
 			return false;
 		}
 
-		// Reserve a command buffer and fence for uploads
+		// Reserve command buffers and fences for work outside the frame
 		//
-		// Uploads happen outside the frame's own recording.
+		// One runs the texture batches, the other anything waited for at once.
 		VkCommandBufferAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 		allocationInformation.commandPool        = commandPool;
 		allocationInformation.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -259,11 +270,36 @@ namespace scvk
 			return false;
 		}
 
+		result = vkAllocateCommandBuffers(device, &allocationInformation, &textureBatchCommandBuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkAllocateCommandBuffers (texture batch)", result);
+			return false;
+		}
+
 		VkFenceCreateInfo fenceInformation{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
 		result = vkCreateFence(device, &fenceInformation, nullptr, &uploadFence);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkCreateFence (upload)", result);
+			return false;
+		}
+
+		result = vkCreateFence(device, &fenceInformation, nullptr, &textureBatchFence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateFence (texture batch)", result);
+			return false;
+		}
+
+		// Create the staging arena for texture uploads
+		textureUploadArena.name          = "texture upload";
+		textureUploadArena.usage         = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		textureUploadArena.blockSize     = TEXTURE_UPLOAD_BLOCK_SIZE;
+		textureUploadArena.maximumBlocks = TEXTURE_UPLOAD_MAXIMUM_BLOCKS;
+
+		if (!ArenaAddBlock(textureUploadArena))
+		{
 			return false;
 		}
 
@@ -301,6 +337,18 @@ namespace scvk
 
 	void VulkanBackend::DestroyTextures(void)
 	{
+		// Drop a batch never submitted, and wait out one that was
+		//
+		// Nothing draws with these textures again, so the batch need not run.
+		if (isTextureBatchOpen)
+		{
+			vkEndCommandBuffer(textureBatchCommandBuffer);
+			isTextureBatchOpen = false;
+		}
+
+		WaitForTextureBatch();
+		DestroyArena(textureUploadArena);
+
 		for (Texture& texture : textures)
 		{
 			if (texture.view != VK_NULL_HANDLE)  { vkDestroyImageView(device, texture.view, nullptr); }
@@ -333,6 +381,16 @@ namespace scvk
 
 	void VulkanBackend::FlushRetiredImages(void)
 	{
+		// Settle the texture batch first
+		//
+		// Its commands may name an image retired here. Destroying the image would make a
+		// batch still to be submitted invalid, and one still running would write freed
+		// memory.
+		if (!retiredImages.empty())
+		{
+			FinishTextureBatch();
+		}
+
 		// Called once a frame's fence, or the whole device, has been waited on, which means
 		// every command that could still have been reading these has completed.
 		for (RetiredImage& retired : retiredImages)
@@ -891,7 +949,7 @@ namespace scvk
 
 		// Byte totals stay far below the range where a double loses whole megabytes.
 		double const megabyte = 1024.0 * 1024.0;
-		LogNote("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, workMilliseconds);
+		LogNote("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) in %u batches taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, textureBatches, workMilliseconds);
 
 		// Say how the texture memory is laid out
 		VkDeviceSize blockUsedBytes = 0;
@@ -920,6 +978,7 @@ namespace scvk
 		texturesDestroyed  = 0;
 		textureUploads     = 0;
 		textureUploadBytes = 0;
+		textureBatches     = 0;
 		textureWorkTicks   = 0;
 		textureMemoryTicks = 0;
 	}
@@ -944,10 +1003,152 @@ namespace scvk
 		vkResetFences(device, 1, &uploadFence);
 		vkQueueSubmit(queue, 1, &submit, uploadFence);
 
-		// Waited on rather than pipelined. Uploads are rare (a few hundred in a session)
-		// and always happen outside the frame, so the simplicity is worth more than the
-		// throughput.
+		// Waited on rather than pipelined. Only reading the last frame back uses this,
+		// and it needs the pixels at once.
 		vkWaitForFences(device, 1, &uploadFence, VK_TRUE, UINT64_MAX);
+	}
+
+	bool VulkanBackend::BeginTextureBatch(void)
+	{
+		if (isTextureBatchOpen)
+		{
+			return true;
+		}
+
+		// Let the previous batch finish, so its command buffer and staging can be reused
+		WaitForTextureBatch();
+
+		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		vkResetCommandBuffer(textureBatchCommandBuffer, 0);
+
+		VkResult const result = vkBeginCommandBuffer(textureBatchCommandBuffer, &beginInformation);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkBeginCommandBuffer (texture batch)", result);
+			return false;
+		}
+
+		isTextureBatchOpen = true;
+		return true;
+	}
+
+	void VulkanBackend::SubmitTextureBatch(void)
+	{
+		if (!isTextureBatchOpen)
+		{
+			return;
+		}
+
+		isTextureBatchOpen = false;
+
+		VkResult result = vkEndCommandBuffer(textureBatchCommandBuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkEndCommandBuffer (texture batch)", result);
+			return;
+		}
+
+		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers    = &textureBatchCommandBuffer;
+
+		vkResetFences(device, 1, &textureBatchFence);
+
+		result = vkQueueSubmit(queue, 1, &submit, textureBatchFence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkQueueSubmit (texture batch)", result);
+			return;
+		}
+
+		isTextureBatchInFlight = true;
+		textureBatches++;
+	}
+
+	void VulkanBackend::FinishTextureBatch(void)
+	{
+		SubmitTextureBatch();
+		WaitForTextureBatch();
+	}
+
+	void VulkanBackend::WaitForTextureBatch(void)
+	{
+		if (isTextureBatchInFlight)
+		{
+			vkWaitForFences(device, 1, &textureBatchFence, VK_TRUE, UINT64_MAX);
+			isTextureBatchInFlight = false;
+		}
+
+		// An open batch still reads its staging
+		if (isTextureBatchOpen)
+		{
+			return;
+		}
+
+		// Free the staging for the next batch
+		ArenaRewind(textureUploadArena);
+
+		for (ArenaBlock& block : oversizedUploadBuffers)
+		{
+			if (block.mapped != nullptr) { vkUnmapMemory(device, block.memory); }
+			FreeDeviceMemory(block.memory);
+			if (block.buffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, block.buffer, nullptr); }
+		}
+
+		oversizedUploadBuffers.clear();
+	}
+
+	bool VulkanBackend::StageTextureUpload(std::vector<uint8_t> const& staged, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	{
+		VkDeviceSize const bytes = staged.size();
+
+		// Give an upload too large for the arena a buffer of its own, freed with the batch
+		if (bytes > textureUploadArena.blockSize)
+		{
+			if (!BeginTextureBatch())
+			{
+				return false;
+			}
+
+			ArenaBlock block;
+			if (!CreateHostBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, block.buffer, block.memory, block.mapped))
+			{
+				return false;
+			}
+
+			memcpy(block.mapped, staged.data(), staged.size());
+			oversizedUploadBuffers.push_back(block);
+
+			outBuffer = block.buffer;
+			outOffset = 0;
+			return true;
+		}
+
+		// Finish the batch when the arena is full, so its staging can be reused
+		//
+		// Only an open batch can have filled it: the arena is rewound whenever a batch
+		// finishes, and opening one waits for the last.
+		if (isTextureBatchOpen && !ArenaHasRoom(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT))
+		{
+			FinishTextureBatch();
+		}
+
+		if (!BeginTextureBatch())
+		{
+			return false;
+		}
+
+		uint8_t* address = nullptr;
+		if (!ArenaAllocate(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT, outBuffer, outOffset, address))
+		{
+			LogNote("Vulkan: no staging for a texture upload of %llu bytes; skipping it.", bytes);
+			return false;
+		}
+
+		memcpy(address, staged.data(), staged.size());
+		return true;
 	}
 
 	//// Public API
@@ -1037,10 +1238,13 @@ namespace scvk
 
 		texture.isLive = true;
 
-		// Put the image into its sampled layout straight away
+		// Put the image into its sampled layout ahead of the frame's draws
 		//
 		// So a draw that binds it before anything has been uploaded is still valid.
-		BeginUploadCommands();
+		if (!BeginTextureBatch())
+		{
+			return 0;
+		}
 
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1053,9 +1257,7 @@ namespace scvk
 		barrier.subresourceRange.levelCount = texture.levels;
 		barrier.subresourceRange.layerCount = 1;
 
-		vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-		SubmitUploadCommands();
+		vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 		// Hand out the next slot
 		texturesCreated++;
@@ -1119,23 +1321,23 @@ namespace scvk
 			texture.firstByteCount = static_cast<uint32_t>(keptBytes);
 		}
 
-		// Put it in a host buffer
-		VkBuffer       uploadBuffer = VK_NULL_HANDLE;
-		VkDeviceMemory uploadMemory = VK_NULL_HANDLE;
-		void*          uploadMapped = nullptr;
+		// Stage it for the batch
+		VkBuffer     uploadBuffer = VK_NULL_HANDLE;
+		VkDeviceSize uploadOffset = 0;
 
-		if (!CreateHostBuffer(staged.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, uploadBuffer, uploadMemory, uploadMapped))
+		if (!StageTextureUpload(staged, uploadBuffer, uploadOffset))
 		{
 			return;
 		}
-
-		memcpy(uploadMapped, staged.data(), staged.size());
 
 		textureUploads++;
 		textureUploadBytes += staged.size();
 
 		// Copy it into the level, out of and back into the sampled layout
-		BeginUploadCommands();
+		//
+		// The barriers reach across submissions to the same queue: the first waits for
+		// earlier frames still sampling the image, the second makes the copy visible to
+		// the frames after.
 
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1151,10 +1353,10 @@ namespace scvk
 		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-		vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 		VkBufferImageCopy copy{};
-		copy.bufferOffset      = 0;
+		copy.bufferOffset      = uploadOffset;
 		copy.bufferRowLength   = 0;
 		copy.bufferImageHeight = 0;
 		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1163,21 +1365,14 @@ namespace scvk
 		copy.imageOffset = { offsetX, offsetY, 0 };
 		copy.imageExtent = { width, height, 1 };
 
-		vkCmdCopyBufferToImage(uploadCommandBuffer, uploadBuffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		vkCmdCopyBufferToImage(textureBatchCommandBuffer, uploadBuffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
 		barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-		vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-		SubmitUploadCommands();
-
-		// Release the host buffer
-		vkUnmapMemory(device, uploadMemory);
-		FreeDeviceMemory(uploadMemory);
-		vkDestroyBuffer(device, uploadBuffer, nullptr);
+		vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
 	void VulkanBackend::SetStageParameter(uint32_t stage, uint32_t parameterType, uint32_t value)

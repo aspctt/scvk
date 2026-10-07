@@ -857,7 +857,8 @@ namespace scvk
 			FlushRetiredImages();
 			DestroyTextures();
 
-			if (uploadFence != VK_NULL_HANDLE) { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
+			if (uploadFence != VK_NULL_HANDLE)       { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
+			if (textureBatchFence != VK_NULL_HANDLE) { vkDestroyFence(device, textureBatchFence, nullptr); textureBatchFence = VK_NULL_HANDLE; }
 
 			for (SamplerEntry const& entry : samplers)
 			{
@@ -1153,6 +1154,9 @@ namespace scvk
 		submit.pWaitDstStageMask  = &waitStages;
 		submit.commandBufferCount = 1;
 		submit.pCommandBuffers    = &commandBuffer;
+
+		// Send the texture uploads ahead of the draws that sample them
+		SubmitTextureBatch();
 
 		vkResetFences(device, 1, &frameFence);
 
@@ -2225,6 +2229,9 @@ namespace scvk
 		submit.pCommandBuffers      = &commandBuffer;
 		submit.signalSemaphoreCount = 1;
 		submit.pSignalSemaphores    = &renderFinishedSemaphore;
+
+		// Send the texture uploads ahead of the draws that sample them
+		SubmitTextureBatch();
 
 		vkResetFences(device, 1, &frameFence);
 

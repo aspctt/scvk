@@ -219,9 +219,9 @@ namespace scvk
 			uint8_t  firstBytes[16] = {};
 			uint32_t firstByteCount = 0;
 
-			// The frame whose command buffer last sampled this texture. Uploads are
-			// submitted at once while draws wait for the end of the frame, so an upload
-			// in that same frame reaches draws that the game issued before it.
+			// The frame whose command buffer last sampled this texture. Uploads go to the
+			// GPU ahead of the frame's draws, so an upload in that same frame reaches
+			// draws that the game issued before it.
 			uint64_t lastDrawnFrame = UINT64_MAX;
 		};
 
@@ -509,8 +509,20 @@ namespace scvk
 		// leaves them alone. Linear with repeat until the game says otherwise.
 		uint32_t                    stageParameters[2][4] = { { 1, 1, 3, 3 }, { 1, 1, 3, 3 } };
 
+		// Commands run outside the frame and waited for at once, which reading the last
+		// frame back between frames needs.
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
+
+		// Texture uploads, recorded into one batch and staged in an arena, then submitted
+		// ahead of the frame that draws with them. Waiting for each upload on its own cost
+		// most of a millisecond, and a modded city makes thousands of them.
+		Arena                       textureUploadArena;
+		std::vector<ArenaBlock>     oversizedUploadBuffers;
+		VkCommandBuffer             textureBatchCommandBuffer = VK_NULL_HANDLE;
+		VkFence                     textureBatchFence         = VK_NULL_HANDLE;
+		bool                        isTextureBatchOpen        = false;
+		bool                        isTextureBatchInFlight    = false;
 
 		// Texture uses that OpenGL would order differently from us, counted so the log
 		// says whether they happen at all.
@@ -525,6 +537,7 @@ namespace scvk
 		uint32_t     texturesDestroyed  = 0;
 		uint32_t     textureUploads     = 0;
 		VkDeviceSize textureUploadBytes = 0;
+		uint32_t     textureBatches     = 0;
 		int64_t      textureWorkTicks   = 0;
 		int64_t      textureMemoryTicks = 0;
 
@@ -739,6 +752,21 @@ namespace scvk
 
 		/** Submits the upload command buffer and waits for it. */
 		void SubmitUploadCommands(void);
+
+		/** Opens a texture batch to record into, unless one is open already. */
+		bool BeginTextureBatch(void);
+
+		/** Submits the open texture batch, without waiting for it. */
+		void SubmitTextureBatch(void);
+
+		/** Submits the open texture batch and waits for it, freeing its staging. */
+		void FinishTextureBatch(void);
+
+		/** Waits for the submitted texture batch, if there is one, and frees its staging. */
+		void WaitForTextureBatch(void);
+
+		/** Finds staging for an upload in the batch, finishing the batch first when the arena is full. */
+		bool StageTextureUpload(std::vector<uint8_t> const& staged, VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		// Depth and buffer regions, in VulkanBackend_Regions.cpp
 

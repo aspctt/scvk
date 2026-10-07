@@ -574,7 +574,7 @@ namespace scvk
 					return false;
 				}
 
-				LogNote("Vulkan: the per-frame %s data grew to %u blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
+				LogNote("Vulkan: the %s arena grew to %u blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
 			}
 
 			arena.currentBlock++;
