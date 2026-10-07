@@ -35,7 +35,12 @@ param(
 	[string]$PluginsDir = $null,
 
 	# The game's user dir, which holds its saves, regions and a Plugins folder of its own.
-	[string]$UserDir = $null
+	[string]$UserDir = $null,
+
+	# The LogLevel scvk runs with. Trace by default, since the summary below reads the
+	# heartbeat and the diagnostics; the live setting is put back after the run.
+	[ValidateSet("trace", "debug", "info", "warn", "error", "critical", "off")]
+	[string]$LogLevel = "trace"
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +61,7 @@ $userDirectory = $UserDir.TrimEnd("\")
 $builtDll      = Join-Path $repositoryRoot "$Configuration\scvk.dll"
 $liveDll       = Join-Path $PluginsDir "scvk.dll"
 $liveLog       = Join-Path $PluginsDir "scvk.log"
+$liveSettings  = Join-Path $PluginsDir "scvk.ini"
 $logDirectory  = Join-Path $repositoryRoot "logs"
 
 # The game's own arguments. The trailing separator on UserDir matters to the game's parser.
@@ -96,6 +102,23 @@ function Stop-SimCity {
 	try { $Process.WaitForExit(10000) | Out-Null } catch { }
 }
 
+# Settings text with LogLevel set, keeping its other lines and its line endings.
+function Set-LogLevelSetting {
+	param([string]$Settings, [string]$Level)
+
+	$newline = if ($Settings -match "`r`n") { "`r`n" } else { "`n" }
+
+	if ($Settings -match "(?m)^LogLevel=") {
+		return $Settings -replace "(?m)^LogLevel=[^\r\n]*", "LogLevel=$Level"
+	}
+
+	if ($Settings -match "(?m)^\[scvk\]") {
+		return $Settings -replace "(?m)^\[scvk\][^\r\n]*", "[scvk]${newline}LogLevel=$Level"
+	}
+
+	return $Settings.TrimEnd() + "${newline}${newline}[scvk]${newline}LogLevel=$Level$newline"
+}
+
 #// Entry Point
 
 if (-not (Test-Path $PluginsDir)) { throw "Not found: $PluginsDir" }
@@ -122,51 +145,68 @@ if (-not $NoDeploy) {
 
 if (Test-Path $liveLog) { [System.IO.File]::Delete($liveLog) }
 
-# Launch the game through Steam
+# Set the log level for the run
 #
-# Running the executable itself does not work: it is wrapped in Steam's DRM, so it hands
-# off to Steam and exits within a few seconds without ever loading a plugin. Going through
-# the steam:// URL is the only route that actually starts the game, at the cost of one
-# confirmation click per run.
-$steamUrl = "steam://run/$AppId//" + ($gameArguments -join " ") + "/"
+# scvk reads it from the live scvk.ini and nowhere else. The original text goes back once
+# the game has stopped, so a run leaves the settings the game is played with alone.
+$originalSettings = if (Test-Path $liveSettings) { [System.IO.File]::ReadAllText($liveSettings) } else { "" }
+[System.IO.File]::WriteAllText($liveSettings, (Set-LogLevelSetting -Settings $originalSettings -Level $LogLevel))
+Write-Host "log level $LogLevel for this run"
 
-Write-Host "launching through Steam"
-Write-Host "  >>> confirm the launch in Steam if it asks <<<"
-Start-Process $steamUrl | Out-Null
+try {
 
-# Wait for it to appear
-#
-# Steam takes a while, and the confirmation is a human in the loop, so the timer only
-# starts once the process actually exists.
-$game = $null
-$launchDeadline = (Get-Date).AddSeconds($LaunchTimeout)
+	# Launch the game through Steam
+	#
+	# Running the executable itself does not work: it is wrapped in Steam's DRM, so it hands
+	# off to Steam and exits within a few seconds without ever loading a plugin. Going through
+	# the steam:// URL is the only route that actually starts the game, at the cost of one
+	# confirmation click per run.
+	$steamUrl = "steam://run/$AppId//" + ($gameArguments -join " ") + "/"
 
-while ((Get-Date) -lt $launchDeadline) {
-	$game = Get-SimCity | Select-Object -First 1
+	Write-Host "launching through Steam"
+	Write-Host "  >>> confirm the launch in Steam if it asks <<<"
+	Start-Process $steamUrl | Out-Null
 
-	if ($game) { break }
-	Start-Sleep -Milliseconds 500
-}
+	# Wait for it to appear
+	#
+	# Steam takes a while, and the confirmation is a human in the loop, so the timer only
+	# starts once the process actually exists.
+	$game = $null
+	$launchDeadline = (Get-Date).AddSeconds($LaunchTimeout)
 
-if (-not $game) {
-	throw "SimCity 4 did not start within $LaunchTimeout seconds. Was the Steam prompt confirmed?"
-}
+	while ((Get-Date) -lt $launchDeadline) {
+		$game = Get-SimCity | Select-Object -First 1
 
-Write-Host "  started, pid $($game.Id); running for $Seconds seconds"
+		if ($game) { break }
+		Start-Sleep -Milliseconds 500
+	}
 
-# Let it run, then stop it
-$deadline = (Get-Date).AddSeconds($Seconds)
-$hasExitedEarly = $false
+	if (-not $game) {
+		throw "SimCity 4 did not start within $LaunchTimeout seconds. Was the Steam prompt confirmed?"
+	}
 
-while ((Get-Date) -lt $deadline) {
-	if ($game.HasExited) { $hasExitedEarly = $true; break }
-	Start-Sleep -Milliseconds 500
-}
+	Write-Host "  started, pid $($game.Id); running for $Seconds seconds"
 
-if ($hasExitedEarly) {
-	Write-Host "  the game exited on its own after $([int]((Get-Date) - $game.StartTime).TotalSeconds)s (code $($game.ExitCode))"
-} else {
-	Stop-SimCity -Process $game
+	# Let it run, then stop it
+	$deadline = (Get-Date).AddSeconds($Seconds)
+	$hasExitedEarly = $false
+
+	while ((Get-Date) -lt $deadline) {
+		if ($game.HasExited) { $hasExitedEarly = $true; break }
+		Start-Sleep -Milliseconds 500
+	}
+
+	if ($hasExitedEarly) {
+		Write-Host "  the game exited on its own after $([int]((Get-Date) - $game.StartTime).TotalSeconds)s (code $($game.ExitCode))"
+	} else {
+		Stop-SimCity -Process $game
+	}
+} finally {
+	if ($originalSettings) {
+		[System.IO.File]::WriteAllText($liveSettings, $originalSettings)
+	} else {
+		[System.IO.File]::Delete($liveSettings)
+	}
 }
 
 # Collect the log

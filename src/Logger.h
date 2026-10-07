@@ -29,6 +29,29 @@ namespace scvk
 	//// Types
 
 	/**
+	 * How much goes into the log, most to least. A level writes its own messages and every
+	 * more severe one; the names are the ones the LogLevel setting in scvk.ini takes.
+	 *
+	 *   trace     the ordered trace of the game's calls into the driver, from startup
+	 *   debug     diagnostics: the heartbeat's statistics, draw probes, state changes
+	 *   info      what scvk is doing: the device, the video mode, captures
+	 *   warn      something was skipped or worked around, and the game carries on
+	 *   error     something failed and part of the picture or a feature is lost
+	 *   critical  scvk cannot draw at all
+	 *   off       no log file
+	 */
+	enum LogLevel : uint32_t
+	{
+		LOG_LEVEL_TRACE,
+		LOG_LEVEL_DEBUG,
+		LOG_LEVEL_INFO,
+		LOG_LEVEL_WARN,
+		LOG_LEVEL_ERROR,
+		LOG_LEVEL_CRITICAL,
+		LOG_LEVEL_OFF,
+	};
+
+	/**
 	 * One record per traced method, held in a function-local static so it is constructed
 	 * on the method's first call and costs a single predictable branch thereafter. Each
 	 * site chains itself onto a global list as it is created, so the shutdown summary can
@@ -49,7 +72,8 @@ namespace scvk
 	/**
 	 * Opens the trace file. Safe to call any number of times.
 	 *
-	 * Truncates only on the first open in a process. Reopening never discards what is
+	 * Reads the LogLevel setting from scvk.ini on the first call, and opens nothing when it
+	 * is off. Truncates only on the first open in a process. Reopening never discards what is
 	 * already there, because the game may drive the driver through more than one
 	 * lifecycle and losing the earlier one would hide exactly the sequence we are trying
 	 * to record.
@@ -57,7 +81,7 @@ namespace scvk
 	void LogOpen(void);
 
 	/**
-	 * Writes the call-site summary. Does not close the file.
+	 * Writes the call-site summary, at the debug level. Does not close the file.
 	 *
 	 * Called whenever a driver lifecycle ends. The file is never closed: every line is
 	 * flushed as it is written, so it is complete at all times, and leaving it open means
@@ -77,8 +101,19 @@ namespace scvk
 	 */
 	bool HasMarkerFile(char const* name);
 
-	/** Writes a free-form line, always, regardless of the trace budget. */
-	void LogNote(char const* format, ...);
+	/** Whether messages at this level reach the log. */
+	bool IsLogged(LogLevel level);
+
+	/**
+	 * Write a free-form line at their level, when the LogLevel setting lets it through.
+	 * None of them counts against the trace budget.
+	 */
+	void LogTrace(char const* format, ...);
+	void LogDebug(char const* format, ...);
+	void LogInfo(char const* format, ...);
+	void LogWarn(char const* format, ...);
+	void LogError(char const* format, ...);
+	void LogCritical(char const* format, ...);
 
 	/** Records a call against its site. Called via SCVK_CALL, not directly. */
 	void LogCall(CallSite& site, char const* argumentFormat, ...);
@@ -86,7 +121,7 @@ namespace scvk
 
 /**
  * Records the calling method. The counter always advances; the ordered trace line is
- * written only while the trace budget lasts.
+ * written only at the trace level, and only while the trace budget lasts.
  *
  * The budget exists because the two things we want are in tension. Boot order is the
  * interesting signal, and it is a few thousand calls. Steady-state rendering is tens of

@@ -248,13 +248,13 @@ namespace scvk
 		// If geometry appears at the wrong scale this is where the answer is: the
 		// positions the game submits are small world-space values and mean nothing
 		// without the projection that maps them.
-		LogNote("  DrawArrays prim %u, %d vertices, format 0x%x stride %u, viewport %d,%d %dx%d:", gdPrimitiveType, count, vertexFormat, vertexStride, viewportX, viewportY, viewportWidth, viewportHeight);
+		LogDebug("  DrawArrays prim %u, %d vertices, format 0x%x stride %u, viewport %d,%d %dx%d:", gdPrimitiveType, count, vertexFormat, vertexStride, viewportX, viewportY, viewportWidth, viewportHeight);
 
 		float const* const modelView = modelViewMatrix;
 		float const* const projection = projectionMatrix;
 
-		LogNote("    modelview  [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", modelView[0], modelView[1], modelView[2], modelView[3], modelView[4], modelView[5], modelView[6], modelView[7], modelView[8], modelView[9], modelView[10], modelView[11], modelView[12], modelView[13], modelView[14], modelView[15]);
-		LogNote("    projection [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", projection[0], projection[1], projection[2], projection[3], projection[4], projection[5], projection[6], projection[7], projection[8], projection[9], projection[10], projection[11], projection[12], projection[13], projection[14], projection[15]);
+		LogDebug("    modelview  [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", modelView[0], modelView[1], modelView[2], modelView[3], modelView[4], modelView[5], modelView[6], modelView[7], modelView[8], modelView[9], modelView[10], modelView[11], modelView[12], modelView[13], modelView[14], modelView[15]);
+		LogDebug("    projection [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", projection[0], projection[1], projection[2], projection[3], projection[4], projection[5], projection[6], projection[7], projection[8], projection[9], projection[10], projection[11], projection[12], projection[13], projection[14], projection[15]);
 
 		// Write the first few vertices
 		//
@@ -275,12 +275,12 @@ namespace scvk
 				uint32_t const coordinateOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
 				float const* const coordinates = reinterpret_cast<float const*>(vertex + coordinateOffset);
 
-				LogNote("    v%d pos %.3f %.3f %.3f  uv %.4f %.4f", i, position[0], position[1], position[2], coordinates[0], coordinates[1]);
+				LogDebug("    v%d pos %.3f %.3f %.3f  uv %.4f %.4f", i, position[0], position[1], position[2], coordinates[0], coordinates[1]);
 			}
 			else
 			{
 				uint8_t const* const colour = vertex + 12;
-				LogNote("    v%d pos %.3f %.3f %.3f  colour %3u %3u %3u %3u", i, position[0], position[1], position[2], colour[0], colour[1], colour[2], colour[3]);
+				LogDebug("    v%d pos %.3f %.3f %.3f  colour %3u %3u %3u %3u", i, position[0], position[1], position[2], colour[0], colour[1], colour[2], colour[3]);
 			}
 		}
 	}
@@ -329,7 +329,7 @@ namespace scvk
 		}
 
 		coverageReportsRemaining--;
-		LogNote("  LARGE DRAW: covers ndc x %.2f..%.2f y %.2f..%.2f of viewport %d,%d %dx%d, texture %u, format 0x%x prim %u, %d vertices", minimumX, maximumX, minimumY, maximumY, viewportX, viewportY, viewportWidth, viewportHeight, boundTexture, vertexFormat, gdPrimitiveType, count);
+		LogDebug("  LARGE DRAW: covers ndc x %.2f..%.2f y %.2f..%.2f of viewport %d,%d %dx%d, texture %u, format 0x%x prim %u, %d vertices", minimumX, maximumX, minimumY, maximumY, viewportX, viewportY, viewportWidth, viewportHeight, boundTexture, vertexFormat, gdPrimitiveType, count);
 	}
 
 	void cVKDriver::ReportProjectionMismatch(uint32_t gdPrimitiveType, int32_t count)
@@ -372,7 +372,7 @@ namespace scvk
 		}
 
 		mismatchReportsRemaining--;
-		LogNote("  MISMATCH: projection covers %.1fx%.1f but viewport is %dx%d at %d,%d (stretched %.2fx by %.2fx), format 0x%x prim %u, %d vertices", impliedWidth, impliedHeight, viewportWidth, viewportHeight, viewportX, viewportY, widthRatio, heightRatio, vertexFormat, gdPrimitiveType, count);
+		LogDebug("  MISMATCH: projection covers %.1fx%.1f but viewport is %dx%d at %d,%d (stretched %.2fx by %.2fx), format 0x%x prim %u, %d vertices", impliedWidth, impliedHeight, viewportWidth, viewportHeight, viewportX, viewportY, widthRatio, heightRatio, vertexFormat, gdPrimitiveType, count);
 	}
 
 	void cVKDriver::NoteDarkTintedDraw(uint32_t gdPrimitiveType, int32_t count)
@@ -398,7 +398,7 @@ namespace scvk
 			return;
 		}
 
-		LogNote("  SHADOW fmt 0x%x prim %u n=%d  tex %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.2f  tint %.3f %.3f %.3f a %.3f  env %d  depth test %d write %d  stage1 on %d  coordsrc %u/%u", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, isAlphaTesting ? 1 : 0, alphaComparison, alphaReference, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], textureEnvironmentMode[0], isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, isTextureStageEnabled[1] ? 1 : 0, textureCoordinateSource[0], textureCoordinateSource[1]);
+		LogDebug("  SHADOW fmt 0x%x prim %u n=%d  tex %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.2f  tint %.3f %.3f %.3f a %.3f  env %d  depth test %d write %d  stage1 on %d  coordsrc %u/%u", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, isAlphaTesting ? 1 : 0, alphaComparison, alphaReference, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], textureEnvironmentMode[0], isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, isTextureStageEnabled[1] ? 1 : 0, textureCoordinateSource[0], textureCoordinateSource[1]);
 
 		vulkan->LogTextureInformation(boundTexture, "shadow stage 0");
 	}
@@ -422,8 +422,8 @@ namespace scvk
 		shadowMaskReportsRemaining--;
 
 		// Describe the draw
-		LogNote("  SHADOWMASK fmt 0x%x prim %u n=%d  tex %u/%u  coordsrc %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.3f  depth test %d func %u write %d", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureCoordinateSource[0], textureCoordinateSource[1], isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, depthComparison, isDepthWriteEnabled ? 1 : 0);
-		LogNote("    combiners 0x%05x 0x%05x / 0x%05x 0x%05x  env colour %.3f %.3f %.3f %.3f", packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3], environmentColour[0], environmentColour[1], environmentColour[2], environmentColour[3]);
+		LogDebug("  SHADOWMASK fmt 0x%x prim %u n=%d  tex %u/%u  coordsrc %u/%u  blend %d(%u,%u)  alphatest %d func %u@%.3f  depth test %d func %u write %d", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureCoordinateSource[0], textureCoordinateSource[1], isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, depthComparison, isDepthWriteEnabled ? 1 : 0);
+		LogDebug("    combiners 0x%05x 0x%05x / 0x%05x 0x%05x  env colour %.3f %.3f %.3f %.3f", packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3], environmentColour[0], environmentColour[1], environmentColour[2], environmentColour[3]);
 
 		// Write each matrix a row per line
 		//
@@ -431,19 +431,19 @@ namespace scvk
 		for (uint32_t stage = 0; stage < 2; stage++)
 		{
 			float const* const matrix = textureStageMatrices[stage];
-			LogNote("    stage %u matrix, arguments %u %u flags 0x%x", stage, textureStageMatrixArguments[stage][0], textureStageMatrixArguments[stage][1], textureStageMatrixArguments[stage][2]);
+			LogDebug("    stage %u matrix, arguments %u %u flags 0x%x", stage, textureStageMatrixArguments[stage][0], textureStageMatrixArguments[stage][1], textureStageMatrixArguments[stage][2]);
 
 			for (int row = 0; row < 4; row++)
 			{
-				LogNote("      [%10.5g %10.5g %10.5g %10.5g]", matrix[row], matrix[4 + row], matrix[8 + row], matrix[12 + row]);
+				LogDebug("      [%10.5g %10.5g %10.5g %10.5g]", matrix[row], matrix[4 + row], matrix[8 + row], matrix[12 + row]);
 			}
 		}
 
-		LogNote("    modelview");
+		LogDebug("    modelview");
 
 		for (int row = 0; row < 4; row++)
 		{
-			LogNote("      [%10.5g %10.5g %10.5g %10.5g]", modelViewMatrix[row], modelViewMatrix[4 + row], modelViewMatrix[8 + row], modelViewMatrix[12 + row]);
+			LogDebug("      [%10.5g %10.5g %10.5g %10.5g]", modelViewMatrix[row], modelViewMatrix[4 + row], modelViewMatrix[8 + row], modelViewMatrix[12 + row]);
 		}
 
 		vulkan->LogTextureInformation(boundTexture, "shadow mask stage 0");
@@ -451,7 +451,7 @@ namespace scvk
 
 		uint32_t stage1Parameters[4];
 		vulkan->GetStageParameters(1, stage1Parameters);
-		LogNote("    stage 1 sampler filter %u/%u wrap %u/%u", stage1Parameters[0], stage1Parameters[1], stage1Parameters[2], stage1Parameters[3]);
+		LogDebug("    stage 1 sampler filter %u/%u wrap %u/%u", stage1Parameters[0], stage1Parameters[1], stage1Parameters[2], stage1Parameters[3]);
 
 		// Follow the first vertices through both stages
 		//
@@ -482,7 +482,7 @@ namespace scvk
 				}
 			}
 
-			LogNote("    v%d pos %.2f %.2f %.2f  eye %.2f %.2f %.2f %.3f", i, position[0], position[1], position[2], eye[0], eye[1], eye[2], eye[3]);
+			LogDebug("    v%d pos %.2f %.2f %.2f  eye %.2f %.2f %.2f %.3f", i, position[0], position[1], position[2], eye[0], eye[1], eye[2], eye[3]);
 
 			for (uint32_t stage = 0; stage < 2; stage++)
 			{
@@ -490,7 +490,7 @@ namespace scvk
 				float const q = coordinates[3];
 				bool const isDivisible = q > CLIP_W_EPSILON || q < -CLIP_W_EPSILON;
 
-				LogNote("      stage %u strq %.4f %.4f %.4f %.4f  s/q t/q %.4f %.4f", stage, coordinates[0], coordinates[1], coordinates[2], q, isDivisible ? coordinates[0] / q : 0.0f, isDivisible ? coordinates[1] / q : 0.0f);
+				LogDebug("      stage %u strq %.4f %.4f %.4f %.4f  s/q t/q %.4f %.4f", stage, coordinates[0], coordinates[1], coordinates[2], q, isDivisible ? coordinates[0] / q : 0.0f, isDivisible ? coordinates[1] / q : 0.0f);
 			}
 		}
 	}
@@ -520,7 +520,7 @@ namespace scvk
 			return;
 		}
 
-		LogNote("  SHARED SET fmt 0x%x prim %u n=%d  tex %u/%u  env %d/%d  blend %d(%u,%u)  tint %.3f %.3f %.3f a %.3f", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureEnvironmentMode[0], textureEnvironmentMode[1], isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3]);
+		LogDebug("  SHARED SET fmt 0x%x prim %u n=%d  tex %u/%u  env %d/%d  blend %d(%u,%u)  tint %.3f %.3f %.3f a %.3f", vertexFormat, gdPrimitiveType, count, boundTexture, stage1Texture, textureEnvironmentMode[0], textureEnvironmentMode[1], isBlending ? 1 : 0, blendSourceFactor, blendDestinationFactor, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3]);
 		vulkan->LogTextureInformation(stage1Texture, "shared set stage 1");
 	}
 
@@ -569,7 +569,7 @@ namespace scvk
 			return;
 		}
 
-		LogNote("  SHADOWS %u draws, colour %.3f %.3f %.3f, alpha %.3f to %.3f, alpha test reference %.3f to %.3f, ambient %.3f %.3f %.3f", shadowDrawsSinceSummary, lastShadowColour[0], lastShadowColour[1], lastShadowColour[2], shadowAlphaRange[0], shadowAlphaRange[1], shadowReferenceRange[0], shadowReferenceRange[1], lastShadowTint[0], lastShadowTint[1], lastShadowTint[2]);
+		LogDebug("  SHADOWS %u draws, colour %.3f %.3f %.3f, alpha %.3f to %.3f, alpha test reference %.3f to %.3f, ambient %.3f %.3f %.3f", shadowDrawsSinceSummary, lastShadowColour[0], lastShadowColour[1], lastShadowColour[2], shadowAlphaRange[0], shadowAlphaRange[1], shadowReferenceRange[0], shadowReferenceRange[1], lastShadowTint[0], lastShadowTint[1], lastShadowTint[2]);
 
 		shadowDrawsSinceSummary = 0;
 	}
@@ -598,7 +598,7 @@ namespace scvk
 
 		if (NoteOnce(NOTE_MULTITEXTURE, key))
 		{
-			LogNote("  MULTITEX format 0x%x: stage 0 rgb 0x%05x alpha 0x%05x, stage 1 rgb 0x%05x alpha 0x%05x", gdVertexFormat, packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3]);
+			LogDebug("  MULTITEX format 0x%x: stage 0 rgb 0x%05x alpha 0x%05x, stage 1 rgb 0x%05x alpha 0x%05x", gdVertexFormat, packedCombiner[0], packedCombiner[1], packedCombiner[2], packedCombiner[3]);
 		}
 	}
 
@@ -631,7 +631,7 @@ namespace scvk
 		isDumpArmed    = false;
 		isDumpingFrame = true;
 		dumpedDraws    = 0;
-		LogNote("=== dumping the partial update of frame %u, sub-viewport %d,%d %dx%d ===", frameCounter, viewportX, viewportY, viewportWidth, viewportHeight);
+		LogDebug("=== dumping the partial update of frame %u, sub-viewport %d,%d %dx%d ===", frameCounter, viewportX, viewportY, viewportWidth, viewportHeight);
 	}
 
 	void cVKDriver::DumpDraw(uint32_t gdPrimitiveType, int32_t count, int32_t first, void const* indices, bool isIndex32Bit)
@@ -672,7 +672,7 @@ namespace scvk
 
 			if (clip[3] > -CLIP_W_EPSILON && clip[3] < CLIP_W_EPSILON)
 			{
-				LogNote("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d", dumpedDraws++, boundTexture, vertexFormat, gdPrimitiveType, count);
+				LogDebug("  draw %3d: degenerate transform  tex %u fmt 0x%x prim %u n=%d", dumpedDraws++, boundTexture, vertexFormat, gdPrimitiveType, count);
 				return;
 			}
 
@@ -738,7 +738,7 @@ namespace scvk
 		// Blend, alpha test and the second stage are all reported, because a draw that
 		// comes out a flat block and a draw that comes out black are both questions about
 		// state rather than geometry, and the rectangle alone cannot tell them apart.
-		LogNote("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  light %.2f %.2f %.2f a%.2f (from vertex %d%d)  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x", dumpedDraws++, left, top, right, bottom, right - left, bottom - top, boundTexture, stage1Texture, vertexFormat, gdPrimitiveType, count, viewportX, viewportY, viewportWidth, viewportHeight, minimumU, maximumU, minimumV, maximumV, (colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isAlphaFromVertexColour ? 1 : 0, isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, textureEnvironmentMode[0], isTextureStageEnabled[1] ? 1 : 0, lastTextureMatrixFlags);
+		LogDebug("  draw %3d: screen %.0f,%.0f to %.0f,%.0f (%.0fx%.0f)  tex %u/%u fmt 0x%x prim %u n=%d  vp %d,%d %dx%d  uv %.3f..%.3f,%.3f..%.3f  vcol %02x%02x%02x a%02x  light %.2f %.2f %.2f a%.2f (from vertex %d%d)  blend %d(%u,%u) atest %d %u@%.2f  depth %d/%d  env %d  stage1 %d texmat 0x%x", dumpedDraws++, left, top, right, bottom, right - left, bottom - top, boundTexture, stage1Texture, vertexFormat, gdPrimitiveType, count, viewportX, viewportY, viewportWidth, viewportHeight, minimumU, maximumU, minimumV, maximumV, (colourBytes >> 16) & 0xffu, (colourBytes >> 8) & 0xffu, colourBytes & 0xffu, (colourBytes >> 24) & 0xffu, colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isAlphaFromVertexColour ? 1 : 0, isCapabilityEnabled[kGDCapability_Blend] ? 1 : 0, blendSourceFactor, blendDestinationFactor, isCapabilityEnabled[kGDCapability_AlphaTest] ? 1 : 0, alphaComparison, alphaReference, isCapabilityEnabled[kGDCapability_DepthTest] ? 1 : 0, isDepthWriteEnabled ? 1 : 0, textureEnvironmentMode[0], isTextureStageEnabled[1] ? 1 : 0, lastTextureMatrixFlags);
 	}
 
 	void cVKDriver::SampleWindowDepth(int32_t count, int32_t first, void const* indices, bool isIndex32Bit, float& outMinimumDepth, float& outMaximumDepth) const
@@ -901,16 +901,16 @@ namespace scvk
 		{
 			regionTraceFrames--;
 
-			LogNote("  REGION frame %u, %d steps%s:", frameCounter, regionLineCount, regionLinesDropped > 0 ? " (some dropped)" : "");
+			LogDebug("  REGION frame %u, %d steps%s:", frameCounter, regionLineCount, regionLinesDropped > 0 ? " (some dropped)" : "");
 
 			for (int i = 0; i < regionLineCount; i++)
 			{
-				LogNote("  REGION %s", regionLines[i]);
+				LogDebug("  REGION %s", regionLines[i]);
 			}
 
 			if (regionDrawsSinceStep > 0)
 			{
-				LogNote("  REGION     %u draws before the frame ended", regionDrawsSinceStep);
+				LogDebug("  REGION     %u draws before the frame ended", regionDrawsSinceStep);
 			}
 		}
 
@@ -1246,7 +1246,7 @@ namespace scvk
 
 	void cVKDriver::DumpTileRing(void)
 	{
-		LogNote("=== last %u saved tiles, oldest first ===", tileRingCount);
+		LogDebug("=== last %u saved tiles, oldest first ===", tileRingCount);
 
 		uint32_t const start = (tileRingNext + TILE_RING_SIZE - tileRingCount) % TILE_RING_SIZE;
 
@@ -1255,7 +1255,7 @@ namespace scvk
 			// Write the tile
 			TileRecord const& tile = tileRing[(start + n) % TILE_RING_SIZE];
 
-			LogNote("  TILE frame %u  save %d,%d %dx%d  sub %d,%d %dx%d  draws %u sub, %u full  hazards %llu%s", tile.frame, tile.saveRectangle[0], tile.saveRectangle[1], tile.saveRectangle[2], tile.saveRectangle[3], tile.subViewport[0], tile.subViewport[1], tile.subViewport[2], tile.subViewport[3], tile.subViewportDraws, tile.fullViewportDraws, tile.hazards, tile.unclassifiedDraws > 0 ? "  (classes overflowed)" : "");
+			LogDebug("  TILE frame %u  save %d,%d %dx%d  sub %d,%d %dx%d  draws %u sub, %u full  hazards %llu%s", tile.frame, tile.saveRectangle[0], tile.saveRectangle[1], tile.saveRectangle[2], tile.saveRectangle[3], tile.subViewport[0], tile.subViewport[1], tile.subViewport[2], tile.subViewport[3], tile.subViewportDraws, tile.fullViewportDraws, tile.hazards, tile.unclassifiedDraws > 0 ? "  (classes overflowed)" : "");
 
 			// Write its classes, unpacking each key
 			for (int i = 0; i < tile.classCount; i++)
@@ -1263,11 +1263,11 @@ namespace scvk
 				TileClass const& entry = tile.classes[i];
 				uint32_t const key = entry.key;
 
-				LogNote("    n=%-5u fmt 0x%-2x blend %u(%u,%u) depth %u/%u func %u cw %u tex %u/%u gen %u atest %u  first tex %u  z %.5f..%.5f", entry.count, key & 0xffu, (key >> 8) & 1u, (key >> 9) & 0xfu, (key >> 13) & 0xfu, (key >> 17) & 1u, (key >> 18) & 1u, (key >> 19) & 7u, (key >> 22) & 1u, (key >> 23) & 1u, (key >> 24) & 1u, (key >> 25) & 1u, (key >> 26) & 1u, entry.firstTexture, entry.minimumDepth, entry.maximumDepth);
+				LogDebug("    n=%-5u fmt 0x%-2x blend %u(%u,%u) depth %u/%u func %u cw %u tex %u/%u gen %u atest %u  first tex %u  z %.5f..%.5f", entry.count, key & 0xffu, (key >> 8) & 1u, (key >> 9) & 0xfu, (key >> 13) & 0xfu, (key >> 17) & 1u, (key >> 18) & 1u, (key >> 19) & 7u, (key >> 22) & 1u, (key >> 23) & 1u, (key >> 24) & 1u, (key >> 25) & 1u, (key >> 26) & 1u, entry.firstTexture, entry.minimumDepth, entry.maximumDepth);
 			}
 		}
 
-		LogNote("=== end of saved tiles ===");
+		LogDebug("=== end of saved tiles ===");
 	}
 
 	void cVKDriver::WriteDrawRecords(char const* path)
@@ -1278,7 +1278,7 @@ namespace scvk
 		FILE* file = nullptr;
 		if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
 		{
-			LogNote("Diagnostic: could not write the draw records to %s.", path);
+			LogWarn("Diagnostic: could not write the draw records to %s.", path);
 			return;
 		}
 
@@ -1323,7 +1323,7 @@ namespace scvk
 		fwrite(drawRing.data(), sizeof(DrawRecord), drawCount - firstRun, file);
 
 		fclose(file);
-		LogNote("Diagnostic: wrote %u tiles and %u draws to %s.", tileRingCount, drawCount, path);
+		LogInfo("Diagnostic: wrote %u tiles and %u draws to %s.", tileRingCount, drawCount, path);
 	}
 
 	void cVKDriver::EndFrameDiagnostics(void)
@@ -1338,7 +1338,7 @@ namespace scvk
 		// window stays open until one of them turns up.
 		if (isDumpingFrame)
 		{
-			LogNote("=== end of frame dump, %d draws ===", dumpedDraws);
+			LogDebug("=== end of frame dump, %d draws ===", dumpedDraws);
 			isDumpingFrame = false;
 		}
 
@@ -1450,7 +1450,7 @@ namespace scvk
 
 			keyCaptureCount++;
 			keyCaptureStep = KEY_CAPTURE_STEPS;
-			LogNote("Diagnostic: Scroll Lock capture %u.", keyCaptureCount);
+			LogInfo("Diagnostic: Scroll Lock capture %u.", keyCaptureCount);
 			DumpTileRing();
 
 			// Write the draws behind the tiles, when they are being recorded

@@ -166,7 +166,8 @@ pwsh shaders/compile.ps1
 `tools/run-sc4.ps1` deploys a build, runs the game for a set time and collects
 the log. Options are listed at the top of the script.
 
-Everything the game asks of the renderer goes into `scvk.log`, and a few
+Set `LogLevel=trace` in `scvk.ini` to see everything the game asks of the
+renderer in `scvk.log`, and `debug` for the statistics below without that. A few
 screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
 during a session. Press Scroll Lock in game to save one on demand, along with
 the saved scene and its depth (`scvk-key-N-*`).
@@ -229,7 +230,8 @@ display modes, so every mode scvk can enumerate is 32bpp, while SC4 defaults to
 16.
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
-directory if the Plugins folder is not writable.
+directory if the Plugins folder is not writable. `LogLevel` in `scvk.ini` sets
+how much goes into it, from `trace` to `off`, and is `info` by default.
 
 To turn scvk off without removing it, keep `scvk.ini` next to the DLL and set
 `Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk

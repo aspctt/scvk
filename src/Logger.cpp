@@ -30,10 +30,35 @@
 
 namespace scvk
 {
+	//// Types
+
+	namespace
+	{
+		struct LogLevelEntry
+		{
+			char const* name;
+			LogLevel    level;
+		};
+	}
+
 	//// Constants
 
 	namespace
 	{
+		// The names the LogLevel setting takes, the same set SC4DisableFpsLimits takes for
+		// its own, so the two plugins' settings read alike.
+		constexpr LogLevelEntry LOG_LEVEL_NAMES[] = {
+			{ "trace",    LOG_LEVEL_TRACE },
+			{ "debug",    LOG_LEVEL_DEBUG },
+			{ "info",     LOG_LEVEL_INFO },
+			{ "warn",     LOG_LEVEL_WARN },
+			{ "error",    LOG_LEVEL_ERROR },
+			{ "critical", LOG_LEVEL_CRITICAL },
+			{ "off",      LOG_LEVEL_OFF },
+		};
+
+		constexpr LogLevel DEFAULT_LOG_LEVEL = LOG_LEVEL_INFO;
+
 		// How many ordered trace lines to write before falling back to counters only.
 		// Boot reaches the first rendered frame well inside this.
 		constexpr uint32_t TRACE_BUDGET = 20000;
@@ -53,6 +78,12 @@ namespace scvk
 		uint32_t  nextOrdinal   = 0;
 		CallSite* callSites     = nullptr;
 		bool      hasEverOpened = false;
+
+		// Read from scvk.ini on the first open, and kept for the rest of the process.
+		LogLevel  logLevel        = DEFAULT_LOG_LEVEL;
+		bool      hasReadLogLevel = false;
+		bool      isLogLevelKnown = true;
+		char      logLevelSetting[16] = {};
 
 		// Repeat collapsing. Notes are not subject to the trace budget, because they
 		// carry the explanations rather than the call sequence. That was a mistake in the
@@ -110,6 +141,74 @@ namespace scvk
 			lastSeparator[1] = '\0';
 			return true;
 		}
+
+		/** The LogLevel setting from scvk.ini, or the default when it is absent or unknown. */
+		void ReadLogLevel(void)
+		{
+			hasReadLogLevel = true;
+
+			char path[MAX_PATH];
+			if (!LogFilePath("scvk.ini", path, sizeof(path)))
+			{
+				return;
+			}
+
+			GetPrivateProfileStringA("scvk", "LogLevel", "info", logLevelSetting, sizeof(logLevelSetting), path);
+
+			for (LogLevelEntry const& entry : LOG_LEVEL_NAMES)
+			{
+				if (_stricmp(logLevelSetting, entry.name) == 0)
+				{
+					logLevel = entry.level;
+					return;
+				}
+			}
+
+			isLogLevelKnown = false;
+		}
+
+		/** The name the setting uses for a level. */
+		char const* LogLevelName(LogLevel level)
+		{
+			for (LogLevelEntry const& entry : LOG_LEVEL_NAMES)
+			{
+				if (entry.level == level)
+				{
+					return entry.name;
+				}
+			}
+
+			return "?";
+		}
+
+		/** Writes one line at a level, collapsing a run of identical lines into a count. */
+		void WriteLine(LogLevel level, char const* format, va_list arguments)
+		{
+			if (logFile == nullptr || !IsLogged(level))
+			{
+				return;
+			}
+
+			// Format the line
+			char message[sizeof(lastNote)];
+			vsnprintf(message, sizeof(message), format, arguments);
+
+			// Count a repeat instead of writing it
+			if (strcmp(message, lastNote) == 0)
+			{
+				repeatCount++;
+				return;
+			}
+
+			// Write it
+			FlushRepeats();
+
+			fputs(message, logFile);
+			fputc('\n', logFile);
+			fflush(logFile);
+
+			strcpy_s(lastNote, sizeof(lastNote), message);
+		}
 	}
 
 	//// Public API
@@ -148,6 +247,17 @@ namespace scvk
 			return;
 		}
 
+		// Read the level, and open nothing when it is off
+		if (!hasReadLogLevel)
+		{
+			ReadLogLevel();
+		}
+
+		if (logLevel == LOG_LEVEL_OFF)
+		{
+			return;
+		}
+
 		// Truncate on the first open only
 		//
 		// If the game tears the driver down and builds another, reopening must not throw
@@ -180,7 +290,19 @@ namespace scvk
 		if (!hasEverOpened)
 		{
 			fprintf(logFile, "scvk %s - SimCity 4 Vulkan driver\n", SCVK_VERSION_STRING);
-			fprintf(logFile, "Trace budget %u calls, then counters only.\n\n", TRACE_BUDGET);
+			fprintf(logFile, "Log level %s.\n", LogLevelName(logLevel));
+
+			if (!isLogLevelKnown)
+			{
+				fprintf(logFile, "LogLevel=%s in scvk.ini is not a level; using %s.\n", logLevelSetting, LogLevelName(logLevel));
+			}
+
+			if (logLevel == LOG_LEVEL_TRACE)
+			{
+				fprintf(logFile, "Trace budget %u calls, then counters only.\n", TRACE_BUDGET);
+			}
+
+			fputc('\n', logFile);
 			hasEverOpened = true;
 		}
 		else
@@ -193,7 +315,7 @@ namespace scvk
 
 	void LogSummary(char const* reason)
 	{
-		if (logFile == nullptr)
+		if (logFile == nullptr || !IsLogged(LOG_LEVEL_DEBUG))
 		{
 			return;
 		}
@@ -247,36 +369,57 @@ namespace scvk
 		fflush(logFile);
 	}
 
-	void LogNote(char const* format, ...)
+	bool IsLogged(LogLevel level)
 	{
-		if (logFile == nullptr)
-		{
-			return;
-		}
+		return level >= logLevel && logLevel != LOG_LEVEL_OFF;
+	}
 
-		// Format the note
-		char message[sizeof(lastNote)];
-
+	void LogTrace(char const* format, ...)
+	{
 		va_list arguments;
 		va_start(arguments, format);
-		vsnprintf(message, sizeof(message), format, arguments);
+		WriteLine(LOG_LEVEL_TRACE, format, arguments);
 		va_end(arguments);
+	}
 
-		// Count a repeat instead of writing it
-		if (strcmp(message, lastNote) == 0)
-		{
-			repeatCount++;
-			return;
-		}
+	void LogDebug(char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		WriteLine(LOG_LEVEL_DEBUG, format, arguments);
+		va_end(arguments);
+	}
 
-		// Write it
-		FlushRepeats();
+	void LogInfo(char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		WriteLine(LOG_LEVEL_INFO, format, arguments);
+		va_end(arguments);
+	}
 
-		fputs(message, logFile);
-		fputc('\n', logFile);
-		fflush(logFile);
+	void LogWarn(char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		WriteLine(LOG_LEVEL_WARN, format, arguments);
+		va_end(arguments);
+	}
 
-		strcpy_s(lastNote, sizeof(lastNote), message);
+	void LogError(char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		WriteLine(LOG_LEVEL_ERROR, format, arguments);
+		va_end(arguments);
+	}
+
+	void LogCritical(char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		WriteLine(LOG_LEVEL_CRITICAL, format, arguments);
+		va_end(arguments);
 	}
 
 	void LogCall(CallSite& site, char const* argumentFormat, ...)
@@ -307,7 +450,7 @@ namespace scvk
 			}
 		}
 
-		if (tracedCount >= TRACE_BUDGET)
+		if (tracedCount >= TRACE_BUDGET || !IsLogged(LOG_LEVEL_TRACE))
 		{
 			return;
 		}

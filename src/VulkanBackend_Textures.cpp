@@ -227,7 +227,7 @@ namespace scvk
 		if (HasMarkerFile(SMALL_TEXTURE_POOLS_MARKER))
 		{
 			textureSetsPerPool = SMALL_TEXTURE_SETS_PER_POOL;
-			LogNote("Vulkan: %s present, texture pools hold %u sets.", SMALL_TEXTURE_POOLS_MARKER, textureSetsPerPool);
+			LogInfo("Vulkan: %s present, texture pools hold %u sets.", SMALL_TEXTURE_POOLS_MARKER, textureSetsPerPool);
 		}
 
 		result = vkCreateDescriptorPool(device, &poolInformation, nullptr, &descriptorPool);
@@ -421,7 +421,7 @@ namespace scvk
 		uint32_t typeIndex = 0;
 		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
 		{
-			LogNote("Vulkan: no device-local memory type for textures.");
+			LogError("Vulkan: no device-local memory type for textures.");
 			return false;
 		}
 
@@ -491,7 +491,7 @@ namespace scvk
 		TakeBlockRange(block, requirements.size, requirements.alignment, range, offset);
 
 		textureBlocks.push_back(block);
-		LogNote("Vulkan: textures now take %u blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
+		LogDebug("Vulkan: textures now take %u blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
 
 		outMemory.memory      = block.memory;
 		outMemory.offset      = offset;
@@ -695,7 +695,7 @@ namespace scvk
 
 		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-		LogNote("Vulkan: created sampler for mag %u, min %u, wrap %u/%u.", parameters[0], parameters[1], parameters[2], parameters[3]);
+		LogDebug("Vulkan: created sampler for mag %u, min %u, wrap %u/%u.", parameters[0], parameters[1], parameters[2], parameters[3]);
 
 		samplers.push_back(entry);
 		return entry.set;
@@ -737,7 +737,7 @@ namespace scvk
 			}
 
 			texturePools.push_back(texturePool);
-			LogNote("Vulkan: texture descriptor pool %u added, room for %u textures in all.", poolIndex + 1, (poolIndex + 1) * textureSetsPerPool);
+			LogDebug("Vulkan: texture descriptor pool %u added, room for %u textures in all.", poolIndex + 1, (poolIndex + 1) * textureSetsPerPool);
 		}
 
 		// Take a set from it
@@ -780,7 +780,7 @@ namespace scvk
 		if (hazardNotesRemaining > 0)
 		{
 			hazardNotesRemaining--;
-			LogNote("  HAZARD: texture %u (%ux%u) sampled before anything was uploaded to it", handle, texture.width, texture.height);
+			LogDebug("  HAZARD: texture %u (%ux%u) sampled before anything was uploaded to it", handle, texture.width, texture.height);
 		}
 	}
 
@@ -809,7 +809,7 @@ namespace scvk
 
 		if (!isKnownOrder || (gdType != GD_TYPE_UNSIGNED_BYTE && !((isPacked || isPackedRev) && hasAlpha)))
 		{
-			LogNote("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.", gdFormat, gdType, width, height);
+			LogWarn("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.", gdFormat, gdType, width, height);
 			return false;
 		}
 
@@ -913,7 +913,7 @@ namespace scvk
 		uint32_t const sourceStride = (rowLength != 0) ? rowLength : width;
 		WriteBmp(path, static_cast<uint8_t const*>(pixels), width, height, sourceStride * 4u);
 
-		LogNote("Vulkan: wrote texture %u (%ux%u) to %s", handle, width, height, path);
+		LogDebug("Vulkan: wrote texture %u (%ux%u) to %s", handle, width, height, path);
 	}
 
 	void VulkanBackend::LogTextureTraffic(void)
@@ -951,7 +951,7 @@ namespace scvk
 
 		// Byte totals stay far below the range where a double loses whole megabytes.
 		double const megabyte = 1024.0 * 1024.0;
-		LogNote("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) in %u batches taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, textureBatches, workMilliseconds);
+		LogDebug("Vulkan: textures %u live (%.0f MB), %u idle (%.0f MB); since the last heartbeat %u created, %u deleted, %u uploads (%.1f MB) in %u batches taking %.0f ms.", liveCount, static_cast<double>(liveBytes) / megabyte, idleCount, static_cast<double>(idleBytes) / megabyte, texturesCreated, texturesDestroyed, textureUploads, static_cast<double>(textureUploadBytes) / megabyte, textureBatches, workMilliseconds);
 
 		// Say how the texture memory is laid out
 		VkDeviceSize blockUsedBytes = 0;
@@ -965,7 +965,7 @@ namespace scvk
 		// The tick counts are far below the range where a double loses whole ticks.
 		double const memoryMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(textureMemoryTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
 
-		LogNote("Vulkan: texture blocks %u (%.0f MB in use, %u free ranges, %.0f ms finding room); %u memory allocations of %u allowed.", textureBlocks.size(), static_cast<double>(blockUsedBytes) / megabyte, freeRanges, memoryMilliseconds, liveMemoryAllocations, maximumMemoryAllocations);
+		LogDebug("Vulkan: texture blocks %u (%.0f MB in use, %u free ranges, %.0f ms finding room); %u memory allocations of %u allowed.", textureBlocks.size(), static_cast<double>(blockUsedBytes) / megabyte, freeRanges, memoryMilliseconds, liveMemoryAllocations, maximumMemoryAllocations);
 
 		// Warn when the allocations near the device's limit
 		//
@@ -973,7 +973,7 @@ namespace scvk
 		// 4096. Widened so the products cannot overflow.
 		if (maximumMemoryAllocations != 0 && uint64_t{ liveMemoryAllocations } * 10u >= uint64_t{ maximumMemoryAllocations } * 9u)
 		{
-			LogNote("Vulkan: WARNING: %u memory allocations against a limit of %u.", liveMemoryAllocations, maximumMemoryAllocations);
+			LogWarn("Vulkan: WARNING: %u memory allocations against a limit of %u.", liveMemoryAllocations, maximumMemoryAllocations);
 		}
 
 		texturesCreated    = 0;
@@ -1145,7 +1145,7 @@ namespace scvk
 		uint8_t* address = nullptr;
 		if (!ArenaAllocate(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT, outBuffer, outOffset, address))
 		{
-			LogNote("Vulkan: no staging for a texture upload of %llu bytes; skipping it.", bytes);
+			LogWarn("Vulkan: no staging for a texture upload of %llu bytes; skipping it.", bytes);
 			return false;
 		}
 
@@ -1187,7 +1187,7 @@ namespace scvk
 		VkResult result = vkCreateImage(device, &imageInformation, nullptr, &texture.image);
 		if (result != VK_SUCCESS)
 		{
-			LogNote("Vulkan: could not create a %ux%u texture (format %d): %s", width, height, texture.format, VkResultName(result));
+			LogError("Vulkan: could not create a %ux%u texture (format %d): %s", width, height, texture.format, VkResultName(result));
 			return 0;
 		}
 
@@ -1292,7 +1292,7 @@ namespace scvk
 			if (hazardNotesRemaining > 0)
 			{
 				hazardNotesRemaining--;
-				LogNote("  HAZARD: texture %u (%ux%u) level %u, %d,%d %ux%u, uploaded after a draw this frame sampled it", handle, texture.width, texture.height, level, offsetX, offsetY, width, height);
+				LogDebug("  HAZARD: texture %u (%ux%u) level %u, %d,%d %ux%u, uploaded after a draw this frame sampled it", handle, texture.width, texture.height, level, offsetX, offsetY, width, height);
 			}
 		}
 
@@ -1458,7 +1458,7 @@ namespace scvk
 	{
 		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
 		{
-			LogNote("  TEXINFO %s: handle %u is not a live texture", reason, handle);
+			LogDebug("  TEXINFO %s: handle %u is not a live texture", reason, handle);
 			return;
 		}
 
@@ -1472,7 +1472,7 @@ namespace scvk
 			sprintf_s(bytes + i * 3, sizeof(bytes) - i * 3, "%02x ", texture.firstBytes[i]);
 		}
 
-		LogNote("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded%s%s", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels, (texture.firstByteCount > 0) ? ", bytes " : "", bytes);
+		LogDebug("  TEXINFO %s: handle %u, %ux%u, format %d, %s, %u level(s) declared, %u uploaded%s%s", reason, handle, texture.width, texture.height, texture.format, texture.isCompressed ? "compressed" : "plain", texture.levels, texture.uploadedLevels, (texture.firstByteCount > 0) ? ", bytes " : "", bytes);
 	}
 
 	bool VulkanBackend::DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount) const

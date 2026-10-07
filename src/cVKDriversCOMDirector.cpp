@@ -78,8 +78,8 @@ namespace scvk
 		bool OnStart([[maybe_unused]] cIGZCOM* com) override
 		{
 			LogOpen();
-			LogNote("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
-			LogNote("Detected SimCity 4 version %u.", GetGameVersion());
+			LogInfo("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
+			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
 
 			// Off unless scvk.ini asks for it. This is the only place scvk writes to game
 			// memory, and it is opt-in for that reason.

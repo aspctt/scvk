@@ -72,7 +72,7 @@ namespace scvk
 
 		if (depthFormat == VK_FORMAT_UNDEFINED)
 		{
-			LogNote("Vulkan: no usable depth format; depth testing will be unavailable.");
+			LogError("Vulkan: no usable depth format; depth testing will be unavailable.");
 			return false;
 		}
 
@@ -106,7 +106,7 @@ namespace scvk
 		uint32_t typeIndex = 0;
 		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
 		{
-			LogNote("Vulkan: no device-local memory for the depth buffer.");
+			LogError("Vulkan: no device-local memory for the depth buffer.");
 			return false;
 		}
 
@@ -146,7 +146,7 @@ namespace scvk
 		// game's next depth clear, moves it there.
 		isDepthLayoutPending = true;
 
-		LogNote("Vulkan: depth buffer ready, %ux%u, format %d.", swapchainExtent.width, swapchainExtent.height, depthFormat);
+		LogInfo("Vulkan: depth buffer ready, %ux%u, format %d.", swapchainExtent.width, swapchainExtent.height, depthFormat);
 		return true;
 	}
 
@@ -386,7 +386,7 @@ namespace scvk
 		// frames needs it.
 		if (!AllocateRegionImage(false, lastFrame))
 		{
-			LogNote("Vulkan: could not create the copy of the last frame; reading the screen back between frames will fail.");
+			LogError("Vulkan: could not create the copy of the last frame; reading the screen back between frames will fail.");
 			lastFrame = BufferRegion{};
 			return false;
 		}

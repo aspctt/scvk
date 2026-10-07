@@ -220,7 +220,7 @@ namespace scvk
 			if (indexTypeWarningsRemaining > 0)
 			{
 				indexTypeWarningsRemaining--;
-				LogNote("  DrawElements: index type %u is not handled; skipping the draw.", gdType);
+				LogWarn("  DrawElements: index type %u is not handled; skipping the draw.", gdType);
 			}
 
 			return;
@@ -264,7 +264,7 @@ namespace scvk
 		// second texture stage has anything to sample with.
 		if (NoteOnce(NOTE_VERTEX_FORMAT, gdVertexFormat))
 		{
-			LogNote("  FORMAT 0x%x: stride %u, %u texcoord set(s), %u colour, %u normal", gdVertexFormat, unsignedStride, RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Normal));
+			LogDebug("  FORMAT 0x%x: stride %u, %u texcoord set(s), %u colour, %u normal", gdVertexFormat, unsignedStride, RZVertexFormatNumElements(gdVertexFormat, kGDElementType_TexCoord), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Color), RZVertexFormatNumElements(gdVertexFormat, kGDElementType_Normal));
 		}
 
 		// Record the format and pointer rather than uploading

@@ -119,7 +119,7 @@ namespace scvk
 		{
 			if (buffer == nullptr)
 			{
-				LogNote("    %s: null", label);
+				LogDebug("    %s: null", label);
 				return;
 			}
 
@@ -130,7 +130,7 @@ namespace scvk
 			if (!IsReadable(buffer, expectedBytes))
 			{
 				bool const isStartReadable = IsReadable(buffer, PROBE_MINIMUM_BYTES);
-				LogNote("    %s: %p, NOT readable for %zu bytes%s", label, buffer, expectedBytes, isStartReadable ? " (but the first 64 bytes are readable)" : "");
+				LogDebug("    %s: %p, NOT readable for %zu bytes%s", label, buffer, expectedBytes, isStartReadable ? " (but the first 64 bytes are readable)" : "");
 
 				if (!isStartReadable)
 				{
@@ -161,7 +161,7 @@ namespace scvk
 			char leadingBytes[64];
 			sprintf_s(leadingBytes, sizeof(leadingBytes), "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X ", bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11]);
 
-			LogNote("    %s: %p, readable, %zu/%zu sampled bytes non-zero, starts %s", label, buffer, nonZero, samples, leadingBytes);
+			LogDebug("    %s: %p, readable, %zu/%zu sampled bytes non-zero, starts %s", label, buffer, nonZero, samples, leadingBytes);
 		}
 	}
 
@@ -182,7 +182,7 @@ namespace scvk
 		if (blitProbesRemaining > 0)
 		{
 			blitProbesRemaining--;
-			LogNote("  %s source buffers, expecting %zu bytes of BGRA8:", caller, expectedBytes);
+			LogDebug("  %s source buffers, expecting %zu bytes of BGRA8:", caller, expectedBytes);
 			DescribeBuffer("buffer1", buffer1, expectedBytes);
 			DescribeBuffer("buffer2", buffer2, expectedBytes);
 		}
@@ -206,7 +206,7 @@ namespace scvk
 		// nonsense.
 		if (gdTextureFormat != GD_FORMAT_BGRA || gdType != GD_TYPE_UNSIGNED_BYTE)
 		{
-			LogNote("%s: unsupported pixel format %u type %u; skipping.", caller, gdTextureFormat, gdType);
+			LogWarn("%s: unsupported pixel format %u type %u; skipping.", caller, gdTextureFormat, gdType);
 			SetLastError(DriverError::NOT_SUPPORTED);
 			return;
 		}
@@ -218,7 +218,7 @@ namespace scvk
 		// something actually needs it.
 		if (destinationWidth != sourceWidth || destinationHeight != sourceHeight)
 		{
-			LogNote("%s: scaled blit %dx%d from %dx%d is not implemented yet; copying unscaled.", caller, destinationWidth, destinationHeight, sourceWidth, sourceHeight);
+			LogWarn("%s: scaled blit %dx%d from %dx%d is not implemented yet; copying unscaled.", caller, destinationWidth, destinationHeight, sourceWidth, sourceHeight);
 		}
 
 		vulkan->BlitPixels(destinationLeft, destinationTop, width, height, width, pixels);

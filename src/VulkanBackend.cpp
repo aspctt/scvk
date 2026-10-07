@@ -179,25 +179,28 @@ namespace scvk
 				{
 					if ((seen & (seen - 1)) == 0)
 					{
-						LogNote("Vulkan: message %s has now been reported %u times.", (data != nullptr && data->pMessageIdName != nullptr) ? data->pMessageIdName : "?", seen);
+						LogWarn("Vulkan: message %s has now been reported %u times.", (data != nullptr && data->pMessageIdName != nullptr) ? data->pMessageIdName : "?", seen);
 					}
 
 					return VK_FALSE;
 				}
 			}
 
-			// Write the message
-			char const* level = "info";
+			// Write the message at the level its severity matches
+			char const* const message = (data != nullptr && data->pMessage != nullptr) ? data->pMessage : "(no message)";
+
 			if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
 			{
-				level = "ERROR";
+				LogError("Vulkan ERROR: %s", message);
 			}
 			else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0)
 			{
-				level = "warning";
+				LogWarn("Vulkan warning: %s", message);
 			}
-
-			LogNote("Vulkan %s: %s", level, (data != nullptr && data->pMessage != nullptr) ? data->pMessage : "(no message)");
+			else
+			{
+				LogDebug("Vulkan info: %s", message);
+			}
 
 			// False means "do not abort the offending call", which is what the spec
 			// requires here.
@@ -244,7 +247,7 @@ namespace scvk
 			return;
 		}
 
-		LogNote("Vulkan: %s failed with %s. Falling back to doing nothing; the game will keep running but nothing will be drawn.", what, VkResultName(result));
+		LogError("Vulkan: %s failed with %s. Falling back to doing nothing; the game will keep running but nothing will be drawn.", what, VkResultName(result));
 		isDead = true;
 	}
 
@@ -255,7 +258,7 @@ namespace scvk
 		VkResult result = vkEnumeratePhysicalDevices(instance, &count, nullptr);
 		if (result != VK_SUCCESS || count == 0)
 		{
-			LogNote("Vulkan: no physical devices reported.");
+			LogError("Vulkan: no physical devices reported.");
 			isDead = true;
 			return false;
 		}
@@ -294,7 +297,7 @@ namespace scvk
 				score = 1;
 			}
 
-			LogNote("Vulkan: found device \"%s\" (type %d, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
+			LogInfo("Vulkan: found device \"%s\" (type %d, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
 
 			if (score > bestScore)
 			{
@@ -314,7 +317,7 @@ namespace scvk
 		sprintf_s(version, sizeof(version), "%u.%u.%u", VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion));
 		apiVersion = version;
 
-		LogNote("Vulkan: selected \"%s\".", deviceName.c_str());
+		LogInfo("Vulkan: selected \"%s\".", deviceName.c_str());
 
 		// Record how far textures can go on it
 		//
@@ -335,7 +338,7 @@ namespace scvk
 			}
 		}
 
-		LogNote("Vulkan: %llu MB of device-local memory, at most %u memory allocations.", largestLocalHeap / (1024u * 1024u), maximumMemoryAllocations);
+		LogInfo("Vulkan: %llu MB of device-local memory, at most %u memory allocations.", largestLocalHeap / (1024u * 1024u), maximumMemoryAllocations);
 		return true;
 	}
 
@@ -370,7 +373,7 @@ namespace scvk
 
 		if (queueFamily == UINT32_MAX)
 		{
-			LogNote("Vulkan: no queue family supports both graphics and presenting to this window.");
+			LogError("Vulkan: no queue family supports both graphics and presenting to this window.");
 			isDead = true;
 			return false;
 		}
@@ -481,7 +484,7 @@ namespace scvk
 		uint32_t typeIndex = 0;
 		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
 		{
-			LogNote("Vulkan: no host-visible coherent memory type available for staging.");
+			LogError("Vulkan: no host-visible coherent memory type available for staging.");
 			isDead = true;
 			return false;
 		}
@@ -539,7 +542,7 @@ namespace scvk
 
 		if ((capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0)
 		{
-			LogNote("Vulkan: the surface does not allow swapchain images to be transfer destinations.");
+			LogError("Vulkan: the surface does not allow swapchain images to be transfer destinations.");
 			isDead = true;
 			return false;
 		}
@@ -552,7 +555,7 @@ namespace scvk
 		vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
 		if (formatCount == 0)
 		{
-			LogNote("Vulkan: the surface reports no formats.");
+			LogError("Vulkan: the surface reports no formats.");
 			isDead = true;
 			return false;
 		}
@@ -572,7 +575,7 @@ namespace scvk
 
 		if (chosen.format != VK_FORMAT_B8G8R8A8_UNORM)
 		{
-			LogNote("Vulkan: B8G8R8A8_UNORM is unavailable; using format %d instead. Blits will have the wrong channel order until a conversion step exists.", chosen.format);
+			LogWarn("Vulkan: B8G8R8A8_UNORM is unavailable; using format %d instead. Blits will have the wrong channel order until a conversion step exists.", chosen.format);
 		}
 
 		// Size it to the surface, or to the window when the surface leaves it open
@@ -585,7 +588,7 @@ namespace scvk
 
 		if (extent.width == 0 || extent.height == 0)
 		{
-			LogNote("Vulkan: the window has no area yet; deferring swapchain creation.");
+			LogDebug("Vulkan: the window has no area yet; deferring swapchain creation.");
 			return false;
 		}
 
@@ -630,7 +633,7 @@ namespace scvk
 		swapchainImages.resize(actualCount);
 		vkGetSwapchainImagesKHR(device, swapchain, &actualCount, swapchainImages.data());
 
-		LogNote("Vulkan: swapchain ready, %ux%u, %u images, format %d.", extent.width, extent.height, actualCount, chosen.format);
+		LogInfo("Vulkan: swapchain ready, %ux%u, %u images, format %d.", extent.width, extent.height, actualCount, chosen.format);
 
 		// Create what depends on the format, the images and the extent
 		//
@@ -839,7 +842,7 @@ namespace scvk
 			return false;
 		}
 
-		LogNote("Vulkan: the window has area again; rebuilding the swapchain.");
+		LogDebug("Vulkan: the window has area again; rebuilding the swapchain.");
 		return CreateSwapchain(swapchainExtent.width, swapchainExtent.height);
 	}
 
@@ -982,7 +985,7 @@ namespace scvk
 		uint32_t typeIndex = 0;
 		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
 		{
-			LogNote("Vulkan: no host-visible coherent memory type available.");
+			LogError("Vulkan: no host-visible coherent memory type available.");
 			isDead = true;
 			return false;
 		}
@@ -1057,7 +1060,7 @@ namespace scvk
 		VkResult result = WaitForFence(frameFence, WAIT_TIMEOUT_NANOSECONDS);
 		if (result == VK_TIMEOUT)
 		{
-			LogNote("Vulkan: timed out waiting for the previous frame; skipping this one.");
+			LogWarn("Vulkan: timed out waiting for the previous frame; skipping this one.");
 			return false;
 		}
 
@@ -1073,7 +1076,7 @@ namespace scvk
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR)
 		{
-			LogNote("Vulkan: swapchain out of date; rebuilding.");
+			LogDebug("Vulkan: swapchain out of date; rebuilding.");
 			DestroySwapchain();
 			CreateSwapchain(swapchainExtent.width, swapchainExtent.height);
 			return false;
@@ -1460,7 +1463,7 @@ namespace scvk
 			loggedViewport[2] = width;
 			loggedViewport[3] = height;
 
-			LogNote("Vulkan: viewport %d,%d %dx%d (from game %d,%d %dx%d, swapchain %ux%u)", x, y, width, height, viewportX, viewportY, viewportWidth, viewportHeight, swapchainExtent.width, swapchainExtent.height);
+			LogDebug("Vulkan: viewport %d,%d %dx%d (from game %d,%d %dx%d, swapchain %ux%u)", x, y, width, height, viewportX, viewportY, viewportWidth, viewportHeight, swapchainExtent.width, swapchainExtent.height);
 		}
 	}
 
@@ -1584,7 +1587,7 @@ namespace scvk
 			// 32-bit float.
 			if (region.isDepth && region.format != VK_FORMAT_D32_SFLOAT)
 			{
-				LogNote("Vulkan: the depth region is format %d, not D32_SFLOAT; not capturing it.", region.format);
+				LogWarn("Vulkan: the depth region is format %d, not D32_SFLOAT; not capturing it.", region.format);
 				return false;
 			}
 
@@ -1655,11 +1658,11 @@ namespace scvk
 
 			if (isWritten)
 			{
-				LogNote("Vulkan: wrote the saved region to %s (%ux%u)", regionCapturePath.c_str(), regionWidth, regionHeight);
+				LogInfo("Vulkan: wrote the saved region to %s (%ux%u)", regionCapturePath.c_str(), regionWidth, regionHeight);
 			}
 			else
 			{
-				LogNote("Vulkan: could not write the region capture to %s", regionCapturePath.c_str());
+				LogWarn("Vulkan: could not write the region capture to %s", regionCapturePath.c_str());
 			}
 
 			return;
@@ -1668,11 +1671,11 @@ namespace scvk
 		// Write a frame capture
 		if (WriteBmp(capturePath.c_str(), pixels, swapchainExtent.width, swapchainExtent.height, swapchainExtent.width * 4u))
 		{
-			LogNote("Vulkan: captured frame %llu to %s (%ux%u)", presentedFrames + 1, capturePath.c_str(), swapchainExtent.width, swapchainExtent.height);
+			LogInfo("Vulkan: captured frame %llu to %s (%ux%u)", presentedFrames + 1, capturePath.c_str(), swapchainExtent.width, swapchainExtent.height);
 		}
 		else
 		{
-			LogNote("Vulkan: could not write the capture to %s", capturePath.c_str());
+			LogWarn("Vulkan: could not write the capture to %s", capturePath.c_str());
 		}
 	}
 
@@ -1693,11 +1696,11 @@ namespace scvk
 		{
 			// The tick counts are far below the range where a double loses whole ticks.
 			double const seconds = static_cast<double>(now.QuadPart - lastHeartbeatTicks) / static_cast<double>(frequency.QuadPart);
-			LogNote("Vulkan: %llu frames presented, %.0f a second.", presentedFrames, static_cast<double>(HEARTBEAT_FRAMES) / seconds);
+			LogDebug("Vulkan: %llu frames presented, %.0f a second.", presentedFrames, static_cast<double>(HEARTBEAT_FRAMES) / seconds);
 		}
 		else
 		{
-			LogNote("Vulkan: %llu frames presented.", presentedFrames);
+			LogDebug("Vulkan: %llu frames presented.", presentedFrames);
 		}
 
 		lastHeartbeatTicks = now.QuadPart;
@@ -1709,7 +1712,7 @@ namespace scvk
 		{
 			// The tick counts are far below the range where a double loses whole ticks.
 			double const slowestMilliseconds = static_cast<double>(slowestFrameTicks) * 1000.0 / static_cast<double>(ticksPerSecond);
-			LogNote("Vulkan: slowest frame %.0f ms, %u over %lld ms.", slowestMilliseconds, slowFrames, SLOW_FRAME_MILLISECONDS);
+			LogDebug("Vulkan: slowest frame %.0f ms, %u over %lld ms.", slowestMilliseconds, slowFrames, SLOW_FRAME_MILLISECONDS);
 			LogPhaseTicks("all frames", allFramesPhaseTicks);
 
 			if (slowFrames > 0)
@@ -1731,7 +1734,7 @@ namespace scvk
 
 		if (drawsBeforeUpload != 0 || uploadsAfterDraw != 0)
 		{
-			LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);
+			LogDebug("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);
 		}
 	}
 
@@ -1804,7 +1807,7 @@ namespace scvk
 			milliseconds[phase] = static_cast<double>(phaseTicks[phase]) * 1000.0 / static_cast<double>(ticksPerSecond);
 		}
 
-		LogNote("Vulkan: %s in ms: game %.0f, recording %.0f, vertex copies %.0f, pipelines %.0f, textures %.0f, submits %.0f, GPU waits %.0f, swapchain %.0f.", heading, milliseconds[FRAME_PHASE_GAME], milliseconds[FRAME_PHASE_RECORDING], milliseconds[FRAME_PHASE_VERTEX_COPIES], milliseconds[FRAME_PHASE_PIPELINES], milliseconds[FRAME_PHASE_TEXTURES], milliseconds[FRAME_PHASE_SUBMITS], milliseconds[FRAME_PHASE_GPU_WAITS], milliseconds[FRAME_PHASE_SWAPCHAIN]);
+		LogDebug("Vulkan: %s in ms: game %.0f, recording %.0f, vertex copies %.0f, pipelines %.0f, textures %.0f, submits %.0f, GPU waits %.0f, swapchain %.0f.", heading, milliseconds[FRAME_PHASE_GAME], milliseconds[FRAME_PHASE_RECORDING], milliseconds[FRAME_PHASE_VERTEX_COPIES], milliseconds[FRAME_PHASE_PIPELINES], milliseconds[FRAME_PHASE_TEXTURES], milliseconds[FRAME_PHASE_SUBMITS], milliseconds[FRAME_PHASE_GPU_WAITS], milliseconds[FRAME_PHASE_SWAPCHAIN]);
 	}
 
 	bool VulkanBackend::WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch)
@@ -1924,7 +1927,7 @@ namespace scvk
 		{
 			information.enabledLayerCount   = _countof(layers);
 			information.ppEnabledLayerNames = layers;
-			LogNote("Vulkan: validation layers enabled.");
+			LogInfo("Vulkan: validation layers enabled.");
 
 			if (HasMarkerFile(SYNC_VALIDATION_MARKER) && HasInstanceExtension(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, VALIDATION_LAYER))
 			{
@@ -1932,12 +1935,12 @@ namespace scvk
 				information.enabledExtensionCount   = extensions.size();
 				information.ppEnabledExtensionNames = extensions.data();
 				information.pNext                   = &features;
-				LogNote("Vulkan: synchronisation validation enabled.");
+				LogInfo("Vulkan: synchronisation validation enabled.");
 			}
 		}
 		else
 		{
-			LogNote("Vulkan: validation layers not available to this 32-bit process. Install the 32-bit components of the Vulkan SDK to get them.");
+			LogWarn("Vulkan: validation layers not available to this 32-bit process. Install the 32-bit components of the Vulkan SDK to get them.");
 		}
 #endif
 
@@ -1965,7 +1968,7 @@ namespace scvk
 
 			if (vkCreateDebugUtilsMessengerEXT(instance, &messengerInformation, nullptr, &debugMessenger) == VK_SUCCESS)
 			{
-				LogNote("Vulkan: validation messages will be written to this log.");
+				LogInfo("Vulkan: validation messages will be written to this log.");
 			}
 		}
 
@@ -2128,7 +2131,7 @@ namespace scvk
 		// seen from the game so far, so it is refused rather than half-implemented.
 		if (destinationX < 0 || destinationY < 0)
 		{
-			LogNote("Vulkan: blit origin %d,%d is negative; skipping.", destinationX, destinationY);
+			LogWarn("Vulkan: blit origin %d,%d is negative; skipping.", destinationX, destinationY);
 			return;
 		}
 
@@ -2153,7 +2156,7 @@ namespace scvk
 
 		if (stagingUsed + bytes > stagingSize)
 		{
-			LogNote("Vulkan: staging buffer exhausted (%llu bytes needed, %llu free); skipping a blit.", bytes, stagingSize - stagingUsed);
+			LogWarn("Vulkan: staging buffer exhausted (%llu bytes needed, %llu free); skipping a blit.", bytes, stagingSize - stagingUsed);
 			return;
 		}
 
@@ -2224,7 +2227,7 @@ namespace scvk
 		// Windows always offers it for the swapchain, so this is not expected to happen.
 		if (sourceFormat != VK_FORMAT_B8G8R8A8_UNORM)
 		{
-			LogNote("Vulkan: the frame is format %d, not B8G8R8A8_UNORM; not reading it back.", sourceFormat);
+			LogWarn("Vulkan: the frame is format %d, not B8G8R8A8_UNORM; not reading it back.", sourceFormat);
 			return false;
 		}
 
@@ -2401,7 +2404,7 @@ namespace scvk
 		// Rebuild the swapchain when it no longer fits the window
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
 		{
-			LogNote("Vulkan: swapchain needs rebuilding after present (%s).", VkResultName(result));
+			LogDebug("Vulkan: swapchain needs rebuilding after present (%s).", VkResultName(result));
 			DestroySwapchain();
 
 			// A failure here leaves no swapchain, which makes IsDeviceReady report false
@@ -2409,7 +2412,7 @@ namespace scvk
 			// would make that indistinguishable from a hang, so it says so.
 			if (!CreateSwapchain(swapchainExtent.width, swapchainExtent.height))
 			{
-				LogNote("Vulkan: could not rebuild the swapchain; drawing waits until the window has area again.");
+				LogWarn("Vulkan: could not rebuild the swapchain; drawing waits until the window has area again.");
 			}
 
 			return;

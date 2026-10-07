@@ -50,7 +50,7 @@ namespace scvk
 		// number it stands for.
 		if (error != DriverError::OK && error != lastError)
 		{
-			LogNote("  !! error state set to %u (repeats suppressed until it changes)", static_cast<uint32_t>(error));
+			LogWarn("  !! error state set to %u (repeats suppressed until it changes)", static_cast<uint32_t>(error));
 		}
 
 		lastError = error;
@@ -63,12 +63,12 @@ namespace scvk
 		refCount = 0;
 
 		LogOpen();
-		LogNote("cVKDriver constructed.");
+		LogDebug("cVKDriver constructed.");
 	}
 
 	cVKDriver::~cVKDriver(void)
 	{
-		LogNote("cVKDriver destroyed (refcount reached zero).");
+		LogDebug("cVKDriver destroyed (refcount reached zero).");
 	}
 
 	bool cVKDriver::FactoryFunction(uint32_t interfaceId, void** outInterface)
@@ -94,24 +94,24 @@ namespace scvk
 		{
 		case GZIID_cIGZUnknown:
 		case GZIID_cIGZGDriver:
-			LogNote("QueryInterface(%08x) -> cIGZGDriver", interfaceId);
+			LogDebug("QueryInterface(%08x) -> cIGZGDriver", interfaceId);
 			*outInterface = static_cast<cIGZGDriver*>(this);
 			break;
 
 		case GZIID_cIGZGBufferRegionExtension:
-			LogNote("QueryInterface(%08x) -> cIGZGBufferRegionExtension", interfaceId);
+			LogDebug("QueryInterface(%08x) -> cIGZGBufferRegionExtension", interfaceId);
 			*outInterface = static_cast<cIGZGBufferRegionExtension*>(this);
 			break;
 
 		case GZIID_cIGZGDriverLightingExtension:
-			LogNote("QueryInterface(%08x) -> cIGZGDriverLightingExtension", interfaceId);
+			LogDebug("QueryInterface(%08x) -> cIGZGDriverLightingExtension", interfaceId);
 			*outInterface = static_cast<cIGZGDriverLightingExtension*>(this);
 			break;
 
 		case GZIID_cIGZGSnapshotExtension:
 			// Documented as mandatory: refusing this one crashes the game during load,
 			// even though it is nominally an extension.
-			LogNote("QueryInterface(%08x) -> cIGZGSnapshotExtension", interfaceId);
+			LogDebug("QueryInterface(%08x) -> cIGZGSnapshotExtension", interfaceId);
 			*outInterface = static_cast<cIGZGSnapshotExtension*>(this);
 			break;
 
@@ -120,11 +120,11 @@ namespace scvk
 			// path, and the client-memory path is the one scvk implements. SCGL also
 			// leaves this one disabled. Logged so the boot trace still records that the
 			// game asked.
-			LogNote("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension DECLINED (stub stage)", interfaceId);
+			LogDebug("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension DECLINED (stub stage)", interfaceId);
 			return false;
 
 		default:
-			LogNote("QueryInterface(%08x) -> unrecognised, declined", interfaceId);
+			LogDebug("QueryInterface(%08x) -> unrecognised, declined", interfaceId);
 			return false;
 		}
 
@@ -156,7 +156,7 @@ namespace scvk
 		lastError = DriverError::OK;
 
 		SCVK_CALL("");
-		LogNote("  -> returned error %u%s", error, error == 0 ? " (OK)" : "  <-- the game reads this as failure");
+		LogTrace("  -> returned error %u%s", error, error == 0 ? " (OK)" : "  <-- the game reads this as failure");
 		return error;
 	}
 

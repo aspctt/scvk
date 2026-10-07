@@ -152,7 +152,7 @@ namespace scvk
 
 		if (frameRateCap > LARGEST_CAP)
 		{
-			LogNote("MaxFPS=%d exceeds the one-byte field; clamping to 255.", frameRateCap);
+			LogWarn("MaxFPS=%d exceeds the one-byte field; clamping to 255.", frameRateCap);
 			frameRateCap = LARGEST_CAP;
 		}
 
@@ -160,7 +160,7 @@ namespace scvk
 		uint16_t const gameVersion = GetGameVersion();
 		if (gameVersion != SUPPORTED_GAME_VERSION)
 		{
-			LogNote("MaxFPS requested but the FPS limit addresses are only known for game version %u (found %u). Leaving the limits alone.", SUPPORTED_GAME_VERSION, gameVersion);
+			LogWarn("MaxFPS requested but the FPS limit addresses are only known for game version %u (found %u). Leaving the limits alone.", SUPPORTED_GAME_VERSION, gameVersion);
 			return;
 		}
 
@@ -180,23 +180,23 @@ namespace scvk
 
 			if (currentCap == newCap)
 			{
-				LogNote("%s speed cap is already %d; nothing to do. Another plugin has probably set it.", limit.name, frameRateCap);
+				LogInfo("%s speed cap is already %d; nothing to do. Another plugin has probably set it.", limit.name, frameRateCap);
 				continue;
 			}
 
 			if (currentCap != limit.originalCap)
 			{
-				LogNote("REFUSING to patch the %s speed cap at %08X: expected %u, found %u. Another plugin may already have changed it, or this is not the build these addresses came from.", limit.name, limit.address, limit.originalCap, currentCap);
+				LogWarn("REFUSING to patch the %s speed cap at %08X: expected %u, found %u. Another plugin may already have changed it, or this is not the build these addresses came from.", limit.name, limit.address, limit.originalCap, currentCap);
 				continue;
 			}
 
 			if (WriteByte(limit.address, newCap))
 			{
-				LogNote("%s speed cap raised from %u to %d.", limit.name, limit.originalCap, frameRateCap);
+				LogInfo("%s speed cap raised from %u to %d.", limit.name, limit.originalCap, frameRateCap);
 			}
 			else
 			{
-				LogNote("Failed to write the %s speed cap at %08X, error %lu.", limit.name, limit.address, GetLastError());
+				LogError("Failed to write the %s speed cap at %08X, error %lu.", limit.name, limit.address, GetLastError());
 			}
 		}
 	}

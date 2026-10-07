@@ -474,7 +474,7 @@ namespace scvk
 			return VK_NULL_HANDLE;
 		}
 
-		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
+		LogDebug("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
 
 		pipelines.push_back({ key, pipeline });
 		return pipeline;
@@ -548,7 +548,7 @@ namespace scvk
 		case 7: outTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; return true;
 
 		default:
-			LogNote("Vulkan: primitive type %u is not handled; skipping the draw.", gdPrimitiveType);
+			LogWarn("Vulkan: primitive type %u is not handled; skipping the draw.", gdPrimitiveType);
 			return false;
 		}
 	}
@@ -588,7 +588,7 @@ namespace scvk
 					return false;
 				}
 
-				LogNote("Vulkan: the %s arena grew to %u blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
+				LogDebug("Vulkan: the %s arena grew to %u blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
 			}
 
 			arena.currentBlock++;
@@ -673,7 +673,7 @@ namespace scvk
 		// The draw record's copy lived in the vertex arena
 		drawRecordBuffer = VK_NULL_HANDLE;
 
-		LogNote("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", presentedFrames);
+		LogDebug("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", presentedFrames);
 		return true;
 	}
 
@@ -688,7 +688,7 @@ namespace scvk
 
 		if (!ArenaAllocate(vertexArena, bytes, VERTEX_ALIGNMENT, outBuffer, outOffset, destination))
 		{
-			LogNote("Vulkan: no room for per-frame vertex data; dropping a draw of %u vertices.", vertexCount);
+			LogWarn("Vulkan: no room for per-frame vertex data; dropping a draw of %u vertices.", vertexCount);
 			return false;
 		}
 
@@ -719,7 +719,7 @@ namespace scvk
 		//
 		// Byte totals stay far below the range where a double loses whole megabytes.
 		double const megabyte = 1024.0 * 1024.0;
-		LogNote("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte);
+		LogDebug("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte);
 
 		vertexUploads           = 0;
 		vertexUploadBytes       = 0;
@@ -941,7 +941,7 @@ namespace scvk
 			if (!ArenaAllocate(vertexArena, sizeof(DrawRecord), VERTEX_ALIGNMENT, drawRecordBuffer, drawRecordOffset, destination))
 			{
 				drawRecordBuffer = VK_NULL_HANDLE;
-				LogNote("Vulkan: no room for per-frame vertex data; dropping a draw for want of its draw record.");
+				LogWarn("Vulkan: no room for per-frame vertex data; dropping a draw for want of its draw record.");
 				return false;
 			}
 
@@ -1132,7 +1132,7 @@ namespace scvk
 	void VulkanBackend::SetDebugPassColours(bool isEnabled)
 	{
 		shouldShowPassColours = isEnabled;
-		LogNote("Vulkan: pass identification colours are %s.", isEnabled ? "on" : "off");
+		LogInfo("Vulkan: pass identification colours are %s.", isEnabled ? "on" : "off");
 	}
 
 	void VulkanBackend::SetDebugChannel(int channel)
@@ -1189,7 +1189,7 @@ namespace scvk
 		uint32_t quads = vertexCount / 4u;
 		if (quads > quadCapacity)
 		{
-			LogNote("Vulkan: %u quads exceeds the index buffer capacity of %u; clamping.", quads, quadCapacity);
+			LogWarn("Vulkan: %u quads exceeds the index buffer capacity of %u; clamping.", quads, quadCapacity);
 			quads = quadCapacity;
 		}
 
@@ -1281,7 +1281,7 @@ namespace scvk
 
 		if (!ArenaAllocate(indexArena, indexBytes, sizeof(uint32_t), indexBuffer, indexOffset, indexDestination))
 		{
-			LogNote("Vulkan: no room for per-frame index data; dropping a draw of %u indices.", indexCount);
+			LogWarn("Vulkan: no room for per-frame index data; dropping a draw of %u indices.", indexCount);
 			return;
 		}
 

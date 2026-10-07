@@ -166,7 +166,7 @@ namespace scvk
 
 		if (NoteOnce(NOTE_SCENE_TINT, key))
 		{
-			LogNote("  TINT rgb %.3f %.3f %.3f alpha %.3f (vertex colours: ambient %d, diffuse %d)", colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isVertexColourDiffuse ? 1 : 0);
+			LogDebug("  TINT rgb %.3f %.3f %.3f alpha %.3f (vertex colours: ambient %d, diffuse %d)", colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient ? 1 : 0, isVertexColourDiffuse ? 1 : 0);
 		}
 	}
 

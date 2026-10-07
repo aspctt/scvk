@@ -201,7 +201,7 @@ namespace scvk
 
 		if (NoteOnce(NOTE_TEXTURE_ENVIRONMENT, gdTextureEnvironmentTarget | (gdTextureEnvironmentParameterType << 8) | (modeByte << 16)))
 		{
-			LogNote("  TEXENV target %u, param type %u, mode %d", gdTextureEnvironmentTarget, gdTextureEnvironmentParameterType, gdTextureEnvironmentMode);
+			LogDebug("  TEXENV target %u, param type %u, mode %d", gdTextureEnvironmentTarget, gdTextureEnvironmentParameterType, gdTextureEnvironmentMode);
 		}
 
 		// Only the mode matters, and it applies to the active stage
@@ -257,7 +257,7 @@ namespace scvk
 
 		if (NoteOnce(NOTE_TEXTURE_PARAMETER, gdTextureTarget | (gdTextureParameterType << 8) | (valueBits << 16)))
 		{
-			LogNote("  TEXPARAM target %u, param type %u, value %d", gdTextureTarget, gdTextureParameterType, gdTextureParameter);
+			LogDebug("  TEXPARAM target %u, param type %u, value %d", gdTextureTarget, gdTextureParameterType, gdTextureParameter);
 		}
 
 		// Set it on the selected stage
@@ -375,7 +375,7 @@ namespace scvk
 
 		if (NoteOnce(NOTE_COORDINATE_SOURCE, activeTextureStage | (gdTextureCoordinateSource << 8)))
 		{
-			LogNote("  TEXCOORDSRC stage %u source %u", activeTextureStage, gdTextureCoordinateSource);
+			LogDebug("  TEXCOORDSRC stage %u source %u", activeTextureStage, gdTextureCoordinateSource);
 		}
 	}
 
@@ -411,7 +411,7 @@ namespace scvk
 		}
 
 		textureMatrixProbesRemaining--;
-		LogNote("    texture matrix flags 0x%x: [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", gdTextureMatrixFlags, matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6], matrix[7], matrix[8], matrix[9], matrix[10], matrix[11], matrix[12], matrix[13], matrix[14], matrix[15]);
+		LogDebug("    texture matrix flags 0x%x: [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f] [%.3f %.3f %.3f %.3f]", gdTextureMatrixFlags, matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6], matrix[7], matrix[8], matrix[9], matrix[10], matrix[11], matrix[12], matrix[13], matrix[14], matrix[15]);
 	}
 
 	/*
@@ -453,7 +453,7 @@ namespace scvk
 		// thing to rule out.
 		if (NoteOnce(NOTE_STAGE_BINDING, textureUnit | (texture != 0 ? 0x100u : 0u)))
 		{
-			LogNote("  STAGE unit %u %s (texture %u)", textureUnit, texture != 0 ? "bound" : "cleared", texture);
+			LogDebug("  STAGE unit %u %s (texture %u)", textureUnit, texture != 0 ? "bound" : "cleared", texture);
 		}
 
 		if (textureUnit == 1 && texture != 0 && NoteOnce(NOTE_STAGE1_TEXTURE, texture))
@@ -545,7 +545,7 @@ namespace scvk
 		// Describe it the first time it is seen
 		if (NoteOnce(NOTE_COMBINER, key))
 		{
-			LogNote("  COMBINER unit %u: rgb mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u) | alpha mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u)", textureUnit, combiner.RGBCombineMode, combiner.RGBScale, combiner.RGBParams[0].SourceType, combiner.RGBParams[0].OperandType, combiner.RGBParams[1].SourceType, combiner.RGBParams[1].OperandType, combiner.RGBParams[2].SourceType, combiner.RGBParams[2].OperandType, combiner.AlphaCombineMode, combiner.AlphaScale, combiner.AlphaParams[0].SourceType, combiner.AlphaParams[0].OperandType, combiner.AlphaParams[1].SourceType, combiner.AlphaParams[1].OperandType, combiner.AlphaParams[2].SourceType, combiner.AlphaParams[2].OperandType);
+			LogDebug("  COMBINER unit %u: rgb mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u) | alpha mode %u scale %u  src/op (%u,%u) (%u,%u) (%u,%u)", textureUnit, combiner.RGBCombineMode, combiner.RGBScale, combiner.RGBParams[0].SourceType, combiner.RGBParams[0].OperandType, combiner.RGBParams[1].SourceType, combiner.RGBParams[1].OperandType, combiner.RGBParams[2].SourceType, combiner.RGBParams[2].OperandType, combiner.AlphaCombineMode, combiner.AlphaScale, combiner.AlphaParams[0].SourceType, combiner.AlphaParams[0].OperandType, combiner.AlphaParams[1].SourceType, combiner.AlphaParams[1].OperandType, combiner.AlphaParams[2].SourceType, combiner.AlphaParams[2].OperandType);
 		}
 	}
 }

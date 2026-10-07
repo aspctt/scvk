@@ -267,7 +267,7 @@ namespace scvk
 		// crashed taking a photo.
 		if (hasOverlap && !isRead)
 		{
-			LogNote("CopyColorBuffer: the screen could not be read back; handing over black.");
+			LogWarn("CopyColorBuffer: the screen could not be read back; handing over black.");
 		}
 
 		// Make a buffer when the game passes none, sized to the rectangle
@@ -279,7 +279,7 @@ namespace scvk
 
 			if (buffer == nullptr)
 			{
-				LogNote("CopyColorBuffer: the graphic system made no buffer.");
+				LogWarn("CopyColorBuffer: the graphic system made no buffer.");
 				return nullptr;
 			}
 		}
@@ -343,7 +343,7 @@ namespace scvk
 		//
 		// The call trace is long spent by the time anyone takes a photo, and these are
 		// rare enough to log every one.
-		LogNote("CopyColorBuffer: %d,%d %dx%d into a %dx%d buffer, %s.", x, y, width, height, buffer->Width(), buffer->Height(), isRead ? "read from the screen" : "black");
+		LogDebug("CopyColorBuffer: %d,%d %dx%d into a %dx%d buffer, %s.", x, y, width, height, buffer->Width(), buffer->Height(), isRead ? "read from the screen" : "black");
 		return buffer;
 	}
 

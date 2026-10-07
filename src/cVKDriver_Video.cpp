@@ -117,7 +117,7 @@ namespace scvk
 
 			if (result != DISP_CHANGE_SUCCESSFUL)
 			{
-				LogNote("SetVideoMode: could not switch the display to %lux%lu %lubpp, error %ld.", fullscreenDisplayMode.dmPelsWidth, fullscreenDisplayMode.dmPelsHeight, fullscreenDisplayMode.dmBitsPerPel, result);
+				LogWarn("SetVideoMode: could not switch the display to %lux%lu %lubpp, error %ld.", fullscreenDisplayMode.dmPelsWidth, fullscreenDisplayMode.dmPelsHeight, fullscreenDisplayMode.dmBitsPerPel, result);
 				return false;
 			}
 
@@ -132,7 +132,7 @@ namespace scvk
 
 			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &current) != 0)
 			{
-				LogNote("Fullscreen: the display is now %lux%lu %lubpp at %lu Hz.", current.dmPelsWidth, current.dmPelsHeight, current.dmBitsPerPel, current.dmDisplayFrequency);
+				LogInfo("Fullscreen: the display is now %lux%lu %lubpp at %lu Hz.", current.dmPelsWidth, current.dmPelsHeight, current.dmBitsPerPel, current.dmDisplayFrequency);
 			}
 
 			return true;
@@ -180,7 +180,7 @@ namespace scvk
 			unsigned long const style         = static_cast<unsigned long>(GetWindowLongA(window, GWL_STYLE));
 			unsigned long const extendedStyle = static_cast<unsigned long>(GetWindowLongA(window, GWL_EXSTYLE));
 
-			LogNote("Window %s: style 0x%08lx extended 0x%08lx, bounds %ld,%ld..%ld,%ld, client %ldx%ld, visible %d minimised %d maximised %d foreground %d focus %d.", moment, style, extendedStyle, bounds.left, bounds.top, bounds.right, bounds.bottom, client.right, client.bottom, IsWindowVisible(window) ? 1 : 0, IsIconic(window) ? 1 : 0, IsZoomed(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0, (GetFocus() == window) ? 1 : 0);
+			LogDebug("Window %s: style 0x%08lx extended 0x%08lx, bounds %ld,%ld..%ld,%ld, client %ldx%ld, visible %d minimised %d maximised %d foreground %d focus %d.", moment, style, extendedStyle, bounds.left, bounds.top, bounds.right, bounds.bottom, client.right, client.bottom, IsWindowVisible(window) ? 1 : 0, IsIconic(window) ? 1 : 0, IsZoomed(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0, (GetFocus() == window) ? 1 : 0);
 		}
 
 		// Names the focus and size messages worth a log line, or returns null
@@ -211,7 +211,7 @@ namespace scvk
 			if (name != nullptr && windowMessageReportsRemaining > 0)
 			{
 				windowMessageReportsRemaining--;
-				LogNote("Window message %s, wParam 0x%lx, lParam 0x%lx.", name, static_cast<unsigned long>(wParam), static_cast<unsigned long>(lParam));
+				LogDebug("Window message %s, wParam 0x%lx, lParam 0x%lx.", name, static_cast<unsigned long>(wParam), static_cast<unsigned long>(lParam));
 			}
 
 			// Give the desktop back while a fullscreen game is in the background
@@ -221,7 +221,7 @@ namespace scvk
 			// Switching back sets the game's mode again.
 			if (message == WM_ACTIVATEAPP && isFullscreenWindow && window == gameWindow)
 			{
-				LogNote("Fullscreen: the game is %s.", (wParam != FALSE) ? "back in front" : "in the background");
+				LogDebug("Fullscreen: the game is %s.", (wParam != FALSE) ? "back in front" : "in the background");
 
 				if (wParam != FALSE)
 				{
@@ -288,7 +288,7 @@ namespace scvk
 			unsigned long const base    = static_cast<unsigned long>(reinterpret_cast<uintptr_t>(module));
 			unsigned long const target  = (record->NumberParameters >= 2) ? static_cast<unsigned long>(record->ExceptionInformation[1]) : 0;
 
-			LogNote("Exception 0x%08lx at 0x%08lx (%s +0x%lx), data address 0x%08lx, thread %lu.", code, address, modulePath, address - base, target, GetCurrentThreadId());
+			LogCritical("Exception 0x%08lx at 0x%08lx (%s +0x%lx), data address 0x%08lx, thread %lu.", code, address, modulePath, address - base, target, GetCurrentThreadId());
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 	}
@@ -320,14 +320,14 @@ namespace scvk
 		// Leave out the cloud shadows
 		if (HasMarkerFile(SKIP_CLOUD_SHADOWS_MARKER))
 		{
-			LogNote("Diagnostic: skipping the cloud shadow pass.");
+			LogInfo("Diagnostic: skipping the cloud shadow pass.");
 			shouldSkipCloudShadows = true;
 		}
 
 		// Fog the scene as the 3D view would
 		if (HasMarkerFile(FORCE_FOG_MARKER))
 		{
-			LogNote("Diagnostic: forcing the 3D view's own fog.");
+			LogInfo("Diagnostic: forcing the 3D view's own fog.");
 			shouldForceFog = true;
 			PushFog();
 		}
@@ -337,7 +337,7 @@ namespace scvk
 		// Sized once, because the game calls Init more than once.
 		if (HasMarkerFile(RECORD_TILE_DRAWS_MARKER) && drawRing.empty())
 		{
-			LogNote("Diagnostic: recording the draws of saved tiles.");
+			LogInfo("Diagnostic: recording the draws of saved tiles.");
 			drawRing.resize(DRAW_RING_SIZE);
 		}
 
@@ -348,7 +348,7 @@ namespace scvk
 		{
 			if (HasMarkerFile(marker))
 			{
-				LogNote("Diagnostic: drawing %s only.", marker + strlen(CHANNEL_MARKER_PREFIX));
+				LogInfo("Diagnostic: drawing %s only.", marker + strlen(CHANNEL_MARKER_PREFIX));
 				vulkan->SetDebugChannel(channel);
 				break;
 			}
@@ -461,7 +461,7 @@ namespace scvk
 
 		if (RegisterClassA(&windowClass) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
 		{
-			LogNote("SetVideoMode: RegisterClass failed, error %lu.", GetLastError());
+			LogError("SetVideoMode: RegisterClass failed, error %lu.", GetLastError());
 			return false;
 		}
 
@@ -485,7 +485,7 @@ namespace scvk
 
 			if (!isFullscreen)
 			{
-				LogNote("SetVideoMode: running windowed instead.");
+				LogWarn("SetVideoMode: running windowed instead.");
 			}
 		}
 
@@ -516,7 +516,7 @@ namespace scvk
 
 		if (window == nullptr)
 		{
-			LogNote("SetVideoMode: CreateWindowEx failed, error %lu.", GetLastError());
+			LogError("SetVideoMode: CreateWindowEx failed, error %lu.", GetLastError());
 			EndFullscreen();
 			return false;
 		}
@@ -589,7 +589,7 @@ namespace scvk
 		LogOpen();
 		SCVK_CALL("");
 
-		LogNote("scvk %s initialising.", SCVK_VERSION_STRING);
+		LogInfo("scvk %s initialising.", SCVK_VERSION_STRING);
 
 		// Log faults, once for the process
 		//
@@ -606,7 +606,7 @@ namespace scvk
 		// better than presenting a black window.
 		if (!vulkan->CreateInstance())
 		{
-			LogNote("Vulkan is unavailable, so scvk is declining to act as the renderer. The game will fall back to another driver.");
+			LogError("Vulkan is unavailable, so scvk is declining to act as the renderer. The game will fall back to another driver.");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return false;
 		}
@@ -618,7 +618,7 @@ namespace scvk
 		uint32_t const modeCount = EnumerateVideoModes();
 		if (modeCount == 0)
 		{
-			LogNote("FATAL: no usable video modes were enumerated. The game will fall back to software.");
+			LogCritical("FATAL: no usable video modes were enumerated. The game will fall back to software.");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return false;
 		}
@@ -629,12 +629,12 @@ namespace scvk
 		// a specific width, height and colour depth, and modern Windows generally only
 		// reports 32bpp modes. If the game wants 16bpp and every mode below says 32, that
 		// is the answer.
-		LogNote("Enumerated %u video modes (windowed and fullscreen pairs):", modeCount);
+		LogInfo("Enumerated %u video modes, in windowed and fullscreen pairs.", modeCount);
 
 		for (uint32_t i = 0; i < modeCount; i += 2)
 		{
 			sGDMode const& mode = videoModes[i];
-			LogNote("    [%2u/%2u] %ux%u %ubpp", i, i + 1, mode.width, mode.height, mode.depth);
+			LogDebug("    [%2u/%2u] %ux%u %ubpp", i, i + 1, mode.width, mode.height, mode.depth);
 		}
 
 		SetLastError(DriverError::OK);
@@ -671,7 +671,7 @@ namespace scvk
 
 		if (modeIndex >= videoModes.size())
 		{
-			LogNote("  !! index %u is out of range, we only have %u modes", modeIndex, videoModes.size());
+			LogWarn("  !! index %u is out of range, we only have %u modes", modeIndex, videoModes.size());
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
 		}
@@ -685,7 +685,7 @@ namespace scvk
 
 		if (currentVideoMode < 0)
 		{
-			LogNote("  !! no video mode has been set yet");
+			LogWarn("  !! no video mode has been set yet");
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
 		}
@@ -722,7 +722,7 @@ namespace scvk
 		// A negative index is refused first, so the rest can use it unsigned.
 		if (newModeIndex < 0 || static_cast<uint32_t>(newModeIndex) >= videoModes.size())
 		{
-			LogNote("SetVideoMode: index %d out of range (have %u modes).", newModeIndex, videoModes.size());
+			LogWarn("SetVideoMode: index %d out of range (have %u modes).", newModeIndex, videoModes.size());
 			SetLastError(DriverError::OUT_OF_RANGE);
 			return;
 		}
@@ -736,7 +736,7 @@ namespace scvk
 		windowWidth      = static_cast<int>(mode.width);
 		windowHeight     = static_cast<int>(mode.height);
 
-		LogNote("SetVideoMode: %ux%u %ubpp %s", mode.width, mode.height, mode.depth, mode.isFullscreen ? "fullscreen" : "windowed");
+		LogInfo("SetVideoMode: %ux%u %ubpp %s", mode.width, mode.height, mode.depth, mode.isFullscreen ? "fullscreen" : "windowed");
 
 		// Create the window, then attach Vulkan to it
 		//
@@ -750,7 +750,7 @@ namespace scvk
 
 		if (!vulkan->CreateSurfaceAndDevice(windowHandle, mode.width, mode.height))
 		{
-			LogNote("Vulkan: could not attach to the window; nothing will be drawn.");
+			LogCritical("Vulkan: could not attach to the window; nothing will be drawn.");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return;
 		}

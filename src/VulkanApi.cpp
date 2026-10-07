@@ -64,7 +64,7 @@ namespace scvk
 		vulkanLibrary = LoadLibraryA("vulkan-1.dll");
 		if (vulkanLibrary == nullptr)
 		{
-			LogNote("Vulkan: vulkan-1.dll could not be loaded (error %lu). No Vulkan driver is installed, or it is not registered for 32-bit processes.", GetLastError());
+			LogError("Vulkan: vulkan-1.dll could not be loaded (error %lu). No Vulkan driver is installed, or it is not registered for 32-bit processes.", GetLastError());
 			return false;
 		}
 
@@ -72,7 +72,7 @@ namespace scvk
 		vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(vulkanLibrary, "vkGetInstanceProcAddr"));
 		if (vkGetInstanceProcAddr == nullptr)
 		{
-			LogNote("Vulkan: vulkan-1.dll has no vkGetInstanceProcAddr; the file is not a Vulkan loader.");
+			LogError("Vulkan: vulkan-1.dll has no vkGetInstanceProcAddr; the file is not a Vulkan loader.");
 			return false;
 		}
 
@@ -81,7 +81,7 @@ namespace scvk
 
 #define SCVK_VK_LOAD_GLOBAL(name)                                                        \
 		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(VK_NULL_HANDLE, #name)); \
-		if (name == nullptr) { LogNote("Vulkan: missing global entry point %s", #name); hasAllEntryPoints = false; }
+		if (name == nullptr) { LogError("Vulkan: missing global entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_GLOBAL_FUNCTIONS(SCVK_VK_LOAD_GLOBAL)
 #undef SCVK_VK_LOAD_GLOBAL
@@ -96,7 +96,7 @@ namespace scvk
 
 #define SCVK_VK_LOAD_INSTANCE(name)                                                  \
 		name = reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(instance, #name)); \
-		if (name == nullptr) { LogNote("Vulkan: missing instance entry point %s", #name); hasAllEntryPoints = false; }
+		if (name == nullptr) { LogError("Vulkan: missing instance entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_INSTANCE_FUNCTIONS(SCVK_VK_LOAD_INSTANCE)
 #undef SCVK_VK_LOAD_INSTANCE
@@ -117,7 +117,7 @@ namespace scvk
 
 #define SCVK_VK_LOAD_DEVICE(name)                                                \
 		name = reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name)); \
-		if (name == nullptr) { LogNote("Vulkan: missing device entry point %s", #name); hasAllEntryPoints = false; }
+		if (name == nullptr) { LogError("Vulkan: missing device entry point %s", #name); hasAllEntryPoints = false; }
 
 		SCVK_VK_DEVICE_FUNCTIONS(SCVK_VK_LOAD_DEVICE)
 #undef SCVK_VK_LOAD_DEVICE
