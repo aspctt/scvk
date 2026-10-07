@@ -381,6 +381,8 @@ namespace scvk
 
 	void VulkanBackend::FlushRetiredImages(void)
 	{
+		PhaseScope const releasing(*this, FRAME_PHASE_TEXTURES);
+
 		// Settle the texture batch first
 		//
 		// Its commands may name an image retired here. Destroying the image would make a
@@ -1001,11 +1003,11 @@ namespace scvk
 		submit.pCommandBuffers    = &uploadCommandBuffer;
 
 		vkResetFences(device, 1, &uploadFence);
-		vkQueueSubmit(queue, 1, &submit, uploadFence);
+		SubmitToQueue(submit, uploadFence);
 
 		// Waited on rather than pipelined. Only reading the last frame back uses this,
 		// and it needs the pixels at once.
-		vkWaitForFences(device, 1, &uploadFence, VK_TRUE, UINT64_MAX);
+		WaitForFence(uploadFence, UINT64_MAX);
 	}
 
 	bool VulkanBackend::BeginTextureBatch(void)
@@ -1056,7 +1058,7 @@ namespace scvk
 
 		vkResetFences(device, 1, &textureBatchFence);
 
-		result = vkQueueSubmit(queue, 1, &submit, textureBatchFence);
+		result = SubmitToQueue(submit, textureBatchFence);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkQueueSubmit (texture batch)", result);
@@ -1077,7 +1079,7 @@ namespace scvk
 	{
 		if (isTextureBatchInFlight)
 		{
-			vkWaitForFences(device, 1, &textureBatchFence, VK_TRUE, UINT64_MAX);
+			WaitForFence(textureBatchFence, UINT64_MAX);
 			isTextureBatchInFlight = false;
 		}
 
@@ -1161,6 +1163,7 @@ namespace scvk
 		}
 
 		TickAccumulator const timer(textureWorkTicks);
+		PhaseScope const      creating(*this, FRAME_PHASE_TEXTURES);
 
 		// Create the image
 		Texture texture;
@@ -1279,6 +1282,7 @@ namespace scvk
 		}
 
 		TickAccumulator const timer(textureWorkTicks);
+		PhaseScope const      uploading(*this, FRAME_PHASE_TEXTURES);
 
 		// Count an upload that lands after a draw this frame already recorded
 		if (texture.lastDrawnFrame == presentedFrames)

@@ -310,6 +310,41 @@ namespace scvk
 			VkDeviceSize            usedBytes     = 0;
 		};
 
+		/**
+		 * Where a frame's time goes, for the heartbeat's split of slow frames.
+		 *
+		 * A phase entered inside another pauses the outer one, so a frame's phases add up
+		 * to the gap between its present and the one before. Game is everything outside
+		 * scvk's timed work, which is mostly the game's own.
+		 */
+		enum FramePhase : uint32_t
+		{
+			FRAME_PHASE_GAME,
+			FRAME_PHASE_RECORDING,
+			FRAME_PHASE_VERTEX_COPIES,
+			FRAME_PHASE_PIPELINES,
+			FRAME_PHASE_TEXTURES,
+			FRAME_PHASE_SUBMITS,
+			FRAME_PHASE_GPU_WAITS,
+			FRAME_PHASE_SWAPCHAIN,
+			FRAME_PHASE_COUNT,
+		};
+
+		/** Charges the time until it goes out of scope to a phase, then resumes the phase it interrupted. */
+		class PhaseScope
+		{
+		public:
+			PhaseScope(VulkanBackend& backend, FramePhase phase) : backend(backend), interruptedPhase(backend.EnterPhase(phase)) {}
+			~PhaseScope() { backend.EnterPhase(interruptedPhase); }
+
+			PhaseScope(PhaseScope const&) = delete;
+			PhaseScope& operator=(PhaseScope const&) = delete;
+
+		private:
+			VulkanBackend& backend;
+			FramePhase     interruptedPhase;
+		};
+
 		//// Constants
 
 		// Depth is read and written in both fragment test stages, early when the shader
@@ -378,6 +413,16 @@ namespace scvk
 		int64_t  lastPresentTicks  = 0;
 		int64_t  slowestFrameTicks = 0;
 		uint32_t slowFrames        = 0;
+
+		// The phase clock. The running frame's time is split between the phases as it
+		// passes, then added at its present to the totals over every frame and over the
+		// slow ones, and kept when it is the slowest, until the next heartbeat.
+		FramePhase activePhase                               = FRAME_PHASE_GAME;
+		int64_t    phaseStartTicks                           = 0;
+		int64_t    framePhaseTicks[FRAME_PHASE_COUNT]        = {};
+		int64_t    allFramesPhaseTicks[FRAME_PHASE_COUNT]    = {};
+		int64_t    slowFramesPhaseTicks[FRAME_PHASE_COUNT]   = {};
+		int64_t    slowestFramePhaseTicks[FRAME_PHASE_COUNT] = {};
 
 		// Reused when a Flush arrives with no frame started, so the swapchain keeps
 		// cycling instead of stalling.
@@ -549,7 +594,6 @@ namespace scvk
 		// is what the vertex arena has to hold.
 		uint32_t     vertexUploads           = 0;
 		VkDeviceSize vertexUploadBytes       = 0;
-		int64_t      vertexCopyTicks         = 0;
 		VkDeviceSize frameVertexBytes        = 0;
 		VkDeviceSize largestFrameVertexBytes = 0;
 
@@ -612,6 +656,27 @@ namespace scvk
 
 		/** Submits what the frame has recorded so far, waits for it, and carries on recording the same frame. */
 		bool SubmitFrameSoFar(void);
+
+		/** vkQueueSubmit of one batch, timed as a submit. */
+		VkResult SubmitToQueue(VkSubmitInfo const& submit, VkFence fence);
+
+		/** vkWaitForFences on one fence, timed as waiting for the GPU. */
+		VkResult WaitForFence(VkFence fence, uint64_t timeoutNanoseconds);
+
+		/** Acquires the next swapchain image into imageIndex, timed as swapchain work. */
+		VkResult AcquireNextImage(void);
+
+		/** Presents imageIndex once rendering has finished, timed as swapchain work. */
+		VkResult PresentImage(void);
+
+		/** Charges the time since the last switch to the active phase and makes another active. Returns the one it replaced. */
+		FramePhase EnterPhase(FramePhase phase);
+
+		/** Counts the frame ending at this present: its gap since the last one and where that time went. */
+		void TimeFrame(int64_t nowTicks);
+
+		/** One heartbeat line splitting a time by phase. */
+		void LogPhaseTicks(char const* heading, int64_t const phaseTicks[FRAME_PHASE_COUNT]) const;
 
 		/** Barriers the swapchain image into a layout, tracking where it was. */
 		void TransitionTo(VkImageLayout newLayout);

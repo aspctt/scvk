@@ -233,6 +233,8 @@ namespace scvk
 			return;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
 		// Clear only the scissor under a sub-viewport, the same way as the colour clear
 		VkRect2D scissor{};
 		if (ViewportRectangle(scissor))
@@ -442,6 +444,7 @@ namespace scvk
 			return false;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 		BufferRegion& region = bufferRegions[handle - 1];
 
 		// Fit the copy to both images and the scissor
@@ -517,6 +520,7 @@ namespace scvk
 			return false;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 		BufferRegion& region = bufferRegions[handle - 1];
 
 		// Nothing has been saved yet, so there is nothing to put back. Copying anyway

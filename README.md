@@ -169,10 +169,12 @@ screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
 during a session. Press Scroll Lock in game to save one on demand, along with
 the saved scene and its depth (`scvk-key-N-*`).
 
-Every 300 frames the log also notes the frame rate, the slowest frame, how many
-textures are loaded and how many were created, deleted or uploaded since the
-last note, how many blocks of graphics memory the textures share, how many
-memory allocations scvk holds against the graphics driver's limit, and how
+Every 300 frames the log also notes the frame rate, the slowest frame and how
+its time split between the game and scvk's own work (drawing, copying geometry,
+textures, and waiting for the graphics card), how many textures are loaded and
+how many were created, deleted or uploaded since the last note, how much
+geometry was copied, how many blocks of graphics memory the textures share, how
+many memory allocations scvk holds against the graphics driver's limit, and how
 strong the game asked the building shadows to be.
 
 To see a debug view, put an empty file with one of these names next to

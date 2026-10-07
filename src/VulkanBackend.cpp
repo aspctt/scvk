@@ -1040,6 +1040,8 @@ namespace scvk
 			return true;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
 		// Wait for the previous frame
 		//
 		// One frame in flight. The CPU waits for the previous submit before starting the
@@ -1052,7 +1054,7 @@ namespace scvk
 		// Task Manager. A minimised or occluded window can legitimately stall an acquire
 		// under FIFO, so this is a reachable state, not a theoretical one. Dropping a
 		// frame is always better than wedging the process.
-		VkResult result = vkWaitForFences(device, 1, &frameFence, VK_TRUE, WAIT_TIMEOUT_NANOSECONDS);
+		VkResult result = WaitForFence(frameFence, WAIT_TIMEOUT_NANOSECONDS);
 		if (result == VK_TIMEOUT)
 		{
 			LogNote("Vulkan: timed out waiting for the previous frame; skipping this one.");
@@ -1060,7 +1062,7 @@ namespace scvk
 		}
 
 		// Acquire the next image
-		result = vkAcquireNextImageKHR(device, swapchain, WAIT_TIMEOUT_NANOSECONDS, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+		result = AcquireNextImage();
 
 		if (result == VK_TIMEOUT || result == VK_NOT_READY)
 		{
@@ -1161,7 +1163,7 @@ namespace scvk
 
 		vkResetFences(device, 1, &frameFence);
 
-		result = vkQueueSubmit(queue, 1, &submit, frameFence);
+		result = SubmitToQueue(submit, frameFence);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkQueueSubmit", result);
@@ -1176,7 +1178,7 @@ namespace scvk
 		// Unbounded, as for a capture. The image was acquired before any of this was
 		// recorded, so the work only waits on the GPU, and a readback is deliberate and
 		// rare.
-		vkWaitForFences(device, 1, &frameFence, VK_TRUE, UINT64_MAX);
+		WaitForFence(frameFence, UINT64_MAX);
 
 		// Carry on recording the same frame
 		//
@@ -1196,6 +1198,55 @@ namespace scvk
 		}
 
 		return true;
+	}
+
+	VkResult VulkanBackend::SubmitToQueue(VkSubmitInfo const& submit, VkFence fence)
+	{
+		PhaseScope const submitting(*this, FRAME_PHASE_SUBMITS);
+		return vkQueueSubmit(queue, 1, &submit, fence);
+	}
+
+	VkResult VulkanBackend::WaitForFence(VkFence fence, uint64_t timeoutNanoseconds)
+	{
+		PhaseScope const waiting(*this, FRAME_PHASE_GPU_WAITS);
+		return vkWaitForFences(device, 1, &fence, VK_TRUE, timeoutNanoseconds);
+	}
+
+	VkResult VulkanBackend::AcquireNextImage(void)
+	{
+		PhaseScope const acquiring(*this, FRAME_PHASE_SWAPCHAIN);
+		return vkAcquireNextImageKHR(device, swapchain, WAIT_TIMEOUT_NANOSECONDS, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+	}
+
+	VkResult VulkanBackend::PresentImage(void)
+	{
+		VkPresentInfoKHR present{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+		present.waitSemaphoreCount = 1;
+		present.pWaitSemaphores    = &renderFinishedSemaphore;
+		present.swapchainCount     = 1;
+		present.pSwapchains        = &swapchain;
+		present.pImageIndices      = &imageIndex;
+
+		PhaseScope const presenting(*this, FRAME_PHASE_SWAPCHAIN);
+		return vkQueuePresentKHR(queue, &present);
+	}
+
+	VulkanBackend::FramePhase VulkanBackend::EnterPhase(FramePhase phase)
+	{
+		LARGE_INTEGER now{};
+		QueryPerformanceCounter(&now);
+
+		// Charge the phase being left, once the clock has started
+		if (phaseStartTicks != 0)
+		{
+			framePhaseTicks[activePhase] += now.QuadPart - phaseStartTicks;
+		}
+
+		// Make the new one active
+		FramePhase const interruptedPhase = activePhase;
+		activePhase     = phase;
+		phaseStartTicks = now.QuadPart;
+		return interruptedPhase;
 	}
 
 	void VulkanBackend::LayoutAccess(VkImageLayout layout, VkAccessFlags& outAccess, VkPipelineStageFlags& outStages)
@@ -1589,7 +1640,7 @@ namespace scvk
 		//
 		// This stalls the pipeline, which is fine: captures are deliberate, rare, and the
 		// alternative is reading a buffer the GPU is still writing.
-		vkWaitForFences(device, 1, &frameFence, VK_TRUE, UINT64_MAX);
+		WaitForFence(frameFence, UINT64_MAX);
 
 		// The readback memory holds bytes, whichever kind of capture it is.
 		uint8_t const* const pixels = static_cast<uint8_t const*>(readbackMapped);
@@ -1651,16 +1702,29 @@ namespace scvk
 
 		lastHeartbeatTicks = now.QuadPart;
 
-		// Report the worst gap between presents, then start the next interval
+		// Report the worst gap between presents and where the time went
+		//
+		// Split into the game's time and scvk's, so a hitch says whose it is.
 		if (ticksPerSecond > 0)
 		{
 			// The tick counts are far below the range where a double loses whole ticks.
 			double const slowestMilliseconds = static_cast<double>(slowestFrameTicks) * 1000.0 / static_cast<double>(ticksPerSecond);
 			LogNote("Vulkan: slowest frame %.0f ms, %u over %lld ms.", slowestMilliseconds, slowFrames, SLOW_FRAME_MILLISECONDS);
+			LogPhaseTicks("all frames", allFramesPhaseTicks);
+
+			if (slowFrames > 0)
+			{
+				LogPhaseTicks("slow frames", slowFramesPhaseTicks);
+				LogPhaseTicks("the slowest frame", slowestFramePhaseTicks);
+			}
 		}
 
+		// Start the next interval
 		slowestFrameTicks = 0;
 		slowFrames        = 0;
+		std::fill(allFramesPhaseTicks, allFramesPhaseTicks + FRAME_PHASE_COUNT, int64_t{ 0 });
+		std::fill(slowFramesPhaseTicks, slowFramesPhaseTicks + FRAME_PHASE_COUNT, int64_t{ 0 });
+		std::fill(slowestFramePhaseTicks, slowestFramePhaseTicks + FRAME_PHASE_COUNT, int64_t{ 0 });
 
 		LogTextureTraffic();
 		LogVertexTraffic();
@@ -1669,6 +1733,78 @@ namespace scvk
 		{
 			LogNote("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);
 		}
+	}
+
+	void VulkanBackend::TimeFrame(int64_t nowTicks)
+	{
+		// Learn the counter's rate
+		if (ticksPerSecond == 0)
+		{
+			LARGE_INTEGER frequency{};
+			QueryPerformanceFrequency(&frequency);
+			ticksPerSecond = frequency.QuadPart;
+		}
+
+		// Close the frame's last phase
+		//
+		// At the tick the gap is measured to, so the frame's phases add up to the gap.
+		if (phaseStartTicks != 0)
+		{
+			framePhaseTicks[activePhase] += nowTicks - phaseStartTicks;
+		}
+
+		phaseStartTicks = nowTicks;
+
+		// Count the gap since the last present, and where it went
+		if (lastPresentTicks != 0 && nowTicks > lastPresentTicks)
+		{
+			int64_t const frameTicks = nowTicks - lastPresentTicks;
+			bool const    isSlow     = frameTicks * 1000 > SLOW_FRAME_MILLISECONDS * ticksPerSecond;
+
+			for (uint32_t phase = 0; phase < FRAME_PHASE_COUNT; phase++)
+			{
+				allFramesPhaseTicks[phase] += framePhaseTicks[phase];
+
+				if (isSlow)
+				{
+					slowFramesPhaseTicks[phase] += framePhaseTicks[phase];
+				}
+			}
+
+			if (frameTicks > slowestFrameTicks)
+			{
+				slowestFrameTicks = frameTicks;
+				std::copy(framePhaseTicks, framePhaseTicks + FRAME_PHASE_COUNT, slowestFramePhaseTicks);
+			}
+
+			if (isSlow)
+			{
+				slowFrames++;
+			}
+		}
+
+		// Start the next frame
+		lastPresentTicks = nowTicks;
+		std::fill(framePhaseTicks, framePhaseTicks + FRAME_PHASE_COUNT, int64_t{ 0 });
+	}
+
+	void VulkanBackend::LogPhaseTicks(char const* heading, int64_t const phaseTicks[FRAME_PHASE_COUNT]) const
+	{
+		if (ticksPerSecond <= 0)
+		{
+			return;
+		}
+
+		// Convert each phase to milliseconds
+		//
+		// The tick counts are far below the range where a double loses whole ticks.
+		double milliseconds[FRAME_PHASE_COUNT] = {};
+		for (uint32_t phase = 0; phase < FRAME_PHASE_COUNT; phase++)
+		{
+			milliseconds[phase] = static_cast<double>(phaseTicks[phase]) * 1000.0 / static_cast<double>(ticksPerSecond);
+		}
+
+		LogNote("Vulkan: %s in ms: game %.0f, recording %.0f, vertex copies %.0f, pipelines %.0f, textures %.0f, submits %.0f, GPU waits %.0f, swapchain %.0f.", heading, milliseconds[FRAME_PHASE_GAME], milliseconds[FRAME_PHASE_RECORDING], milliseconds[FRAME_PHASE_VERTEX_COPIES], milliseconds[FRAME_PHASE_PIPELINES], milliseconds[FRAME_PHASE_TEXTURES], milliseconds[FRAME_PHASE_SUBMITS], milliseconds[FRAME_PHASE_GPU_WAITS], milliseconds[FRAME_PHASE_SWAPCHAIN]);
 	}
 
 	bool VulkanBackend::WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch)
@@ -1914,6 +2050,8 @@ namespace scvk
 			return;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
 		// Remember the colour for frames that start without a clear
 		lastClearColour[0] = red;
 		lastClearColour[1] = green;
@@ -1981,6 +2119,8 @@ namespace scvk
 		{
 			return;
 		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
 		// Refuse an origin off the top or left
 		//
@@ -2053,6 +2193,8 @@ namespace scvk
 		{
 			return false;
 		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
 		// Choose what to read
 		//
@@ -2162,6 +2304,8 @@ namespace scvk
 			return;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
 		// Make sure there is a frame to present
 		//
 		// The game means "swap buffers" by this, so a present has to happen even when
@@ -2237,7 +2381,7 @@ namespace scvk
 
 		vkResetFences(device, 1, &frameFence);
 
-		result = vkQueueSubmit(queue, 1, &submit, frameFence);
+		result = SubmitToQueue(submit, frameFence);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkQueueSubmit", result);
@@ -2251,14 +2395,7 @@ namespace scvk
 		}
 
 		// Present it
-		VkPresentInfoKHR present{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-		present.waitSemaphoreCount = 1;
-		present.pWaitSemaphores    = &renderFinishedSemaphore;
-		present.swapchainCount     = 1;
-		present.pSwapchains        = &swapchain;
-		present.pImageIndices      = &imageIndex;
-
-		result = vkQueuePresentKHR(queue, &present);
+		result = PresentImage();
 		isFrameActive = false;
 
 		// Rebuild the swapchain when it no longer fits the window
@@ -2287,30 +2424,7 @@ namespace scvk
 		// Time the gap since the last present
 		LARGE_INTEGER now{};
 		QueryPerformanceCounter(&now);
-
-		if (ticksPerSecond == 0)
-		{
-			LARGE_INTEGER frequency{};
-			QueryPerformanceFrequency(&frequency);
-			ticksPerSecond = frequency.QuadPart;
-		}
-
-		if (lastPresentTicks != 0 && now.QuadPart > lastPresentTicks)
-		{
-			int64_t const frameTicks = now.QuadPart - lastPresentTicks;
-
-			if (frameTicks > slowestFrameTicks)
-			{
-				slowestFrameTicks = frameTicks;
-			}
-
-			if (frameTicks * 1000 > SLOW_FRAME_MILLISECONDS * ticksPerSecond)
-			{
-				slowFrames++;
-			}
-		}
-
-		lastPresentTicks = now.QuadPart;
+		TimeFrame(now.QuadPart);
 
 		// Count the frame
 		presentedFrames++;

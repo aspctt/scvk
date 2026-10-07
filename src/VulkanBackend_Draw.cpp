@@ -282,6 +282,8 @@ namespace scvk
 			}
 		}
 
+		PhaseScope const creating(*this, FRAME_PHASE_PIPELINES);
+
 		// Pick the vertex shader variant for the format's attributes
 		//
 		// A shader may not declare an input the pipeline does not supply, so the variant
@@ -688,8 +690,7 @@ namespace scvk
 		// time, leaving the appended set for the coordinates written below.
 		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * sourceLayout.stride;
 
-		LARGE_INTEGER copyStart{};
-		QueryPerformanceCounter(&copyStart);
+		PhaseScope const copying(*this, FRAME_PHASE_VERTEX_COPIES);
 
 		if (!drawLayout.hasAppendedCoordinateSet)
 		{
@@ -716,10 +717,6 @@ namespace scvk
 		}
 
 		// Count the copy for the heartbeat
-		LARGE_INTEGER copyEnd{};
-		QueryPerformanceCounter(&copyEnd);
-
-		vertexCopyTicks += copyEnd.QuadPart - copyStart.QuadPart;
 		vertexUploads++;
 		vertexUploadBytes      += bytes;
 		frameVertexBytes       += bytes;
@@ -730,16 +727,14 @@ namespace scvk
 
 	void VulkanBackend::LogVertexTraffic(void)
 	{
-		// The tick counts are far below the range where a double loses whole ticks.
-		double const copyMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(vertexCopyTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
-
+		// The time they took is on the heartbeat's phase line.
+		//
 		// Byte totals stay far below the range where a double loses whole megabytes.
 		double const megabyte = 1024.0 * 1024.0;
-		LogNote("Vulkan: vertices since the last heartbeat %u copies (%.1f MB) taking %.0f ms, largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, copyMilliseconds, static_cast<double>(largestFrameVertexBytes) / megabyte);
+		LogNote("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte);
 
 		vertexUploads           = 0;
 		vertexUploadBytes       = 0;
-		vertexCopyTicks         = 0;
 		largestFrameVertexBytes = 0;
 	}
 
@@ -1227,6 +1222,7 @@ namespace scvk
 			return;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 		VertexLayout const drawLayout = DecodeDrawLayout(layout);
 
 		// Translate the primitive and start the frame
@@ -1289,6 +1285,7 @@ namespace scvk
 			return;
 		}
 
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 		VertexLayout const drawLayout = DecodeDrawLayout(layout);
 
 		// Translate the primitive and start the frame
