@@ -84,10 +84,6 @@ namespace scvk
 			// Whether back faces are culled, pipeline state as well.
 			bool     isFaceCullingEnabled;
 
-			// Whether the vertex copy carries a second coordinate set the format lacks,
-			// which changes both the stride and the attributes.
-			bool     hasAppendedCoordinateSet;
-
 			bool operator==(PipelineKey const& other) const = default;
 		};
 
@@ -104,14 +100,11 @@ namespace scvk
 			bool     hasColour    = false;
 			uint32_t colourOffset = 0;
 
-			// Coordinate sets, not components. Two means the geometry can feed a second
-			// texture stage. The terrain carries both; buildings carry one and generate
-			// the second stage's coordinates, which the copy then appends.
+			// Coordinate sets, not components. The terrain carries two, one per texture
+			// stage; buildings carry one, which the second stage shares or replaces with
+			// coordinates generated from the position.
 			uint32_t textureCoordinateSets      = 0;
 			uint32_t textureCoordinateOffset[2] = { 0, 0 };
-
-			// Whether the second set is the appended one rather than the format's own.
-			bool hasAppendedCoordinateSet = false;
 		};
 
 		/**
@@ -129,18 +122,26 @@ namespace scvk
 		};
 
 		/**
-		 * The fog every vertex of a draw reads, as three per-instance attributes.
+		 * What every vertex of a draw reads besides its own attributes, as per-instance
+		 * attributes, because the push constant block is full.
 		 *
-		 * The dot product of the row with the object position is the eye-space depth in
-		 * front of the camera. The parameters are the mode (0 off, 1 exponential, 2
-		 * squared exponential, 3 linear), the density, and the scale and offset the linear
-		 * equation reduces to.
+		 * The fog: the dot product of its row with the object position is the eye-space
+		 * depth in front of the camera, and its parameters are the mode (0 off, 1
+		 * exponential, 2 squared exponential, 3 linear), the density, and the scale and
+		 * offset the linear equation reduces to.
+		 *
+		 * Each stage's coordinates: the two rows of its texture matrix a 2D sample reads,
+		 * eight floats per stage, and where its input comes from, 0 the first set, 1 the
+		 * second and 2 the object position. The vertex stage works them out, so the vertex
+		 * copy is the game's own bytes, unchanged.
 		 */
-		struct FogRecord
+		struct DrawRecord
 		{
-			float distanceRow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			float parameters[4]  = { 0.0f, 1.0f, 0.0f, 1.0f };
-			float colour[4]      = { 0.0f, 0.0f, 0.0f, 0.0f };
+			float fogDistanceRow[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			float fogParameters[4]  = { 0.0f, 1.0f, 0.0f, 1.0f };
+			float fogColour[4]      = { 0.0f, 0.0f, 0.0f, 0.0f };
+			float stageRows[16]     = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+			float stageSources[4]   = { 0.0f, 1.0f, 0.0f, 0.0f };
 		};
 
 		/** A stretch of a texture block, by offset and size. */
@@ -501,20 +502,18 @@ namespace scvk
 		uint32_t combinerState[4]  = {};
 		float    constantColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-		// Where each stage's texture coordinates come from. The single stage paths hand
-		// the first stage's rows to the shader in the push constant space the combiner
-		// takes on the two stage path, so that path has them written into its vertex copy
-		// instead.
+		// Where each stage's texture coordinates come from, which decides whether the second
+		// stage can run. The vertex stage reads them from the draw record.
 		StageCoordinates stageCoordinates[2] = { StageCoordinates{}, StageCoordinates{ false, 1, { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f } } };
 
-		// The fog, which reaches the vertex stage through a second vertex binding because
-		// the push constant block is full. The record is written into the vertex arena
-		// when it changes and every draw until the next change binds the same copy; a
-		// null buffer means there is no current copy.
-		FogRecord    fogRecord;
-		bool         isFogEnabled    = false;
-		VkBuffer     fogRecordBuffer = VK_NULL_HANDLE;
-		VkDeviceSize fogRecordOffset = 0;
+		// The fog and the stages' coordinates, which reach the vertex stage through a second
+		// vertex binding because the push constant block is full. The record is written
+		// into the vertex arena when it changes and every draw until the next change binds
+		// the same copy; a null buffer means there is no current copy.
+		DrawRecord   drawRecord;
+		bool         isFogEnabled     = false;
+		VkBuffer     drawRecordBuffer = VK_NULL_HANDLE;
+		VkDeviceSize drawRecordOffset = 0;
 
 		// Diagnostics that replace every colour on screen.
 		bool shouldShowPassColours = false;
@@ -729,12 +728,6 @@ namespace scvk
 		/** Where a format's attributes live, from the game's packed encoding. */
 		static VertexLayout DecodeVertexLayout(uint32_t gdVertexFormat);
 
-		/** A layout with a second coordinate set added after the format's own attributes. */
-		static VertexLayout AppendCoordinateSet(VertexLayout layout);
-
-		/** The layout the vertex copy takes: the format's own, widened when the second stage needs a set it lacks. */
-		VertexLayout DecodeDrawLayout(VertexLayout const& sourceLayout) const;
-
 		/** The game's primitive numbering to a Vulkan topology. */
 		static bool MapTopology(uint32_t gdPrimitiveType, VkPrimitiveTopology& outTopology, bool& outIsQuadList);
 
@@ -755,8 +748,8 @@ namespace scvk
 		/** Makes room for one draw's vertices and indices, submitting the frame so far when the arenas are full. */
 		bool ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes);
 
-		/** Copies a vertex range into the per-frame arena, with the coordinates the draw samples. */
-		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		/** Copies a vertex range into the per-frame arena. */
+		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		/** Whether the second stage takes part in the draw. */
 		bool IsTwoStageDraw(uint32_t textureCoordinateSets) const;
@@ -764,17 +757,11 @@ namespace scvk
 		/** Whether the draw runs the combiner network, on both stages or on the first alone. */
 		bool IsCombinerDraw(uint32_t textureCoordinateSets) const;
 
-		/** Whether a stage's coordinates differ from the vertex set of its own number. */
-		bool IsStageTransformed(uint32_t stage) const;
-
-		/** Writes each stage's final coordinates into its own set of the vertex copy. */
-		void WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout) const;
-
 		/** The heartbeat's line on vertex traffic since the last one. */
 		void LogVertexTraffic(void);
 
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
-		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout);
+		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout);
 
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
 		void PushDrawConstants(bool isTwoStage, bool isCombining);
@@ -782,11 +769,11 @@ namespace scvk
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);
 
-		/** Changes the fog record, so the next draw writes a fresh copy of it. */
-		void UpdateFogRecord(FogRecord const& record);
+		/** Changes the draw record, so the next draw writes a fresh copy of it. */
+		void UpdateDrawRecord(DrawRecord const& record);
 
-		/** The current fog record's copy in the vertex arena, written first if there is none. */
-		bool GetFogRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		/** The current draw record's copy in the vertex arena, written first if there is none. */
+		bool GetDrawRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset);
 
 		// Textures, in VulkanBackend_Textures.cpp
 

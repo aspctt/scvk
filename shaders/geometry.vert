@@ -20,11 +20,10 @@
 
 //// Constants
 
-// The path value from which the draw's coordinates are generated from the eye-space
-// position rather than read from the vertex, and the one below which the draw is on the
-// single stage path.
-const float PATH_GENERATED_COORDINATES = 2.5;
-const float PATH_TWO_STAGES_MINIMUM    = 1.5;
+// Thresholds on a stage's source in the draw record, halfway between the values the
+// backend sends: 0 the first coordinate set, 1 the second, 2 the object position.
+const float SOURCE_SECOND_SET_MINIMUM = 0.5;
+const float SOURCE_POSITION_MINIMUM   = 1.5;
 
 // The bits added to the texture environment mode when the primary colour's alpha, and its
 // colour, come from the vertex rather than from the material.
@@ -47,25 +46,13 @@ layout(push_constant) uniform PushConstants
 	// clip space.
 	mat4 modelViewProjection;
 
-	// Used only by the fragment stage, apart from two parts. z carries the colour and
-	// alpha source flags on top of the environment mode. w selects how the two aliased
-	// slots below are read:
-	//   1 one texture stage, coordinates from the vertex
-	//   2 the combiner network, on both stages or on the first alone, coordinates from
-	//     the vertex
-	//   3 one texture stage, coordinates generated from the eye-space position
+	// Used only by the fragment stage, apart from z, which carries the colour and alpha
+	// source flags on top of the environment mode.
 	vec4 fragmentState;
 
-	// Two slots with two meanings, because the push constant block is at the 128 byte
-	// guaranteed minimum and both meanings will not fit side by side.
-	//
-	// Path 2 reads them as the combiner network and the environment colour. Path 3 reads
-	// them as the two rows of the texture generation matrix that matter for a 2D sample,
-	// and path 1 as the same two rows of the texture matrix. Path 2 has no room left for
-	// either stage's rows, so the backend writes its final coordinates into the vertex
-	// copy instead.
-	vec4 aliasA;
-	vec4 aliasB;
+	// Used only by the fragment stage.
+	uvec4 combinerNetwork;
+	vec4  environmentColour;
 
 	vec4 sceneTint;
 } push;
@@ -81,13 +68,22 @@ layout(location = 2) in vec2 inTextureCoordinate0;
 layout(location = 3) in vec2 inTextureCoordinate1;
 #endif
 
-// The fog, one record per draw on a second binding read per instance, since the push
-// constant block has no room left. Every draw is a single instance, so every vertex reads
-// the same record. The row gives the eye distance as a dot product with the position;
-// parameters holds the mode, the density, and the linear equation's scale and offset.
-layout(location = 4) in vec4 inFogDistanceRow;
-layout(location = 5) in vec4 inFogParameters;
-layout(location = 6) in vec4 inFogColour;
+// The draw record, on a second binding read per instance, since the push constant block
+// is at the 128 byte guaranteed minimum. Every draw is a single instance, so every vertex
+// reads the same record.
+//
+// The fog's row gives the eye distance as a dot product with the position; its
+// parameters hold the mode, the density, and the linear equation's scale and offset.
+// Each stage has the two rows of its texture matrix that a 2D sample reads, and the
+// sources say where each stage's input comes from.
+layout(location = 4)  in vec4 inFogDistanceRow;
+layout(location = 5)  in vec4 inFogParameters;
+layout(location = 6)  in vec4 inFogColour;
+layout(location = 7)  in vec4 inFirstStageRowS;
+layout(location = 8)  in vec4 inFirstStageRowT;
+layout(location = 9)  in vec4 inSecondStageRowS;
+layout(location = 10) in vec4 inSecondStageRowT;
+layout(location = 11) in vec4 inStageSources;
 
 layout(location = 0) out vec4 fragmentColour;
 layout(location = 1) out vec2 fragmentTextureCoordinate0;
@@ -101,6 +97,33 @@ layout(location = 4) out float fragmentFogFactor;
 // Without it a later pass can land a hair behind the first and fail the test, leaving the
 // first pass showing.
 invariant gl_Position;
+
+//// Private Functions
+
+// What a stage's rows apply to: the object position when the stage generates its
+// coordinates, otherwise the coordinate set it names as (s, t, 0, 1). A set the format
+// lacks falls back to the first. Geometry with no set at all samples the 1x1 white default
+// texture, so any coordinate gives the same result.
+vec4 stageInput(float source)
+{
+	if (source > SOURCE_POSITION_MINIMUM)
+	{
+		return vec4(inPosition, 1.0);
+	}
+
+#if SCVK_TEXTURE_COORDINATE_SETS >= 2
+	if (source > SOURCE_SECOND_SET_MINIMUM)
+	{
+		return vec4(inTextureCoordinate1, 0.0, 1.0);
+	}
+#endif
+
+#if SCVK_TEXTURE_COORDINATE_SETS >= 1
+	return vec4(inTextureCoordinate0, 0.0, 1.0);
+#else
+	return vec4(0.0, 0.0, 0.0, 1.0);
+#endif
+}
 
 //// Entry Point
 
@@ -136,51 +159,28 @@ void main()
 	float materialAlpha   = ((lightingSources & ALPHA_FROM_VERTEX_FLAG) != 0) ? vertexColour.a : push.sceneTint.a;
 	fragmentColour = clamp(vec4(materialColour * push.sceneTint.rgb, materialAlpha), 0.0, 1.0);
 
-	// Pass the first coordinate set on
+	// Work out each stage's coordinates
 	//
-	// Geometry with no texture coordinate samples the 1x1 white default texture, so any
-	// coordinate gives the same result.
-#if SCVK_TEXTURE_COORDINATE_SETS >= 1
-	fragmentTextureCoordinate0 = inTextureCoordinate0;
-#else
-	fragmentTextureCoordinate0 = vec2(0.0);
-#endif
+	// Through the stage's texture matrix, which OpenGL applies to the coordinates the
+	// vertex carries as well as to generated ones. The foundations rely on it: their
+	// coordinates lie far outside their clamped textures until the matrix brings them
+	// back. The rows are the identity when the game has set no matrix, which leaves the
+	// coordinate exact.
+	//
+	// The cloud shadows generate theirs from the camera-space position instead: the shadow
+	// texture is projected across the terrain and scrolled by the matrix rather than
+	// following the terrain's own coordinates. Reading the vertex set stamped it once per
+	// terrain cell, which is why the shadows were square. Generated rows arrive already
+	// multiplied through the modelview, so the object position is all that is needed.
+	//
+	// Both stages on every draw. The second is only sampled when the draw runs it: the
+	// building shadows' mask, the terrain's second set, and the window lights laid over a
+	// building through its one set.
+	vec4 firstStageInput  = stageInput(inStageSources.x);
+	vec4 secondStageInput = stageInput(inStageSources.y);
 
-	// Transform it by the texture matrix on the single stage path
-	//
-	// OpenGL applies a stage's texture matrix to the coordinates the vertex carries as
-	// well as to generated ones. The foundations rely on it: their coordinates lie far
-	// outside their clamped textures until the matrix brings them back. The rows are the
-	// identity when the game has set no matrix, which leaves the coordinate exact.
-	if (push.fragmentState.w < PATH_TWO_STAGES_MINIMUM)
-	{
-		vec4 coordinate = vec4(fragmentTextureCoordinate0, 0.0, 1.0);
-		fragmentTextureCoordinate0 = vec2(dot(push.aliasA, coordinate), dot(push.aliasB, coordinate));
-	}
-
-	// Or generate it from the camera-space position
-	//
-	// This is what the cloud shadows are drawn with: the shadow texture is projected
-	// across the terrain and scrolled by the texture matrix rather than following the
-	// terrain's own coordinates. Reading the vertex set instead stamps the texture once per
-	// terrain cell, which is why the shadows were square. The two rows arrive already
-	// multiplied through the modelview, so the object position is all that is needed here.
-	if (push.fragmentState.w > PATH_GENERATED_COORDINATES)
-	{
-		vec4 position = vec4(inPosition, 1.0);
-		fragmentTextureCoordinate0 = vec2(dot(push.aliasA, position), dot(push.aliasB, position));
-	}
-
-	// Pass the second coordinate set on
-	//
-	// A single set feeds both stages otherwise. Only a vertex copy that carries two sets,
-	// the format's own or one the backend appended, ever has a second stage bound, so
-	// that is never the one sampled.
-#if SCVK_TEXTURE_COORDINATE_SETS >= 2
-	fragmentTextureCoordinate1 = inTextureCoordinate1;
-#else
-	fragmentTextureCoordinate1 = fragmentTextureCoordinate0;
-#endif
+	fragmentTextureCoordinate0 = vec2(dot(inFirstStageRowS, firstStageInput), dot(inFirstStageRowT, firstStageInput));
+	fragmentTextureCoordinate1 = vec2(dot(inSecondStageRowS, secondStageInput), dot(inSecondStageRowT, secondStageInput));
 
 	// Work out the fog factor
 	//

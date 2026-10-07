@@ -884,7 +884,7 @@ namespace scvk
 			// Destroy the buffers
 			DestroyArena(vertexArena);
 			DestroyArena(indexArena);
-			fogRecordBuffer = VK_NULL_HANDLE;
+			drawRecordBuffer = VK_NULL_HANDLE;
 
 			FreeDeviceMemory(quadIndexMemory);
 			if (quadIndexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, quadIndexBuffer, nullptr); quadIndexBuffer = VK_NULL_HANDLE; }
@@ -1114,8 +1114,8 @@ namespace scvk
 		ArenaRewind(indexArena);
 		frameVertexBytes = 0;
 
-		// The fog record's copy lived in the arena just rewound
-		fogRecordBuffer = VK_NULL_HANDLE;
+		// The draw record's copy lived in the arena just rewound
+		drawRecordBuffer = VK_NULL_HANDLE;
 
 		// Start from UNDEFINED
 		//

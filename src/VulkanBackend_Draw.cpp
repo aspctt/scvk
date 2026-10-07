@@ -40,6 +40,21 @@
 
 namespace scvk
 {
+	//// Types
+
+	namespace
+	{
+		/** The push constant block, laid out as both shader stages declare it. */
+		struct PushConstantBlock
+		{
+			float    transform[16];
+			float    fragmentState[4];
+			uint32_t combinerState[4];
+			float    constantColour[4];
+			float    sceneTint[4];
+		};
+	}
+
 	//// Constants
 
 	namespace
@@ -61,10 +76,12 @@ namespace scvk
 		// Vertex data is aligned so the binding offset stays legal for the attributes.
 		constexpr VkDeviceSize VERTEX_ALIGNMENT = 16;
 
-		// A mat4, the fragment state, the two aliased slots and the scene tint: 128
-		// bytes, the guaranteed minimum.
+		// A mat4, the fragment state, the combiner network, the environment colour and the
+		// scene tint: 128 bytes, the guaranteed minimum.
 		constexpr uint32_t PUSH_CONSTANT_BYTES = sizeof(float) * 32;
 		constexpr VkShaderStageFlags PUSH_CONSTANT_STAGES = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		static_assert(sizeof(PushConstantBlock) == PUSH_CONSTANT_BYTES, "the push constant block must fill the guaranteed 128 bytes exactly");
 
 		// A combiner word that modulates the texture with the previous stage, in the
 		// layout the fragment shader reads.
@@ -85,6 +102,14 @@ namespace scvk
 		// linear, and the mode the vertex stage reads as no fog.
 		constexpr uint32_t GD_FOG_MODE_LINEAR = 2;
 		constexpr float    FOG_MODE_OFF       = 0.0f;
+
+		// Where a stage's coordinates come from, in the draw record.
+		constexpr float STAGE_SOURCE_FIRST_SET  = 0.0f;
+		constexpr float STAGE_SOURCE_SECOND_SET = 1.0f;
+		constexpr float STAGE_SOURCE_POSITION   = 2.0f;
+
+		// Floats per stage in the draw record's rows: s, then t.
+		constexpr uint32_t STAGE_ROW_FLOATS = 8;
 
 		// OpenGL clip space and Vulkan clip space differ in two ways: Y points the other
 		// way, and depth runs 0..1 rather than -1..1. Column-major, like everything the
@@ -287,10 +312,8 @@ namespace scvk
 		// Pick the vertex shader variant for the format's attributes
 		//
 		// A shader may not declare an input the pipeline does not supply, so the variant
-		// has to match which attributes this format actually has, counting an appended
-		// set as one of them.
-		VertexLayout const formatLayout = DecodeVertexLayout(key.format);
-		VertexLayout const layout = key.hasAppendedCoordinateSet ? AppendCoordinateSet(formatLayout) : formatLayout;
+		// has to match which attributes this format actually has.
+		VertexLayout const layout = DecodeVertexLayout(key.format);
 		uint32_t const variant = (layout.hasColour ? 3u : 0u) + layout.textureCoordinateSets;
 
 		VkPipelineShaderStageCreateInfo stages[2]{};
@@ -314,13 +337,13 @@ namespace scvk
 		bindings[0].stride    = layout.stride;
 		bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-		// The fog record is read per instance, and every draw is one instance, so all of a
+		// The draw record is read per instance, and every draw is one instance, so all of a
 		// draw's vertices read the same record.
 		bindings[1].binding   = 1;
-		bindings[1].stride    = sizeof(FogRecord);
+		bindings[1].stride    = sizeof(DrawRecord);
 		bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-		VkVertexInputAttributeDescription attributes[7]{};
+		VkVertexInputAttributeDescription attributes[12]{};
 		uint32_t attributeCount = 0;
 
 		attributes[attributeCount].location = 0;
@@ -347,14 +370,26 @@ namespace scvk
 			attributeCount++;
 		}
 
-		uint32_t const fogOffsets[] = { offsetof(FogRecord, distanceRow), offsetof(FogRecord, parameters), offsetof(FogRecord, colour) };
+		// The draw record's parts, a vec4 each: the fog's row, parameters and colour, each
+		// stage's two rows, and the stages' sources.
+		uint32_t const rowsOffset    = offsetof(DrawRecord, stageRows);
+		uint32_t const recordParts[] = {
+			offsetof(DrawRecord, fogDistanceRow),
+			offsetof(DrawRecord, fogParameters),
+			offsetof(DrawRecord, fogColour),
+			rowsOffset,
+			rowsOffset + sizeof(float) * 4,
+			rowsOffset + sizeof(float) * 8,
+			rowsOffset + sizeof(float) * 12,
+			offsetof(DrawRecord, stageSources),
+		};
 
-		for (uint32_t part = 0; part < _countof(fogOffsets); part++)
+		for (uint32_t part = 0; part < _countof(recordParts); part++)
 		{
 			attributes[attributeCount].location = 4 + part;
 			attributes[attributeCount].binding  = 1;
 			attributes[attributeCount].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
-			attributes[attributeCount].offset   = fogOffsets[part];
+			attributes[attributeCount].offset   = recordParts[part];
 			attributeCount++;
 		}
 
@@ -439,7 +474,7 @@ namespace scvk
 			return VK_NULL_HANDLE;
 		}
 
-		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u%s), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, layout.hasAppendedCoordinateSet ? ", one appended" : "", key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
+		LogNote("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
 
 		pipelines.push_back({ key, pipeline });
 		return pipeline;
@@ -489,32 +524,6 @@ namespace scvk
 		}
 
 		return layout;
-	}
-
-	VulkanBackend::VertexLayout VulkanBackend::AppendCoordinateSet(VertexLayout layout)
-	{
-		layout.textureCoordinateOffset[1] = layout.stride;
-		layout.textureCoordinateSets      = 2;
-		layout.stride                    += sizeof(float) * 2;
-		layout.hasAppendedCoordinateSet   = true;
-		return layout;
-	}
-
-	VulkanBackend::VertexLayout VulkanBackend::DecodeDrawLayout(VertexLayout const& sourceLayout) const
-	{
-		// Widen the copy when the second stage runs on a format with one set
-		//
-		// Buildings carry a single set, but some of their materials add a second texture,
-		// either projected from the eye-space position or laid over the first through the
-		// same set, and weighed in by its alpha. The DirectX driver draws both. The two
-		// stage path has no push constant room to transform in the shader, so the copy
-		// gains a set the coordinates are written into instead.
-		if (sourceLayout.textureCoordinateSets == 1 && IsTwoStageDraw(sourceLayout.textureCoordinateSets))
-		{
-			return AppendCoordinateSet(sourceLayout);
-		}
-
-		return sourceLayout;
 	}
 
 	bool VulkanBackend::MapTopology(uint32_t gdPrimitiveType, VkPrimitiveTopology& outTopology, bool& outIsQuadList)
@@ -633,11 +642,11 @@ namespace scvk
 
 	bool VulkanBackend::ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes)
 	{
-		// Count the fog record in with the vertices
+		// Count the draw record in with the vertices
 		//
 		// It comes from the same arena when the draw has to write a fresh copy, with
 		// alignment padding before it.
-		VkDeviceSize const vertexArenaBytes = vertexBytes + VERTEX_ALIGNMENT + sizeof(FogRecord);
+		VkDeviceSize const vertexArenaBytes = vertexBytes + VERTEX_ALIGNMENT + sizeof(DrawRecord);
 
 		bool const hasVertexRoom = ArenaHasRoom(vertexArena, vertexArenaBytes, VERTEX_ALIGNMENT);
 		bool const hasIndexRoom  = indexBytes == 0 || ArenaHasRoom(indexArena, indexBytes, sizeof(uint32_t));
@@ -661,20 +670,20 @@ namespace scvk
 		ArenaRewind(vertexArena);
 		ArenaRewind(indexArena);
 
-		// The fog record's copy lived in the vertex arena
-		fogRecordBuffer = VK_NULL_HANDLE;
+		// The draw record's copy lived in the vertex arena
+		drawRecordBuffer = VK_NULL_HANDLE;
 
 		LogNote("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", presentedFrames);
 		return true;
 	}
 
-	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset)
 	{
 		// Reserve the space
 		//
 		// Measured in 64 bits, so a range the game's indices make absurdly large is
 		// refused by the arena rather than wrapping.
-		VkDeviceSize const bytes = VkDeviceSize{ vertexCount } * drawLayout.stride;
+		VkDeviceSize const bytes = VkDeviceSize{ vertexCount } * layout.stride;
 		uint8_t* destination = nullptr;
 
 		if (!ArenaAllocate(vertexArena, bytes, VERTEX_ALIGNMENT, outBuffer, outOffset, destination))
@@ -686,35 +695,14 @@ namespace scvk
 		// Copy the vertices
 		//
 		// The game's vertices are untyped bytes, and the arena accepted the size, so it
-		// fits within one block and within a size_t. A widened copy goes a vertex at a
-		// time, leaving the appended set for the coordinates written below.
-		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * sourceLayout.stride;
+		// fits within one block and within a size_t. They go in as they are: the vertex
+		// stage works out each stage's coordinates from the draw record. Writing them into
+		// the copy here took a second pass over every terrain vertex, and widened the
+		// copy of each building whose second stage needed a set the format lacked.
+		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * layout.stride;
 
 		PhaseScope const copying(*this, FRAME_PHASE_VERTEX_COPIES);
-
-		if (!drawLayout.hasAppendedCoordinateSet)
-		{
-			memcpy(destination, source, static_cast<size_t>(bytes));
-		}
-		else
-		{
-			for (uint32_t vertex = 0; vertex < vertexCount; vertex++)
-			{
-				memcpy(destination + size_t{ vertex } * drawLayout.stride, source + size_t{ vertex } * sourceLayout.stride, sourceLayout.stride);
-			}
-		}
-
-		// Write the coordinates the combiner path cannot work out itself
-		//
-		// Its push constant space holds the combiner, so it has no room for either
-		// stage's rows and samples the vertex sets as they are. The game still asks for
-		// more on that path: it projects building shadows onto the terrain with both
-		// stages generating, the second masking them through a 4x4 texture and its own
-		// matrix. An appended set is always written, since nothing else fills it.
-		if (IsCombinerDraw(drawLayout.textureCoordinateSets) && (drawLayout.hasAppendedCoordinateSet || IsStageTransformed(0) || IsStageTransformed(1)))
-		{
-			WriteStageCoordinates(destination, source, vertexCount, sourceLayout, drawLayout);
-		}
+		memcpy(destination, source, static_cast<size_t>(bytes));
 
 		// Count the copy for the heartbeat
 		vertexUploads++;
@@ -763,79 +751,26 @@ namespace scvk
 		// As Direct3D's first stage applies its operation whatever the second does. The
 		// game draws its building shadows that way when the graphics rules turn the second
 		// stage off: the network takes the shadow colour from the environment colour and
-		// only the alpha from the mask, so treating it as modulate drew them white. The
-		// copy needs a set to write the coordinates into, which every format the game
-		// combines with has.
-		bool const isFirstStageAlone = isFirstStageCombining && isStageEnabled[0] && textureCoordinateSets >= 1;
+		// only the alpha from the mask, so treating it as modulate drew them white.
+		bool const isFirstStageAlone = isFirstStageCombining && isStageEnabled[0];
 
 		return IsTwoStageDraw(textureCoordinateSets) || isFirstStageAlone;
 	}
 
-	bool VulkanBackend::IsStageTransformed(uint32_t stage) const
-	{
-		StageCoordinates const& coordinates = stageCoordinates[stage];
-		StageCoordinates const  untransformed{};
-
-		return coordinates.isGenerated || coordinates.sourceSet != stage || memcmp(coordinates.rows, untransformed.rows, sizeof(coordinates.rows)) != 0;
-	}
-
-	void VulkanBackend::WriteStageCoordinates(uint8_t* destination, uint8_t const* source, uint32_t vertexCount, VertexLayout const& sourceLayout, VertexLayout const& drawLayout) const
-	{
-		for (uint32_t vertex = 0; vertex < vertexCount; vertex++)
-		{
-			uint8_t const* const sourceVertex      = source + size_t{ vertex } * sourceLayout.stride;
-			uint8_t* const       destinationVertex = destination + size_t{ vertex } * drawLayout.stride;
-
-			// Read the position, which every format starts with
-			float position[3];
-			memcpy(position, sourceVertex, sizeof(position));
-
-			// Only the sets the copy carries. A first stage combining on its own may run on
-			// a single set, which has no room for the second stage's.
-			for (uint32_t stage = 0; stage < drawLayout.textureCoordinateSets; stage++)
-			{
-				StageCoordinates const& coordinates = stageCoordinates[stage];
-
-				// Pick the stage's input
-				//
-				// From the game's vertex rather than the copy, since the copy's sets are
-				// being overwritten and a stage may read the other stage's set. A set the
-				// format lacks falls back to the first.
-				float input[4] = { position[0], position[1], position[2], 1.0f };
-
-				if (!coordinates.isGenerated)
-				{
-					uint32_t const set = (coordinates.sourceSet < sourceLayout.textureCoordinateSets) ? coordinates.sourceSet : 0;
-					memcpy(input, sourceVertex + sourceLayout.textureCoordinateOffset[set], sizeof(float) * 2);
-					input[2] = 0.0f;
-				}
-
-				// Transform it into the stage's own set
-				float const* const rows = coordinates.rows;
-				float const output[2] = {
-					rows[0] * input[0] + rows[1] * input[1] + rows[2] * input[2] + rows[3] * input[3],
-					rows[4] * input[0] + rows[5] * input[1] + rows[6] * input[2] + rows[7] * input[3],
-				};
-
-				memcpy(destinationVertex + drawLayout.textureCoordinateOffset[stage], output, sizeof(output));
-			}
-		}
-	}
-
-	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout)
+	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout)
 	{
 		// Find the pipeline for the current state
-		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled, drawLayout.hasAppendedCoordinateSet };
+		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled };
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
 			return false;
 		}
 
-		// Find the fog record's copy
-		VkBuffer     fogBuffer = VK_NULL_HANDLE;
-		VkDeviceSize fogOffset = 0;
-		if (!GetFogRecordCopy(fogBuffer, fogOffset))
+		// Find the draw record's copy
+		VkBuffer     recordBuffer = VK_NULL_HANDLE;
+		VkDeviceSize recordOffset = 0;
+		if (!GetDrawRecordCopy(recordBuffer, recordOffset))
 		{
 			return false;
 		}
@@ -850,24 +785,19 @@ namespace scvk
 		BeginRenderPassIfNeeded();
 		ApplyViewport();
 
-		// Decide which of the shader's paths the draw takes
-		//
-		// A texture environment draw has the first stage's rows in the aliased slots,
-		// applied to the position when it generates and to the first set when it does
-		// not. A combiner draw has its coordinates already written into the vertex copy.
-		bool const isTwoStage   = IsTwoStageDraw(drawLayout.textureCoordinateSets);
-		bool const isCombining  = IsCombinerDraw(drawLayout.textureCoordinateSets);
-		bool const isGenerating = stageCoordinates[0].isGenerated && !isCombining;
+		// Decide which of the fragment stage's paths the draw takes
+		bool const isTwoStage  = IsTwoStageDraw(layout.textureCoordinateSets);
+		bool const isCombining = IsCombinerDraw(layout.textureCoordinateSets);
 
-		fragmentState[3] = isGenerating ? 3.0f : (isCombining ? 2.0f : 1.0f);
+		fragmentState[3] = isCombining ? 2.0f : 1.0f;
 
 		// Bind everything
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		PushDrawConstants(isTwoStage, isCombining);
 		BindTextures(isTwoStage);
 
-		VkBuffer buffers[] = { vertexBuffer, fogBuffer };
-		VkDeviceSize offsets[] = { vertexOffset, fogOffset };
+		VkBuffer buffers[] = { vertexBuffer, recordBuffer };
+		VkDeviceSize offsets[] = { vertexOffset, recordOffset };
 		vkCmdBindVertexBuffers(commandBuffer, 0, _countof(buffers), buffers, offsets);
 
 		return true;
@@ -879,10 +809,12 @@ namespace scvk
 		//
 		// Copies, because the game's own settings must survive for the next draw that has
 		// the first stage on.
-		float    drawFragmentState[4];
-		uint32_t drawCombinerState[4];
-		memcpy(drawFragmentState, fragmentState, sizeof(drawFragmentState));
-		memcpy(drawCombinerState, combinerState, sizeof(drawCombinerState));
+		PushConstantBlock block;
+		memcpy(block.transform, transform, sizeof(block.transform));
+		memcpy(block.fragmentState, fragmentState, sizeof(block.fragmentState));
+		memcpy(block.combinerState, combinerState, sizeof(block.combinerState));
+		memcpy(block.constantColour, constantColour, sizeof(block.constantColour));
+		memcpy(block.sceneTint, sceneTint, sizeof(block.sceneTint));
 
 		// Pack the environment mode with the lighting sources in higher bits
 		//
@@ -890,7 +822,7 @@ namespace scvk
 		// small enough to share one slot. The shader reads its state as floats, and small
 		// integers convert exactly.
 		uint32_t const lightingSources = (isAlphaFromVertex ? ALPHA_FROM_VERTEX_FLAG : 0u) | (isColourFromVertex ? COLOUR_FROM_VERTEX_FLAG : 0u);
-		drawFragmentState[2] = static_cast<float>(textureEnvironmentMode | lightingSources);
+		block.fragmentState[2] = static_cast<float>(textureEnvironmentMode | lightingSources);
 
 		// Pass the primary colour through a disabled first stage
 		//
@@ -901,9 +833,9 @@ namespace scvk
 		// combiner could turn it anything.
 		if (!isStageEnabled[0])
 		{
-			drawFragmentState[2] = static_cast<float>(ENVIRONMENT_MODULATE | lightingSources);
-			drawCombinerState[0] = MODULATE_WITH_PREVIOUS;
-			drawCombinerState[1] = MODULATE_WITH_PREVIOUS;
+			block.fragmentState[2] = static_cast<float>(ENVIRONMENT_MODULATE | lightingSources);
+			block.combinerState[0] = MODULATE_WITH_PREVIOUS;
+			block.combinerState[1] = MODULATE_WITH_PREVIOUS;
 		}
 
 		// Hand the first stage's result through an idle second stage
@@ -912,8 +844,8 @@ namespace scvk
 		// whatever the game last gave it.
 		if (isCombining && !isTwoStage)
 		{
-			drawCombinerState[2] = PASS_PREVIOUS;
-			drawCombinerState[3] = PASS_PREVIOUS;
+			block.combinerState[2] = PASS_PREVIOUS;
+			block.combinerState[3] = PASS_PREVIOUS;
 		}
 
 		// Apply the diagnostics
@@ -934,33 +866,19 @@ namespace scvk
 				pass = (blendSourceFactor == 4 && blendDestinationFactor == 1) ? 2 : ((blendSourceFactor == 4 && blendDestinationFactor == 5) ? 3 : 5);
 			}
 
-			drawFragmentState[3] = 10.0f + static_cast<float>(pass);
+			block.fragmentState[3] = 10.0f + static_cast<float>(pass);
 		}
 
 		if (debugChannel >= 0)
 		{
-			drawFragmentState[3] = 20.0f + static_cast<float>(debugChannel);
+			block.fragmentState[3] = 20.0f + static_cast<float>(debugChannel);
 		}
 
-		// Push the transform and the fragment state
-		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, 0, sizeof(transform), transform);
-		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, sizeof(transform), sizeof(drawFragmentState), drawFragmentState);
-
-		// Push the two aliased slots, 32 bytes, filled according to the path
-		uint32_t const aliasOffset = sizeof(transform) + sizeof(fragmentState);
-
-		if (!isCombining)
-		{
-			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset, sizeof(stageCoordinates[0].rows), stageCoordinates[0].rows);
-		}
-		else
-		{
-			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset, sizeof(drawCombinerState), drawCombinerState);
-			vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset + sizeof(combinerState), sizeof(constantColour), constantColour);
-		}
-
-		// Push the scene tint
-		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, aliasOffset + sizeof(combinerState) + sizeof(constantColour), sizeof(sceneTint), sceneTint);
+		// Push the whole block
+		//
+		// In one call rather than one per part. A redraw of the city at the widest zoom
+		// records over a hundred thousand draws, so every call a draw makes counts.
+		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, 0, sizeof(block), &block);
 	}
 
 	void VulkanBackend::BindTextures(bool isTwoStage)
@@ -998,40 +916,40 @@ namespace scvk
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);
 	}
 
-	void VulkanBackend::UpdateFogRecord(FogRecord const& record)
+	void VulkanBackend::UpdateDrawRecord(DrawRecord const& record)
 	{
-		if (memcmp(&record, &fogRecord, sizeof(FogRecord)) == 0)
+		if (memcmp(&record, &drawRecord, sizeof(DrawRecord)) == 0)
 		{
 			return;
 		}
 
-		fogRecord       = record;
-		fogRecordBuffer = VK_NULL_HANDLE;
+		drawRecord       = record;
+		drawRecordBuffer = VK_NULL_HANDLE;
 	}
 
-	bool VulkanBackend::GetFogRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	bool VulkanBackend::GetDrawRecordCopy(VkBuffer& outBuffer, VkDeviceSize& outOffset)
 	{
 		// Write a copy when there is none
 		//
-		// Once per change rather than once per draw. The game changes the fog with the
-		// view, not with every draw, and with the fog off the record never changes at all,
-		// so a frame usually writes one.
-		if (fogRecordBuffer == VK_NULL_HANDLE)
+		// Once per change rather than once per draw. The fog changes with the view and
+		// never while it is off, and the stages' coordinates change between passes, not
+		// within one.
+		if (drawRecordBuffer == VK_NULL_HANDLE)
 		{
 			uint8_t* destination = nullptr;
 
-			if (!ArenaAllocate(vertexArena, sizeof(FogRecord), VERTEX_ALIGNMENT, fogRecordBuffer, fogRecordOffset, destination))
+			if (!ArenaAllocate(vertexArena, sizeof(DrawRecord), VERTEX_ALIGNMENT, drawRecordBuffer, drawRecordOffset, destination))
 			{
-				fogRecordBuffer = VK_NULL_HANDLE;
-				LogNote("Vulkan: no room for per-frame vertex data; dropping a draw for want of its fog.");
+				drawRecordBuffer = VK_NULL_HANDLE;
+				LogNote("Vulkan: no room for per-frame vertex data; dropping a draw for want of its draw record.");
 				return false;
 			}
 
-			memcpy(destination, &fogRecord, sizeof(FogRecord));
+			memcpy(destination, &drawRecord, sizeof(DrawRecord));
 		}
 
-		outBuffer = fogRecordBuffer;
-		outOffset = fogRecordOffset;
+		outBuffer = drawRecordBuffer;
+		outOffset = drawRecordOffset;
 		return true;
 	}
 
@@ -1155,6 +1073,15 @@ namespace scvk
 		coordinates.sourceSet   = sourceSet;
 		memcpy(coordinates.rows, rowS, sizeof(float) * 4);
 		memcpy(coordinates.rows + 4, rowT, sizeof(float) * 4);
+
+		// Hand them to the vertex stage
+		//
+		// A set past the second falls back to the first, as it does for a format that
+		// lacks the set named.
+		DrawRecord record = drawRecord;
+		memcpy(record.stageRows + stage * STAGE_ROW_FLOATS, coordinates.rows, sizeof(coordinates.rows));
+		record.stageSources[stage] = isGenerated ? STAGE_SOURCE_POSITION : ((sourceSet == 1) ? STAGE_SOURCE_SECOND_SET : STAGE_SOURCE_FIRST_SET);
+		UpdateDrawRecord(record);
 	}
 
 	void VulkanBackend::SetFog(bool isEnabled, uint32_t gdMode, float density, float start, float end, float const* colour)
@@ -1164,26 +1091,26 @@ namespace scvk
 			return;
 		}
 
-		FogRecord record = fogRecord;
+		DrawRecord record = drawRecord;
 
 		// Number the mode the way the vertex stage reads it
 		//
 		// One higher than the game's, leaving zero for off. The game's modes run 0 to 2,
 		// and the small values convert to floats exactly.
 		isFogEnabled         = isEnabled && gdMode <= GD_FOG_MODE_LINEAR;
-		record.parameters[0] = isFogEnabled ? static_cast<float>(gdMode + 1u) : FOG_MODE_OFF;
-		record.parameters[1] = density;
+		record.fogParameters[0] = isFogEnabled ? static_cast<float>(gdMode + 1u) : FOG_MODE_OFF;
+		record.fogParameters[1] = density;
 
 		// Reduce the linear equation to a scale and an offset
 		//
 		// f = (end - distance) / (end - start). OpenGL leaves equal start and end
 		// undefined, and they are taken as no fog here rather than as a division by zero.
 		float const range = end - start;
-		record.parameters[2] = (range != 0.0f) ? -1.0f / range : 0.0f;
-		record.parameters[3] = (range != 0.0f) ? end / range : 1.0f;
+		record.fogParameters[2] = (range != 0.0f) ? -1.0f / range : 0.0f;
+		record.fogParameters[3] = (range != 0.0f) ? end / range : 1.0f;
 
-		memcpy(record.colour, colour, sizeof(record.colour));
-		UpdateFogRecord(record);
+		memcpy(record.fogColour, colour, sizeof(record.fogColour));
+		UpdateDrawRecord(record);
 	}
 
 	void VulkanBackend::SetFogDistanceRow(float const* row)
@@ -1197,9 +1124,9 @@ namespace scvk
 			return;
 		}
 
-		FogRecord record = fogRecord;
-		memcpy(record.distanceRow, row, sizeof(record.distanceRow));
-		UpdateFogRecord(record);
+		DrawRecord record = drawRecord;
+		memcpy(record.fogDistanceRow, row, sizeof(record.fogDistanceRow));
+		UpdateDrawRecord(record);
 	}
 
 	void VulkanBackend::SetDebugPassColours(bool isEnabled)
@@ -1223,7 +1150,6 @@ namespace scvk
 		}
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
-		VertexLayout const drawLayout = DecodeDrawLayout(layout);
 
 		// Translate the primitive and start the frame
 		VkPrimitiveTopology topology;
@@ -1234,7 +1160,7 @@ namespace scvk
 			return;
 		}
 
-		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * drawLayout.stride, 0))
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, 0))
 		{
 			return;
 		}
@@ -1242,12 +1168,12 @@ namespace scvk
 		// Copy the vertices and bind the state
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, firstVertex, vertexCount, layout, drawLayout, vertexBuffer, vertexOffset))
+		if (!UploadVertices(vertices, firstVertex, vertexCount, layout, vertexBuffer, vertexOffset))
 		{
 			return;
 		}
 
-		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, drawLayout))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, layout))
 		{
 			return;
 		}
@@ -1286,7 +1212,6 @@ namespace scvk
 		}
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
-		VertexLayout const drawLayout = DecodeDrawLayout(layout);
 
 		// Translate the primitive and start the frame
 		VkPrimitiveTopology topology;
@@ -1336,7 +1261,7 @@ namespace scvk
 
 		size_t const indexBytes = size_t{ emitted } * sizeof(uint32_t);
 
-		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * drawLayout.stride, indexBytes))
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, indexBytes))
 		{
 			return;
 		}
@@ -1344,7 +1269,7 @@ namespace scvk
 		// Copy that range of vertices
 		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
 		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, lowest, vertexCount, layout, drawLayout, vertexBuffer, vertexOffset))
+		if (!UploadVertices(vertices, lowest, vertexCount, layout, vertexBuffer, vertexOffset))
 		{
 			return;
 		}
@@ -1400,7 +1325,7 @@ namespace scvk
 		}
 
 		// Bind the state and draw
-		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, drawLayout))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, layout))
 		{
 			return;
 		}

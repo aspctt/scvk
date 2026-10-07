@@ -35,8 +35,8 @@
 //// Constants
 
 // Thresholds on the draw's path in fragmentState.w, halfway between the values the
-// backend sends: 1 and 3 take the texture environment, 2 the combiner network, 10 and up
-// a pass colour, 20 and up an input channel.
+// backend sends: 1 takes the texture environment, 2 the combiner network, 10 and up a
+// pass colour, 20 and up an input channel.
 const float PATH_TWO_STAGES_MINIMUM = 1.5;
 const float PATH_TWO_STAGES_MAXIMUM = 2.5;
 const float PASS_COLOURS_MINIMUM    = 9.5;
@@ -63,21 +63,13 @@ layout(push_constant) uniform PushConstants
 	//    its colour does. The vertex stage reads the flags; this one reads
 	//    the mode.
 	// w: which path this draw takes.
-	//    1 one texture stage, coordinates from the vertex
-	//    2 the combiner network, on both stages or on the first alone,
-	//      coordinates from the vertex
-	//    3 one texture stage, coordinates generated from the eye-space position
+	//    1 the texture environment, on one texture stage
+	//    2 the combiner network, on both stages or on the first alone
 	//    10 and up: a diagnostic, see passColour and the channel view below
 	vec4 fragmentState;
 
-	// Two slots with two meanings. See the vertex stage for why they share.
-	//
-	// Path 3 reads them as texture generation rows, which only the vertex stage needs, so
-	// this stage ignores them entirely.
-	//
-	// Path 2 reads aliasA as the combiner network, carried as raw bits, one packed word
-	// per stage per channel: x stage 0 rgb, y stage 0 alpha, z stage 1 rgb, w stage 1
-	// alpha. Within a word:
+	// Read on path 2 only. The combiner network is one packed word per stage per channel:
+	// x stage 0 rgb, y stage 0 alpha, z stage 1 rgb, w stage 1 alpha. Within a word:
 	//
 	//   bits 0..2   combine mode
 	//   bits 3..4   source 0      bits 5..7    operand 0
@@ -85,9 +77,9 @@ layout(push_constant) uniform PushConstants
 	//   bits 13..14 source 2      bits 15..17  operand 2
 	//   bits 18..19 output scale, 0 for x1, 1 for x2, 2 for x4
 	//
-	// and aliasB as the environment colour a combiner may name as a source.
-	vec4 aliasA;
-	vec4 aliasB;
+	// The environment colour is the one a combiner may name as a source.
+	uvec4 combinerNetwork;
+	vec4  environmentColour;
 
 	// The light weight the ambient and diffuse terms collapsed into, and the diffuse
 	// material's alpha in w. Both are consumed by the vertex stage, which builds the
@@ -126,7 +118,7 @@ vec4 combinerSource(uint source, vec4 texel, vec4 previous)
 {
 	if (source == 0u) { return texel; }
 	if (source == 1u) { return previous; }
-	if (source == 2u) { return push.aliasB; }
+	if (source == 2u) { return push.environmentColour; }
 	return fragmentColour;
 }
 
@@ -279,9 +271,8 @@ void main()
 		// stage combines alone, the backend sets the second to hand its result on.
 		vec4 texel1 = texture(sampler2D(textureImage1, textureSampler1), fragmentTextureCoordinate1);
 
-		uvec4 combiner = floatBitsToUint(push.aliasA);
-		result = runStage(combiner.x, combiner.y, texel0, fragmentColour);
-		result = runStage(combiner.z, combiner.w, texel1, result);
+		result = runStage(push.combinerNetwork.x, push.combinerNetwork.y, texel0, fragmentColour);
+		result = runStage(push.combinerNetwork.z, push.combinerNetwork.w, texel1, result);
 	}
 
 	result = clamp(result, 0.0, 1.0);
