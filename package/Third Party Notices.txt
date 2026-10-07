@@ -1,9 +1,12 @@
 This file lists the original copyright and license information for the
 third-party code included in scvk, or that parts of it are derived from.
 
-scvk itself is licensed under the GNU Lesser General Public License, version
-2.1 or (at your option) any later version. See LICENSE.txt. Its source code is
-at https://github.com/aspctt/scvk.
+scvk itself is licensed under the GNU Lesser General Public License, version 3
+or (at your option) any later version. See COPYING.LESSER.txt and COPYING.txt.
+Its source code is at https://github.com/aspctt/scvk.
+
+The LGPL 2.1 or later code below is used under version 3 of the LGPL, as its
+"or later" terms allow.
 
 License notice for gzcom-dll
 --------------------------------------------------------------

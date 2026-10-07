@@ -21,8 +21,12 @@ $stagingDirectory = Join-Path $repositoryRoot "obj\package"
 $versionHeader    = Join-Path $repositoryRoot "src\version.h"
 
 # Each file in the zip, by its name there, and where it comes from.
+#
+# The LGPL 3.0 is a set of extra permissions on top of the GPL 3.0, so both texts ship,
+# under the names the FSF recommends.
 $packageFiles = [ordered]@{
-	"LICENSE.txt"             = Join-Path $repositoryRoot "LICENSE"
+	"COPYING.LESSER.txt"      = Join-Path $repositoryRoot "COPYING.LESSER"
+	"COPYING.txt"             = Join-Path $repositoryRoot "COPYING"
 	"README.htm"              = Join-Path $repositoryRoot "package\README.htm"
 	"scvk.dll"                = Join-Path $repositoryRoot "Release\scvk.dll"
 	"scvk.ini"                = Join-Path $repositoryRoot "scvk.ini"

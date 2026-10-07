@@ -3,8 +3,9 @@ Copyright (C) 2026 aspctt
 
 scvk is free software: you may redistribute it and/or modify it under the terms
 of the GNU Lesser General Public License as published by the Free Software
-Foundation, either version 2.1 of the License, or (at your option) any later
-version. See LICENSE for the full text.
+Foundation, either version 3 of the License, or (at your option) any later
+version. See COPYING.LESSER for the full text, and COPYING for the GNU General
+Public License it adds its permissions to.
 
 scvk is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
@@ -32,8 +33,8 @@ THIRD-PARTY COMPONENTS
 The `vendor/` directory contains source files from the projects listed below.
 Each file retains its original copyright and license notice. All are licensed
 under the GNU Lesser General Public License, version 2.1 or (at your option) any
-later version, the same terms as scvk itself. See vendor/README.md for a
-per-file provenance record.
+later version, and scvk uses them under version 3, as those terms allow. See
+vendor/README.md for a per-file provenance record.
 
   gzcom-dll: an open-source DLL Plugin SDK for SimCity 4
   https://github.com/nsgomez/gzcom-dll

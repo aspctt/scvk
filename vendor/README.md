@@ -2,7 +2,8 @@
 
 Every file in this directory is an **unmodified verbatim copy** from an upstream
 project, with its original copyright and license notice intact. All are
-**LGPL-2.1-or-later**, matching scvk's own license.
+**LGPL-2.1-or-later**, which is what lets scvk use them under its own license,
+LGPL-3.0-or-later.
 
 Nothing here is scvk's own work. Do not edit these files in place. See
 [Updating](#updating) below.
@@ -57,7 +58,7 @@ LGPL-2.1-or-later
 > `cRZRefCount`, but that copy is stale: its notice reads "version 2.1 of the
 > License" with no "or (at your option) any later version" clause. Scion's
 > current upstream version *is* or-later. Using upstream keeps the whole
-> vendored tree uniformly relicensable.
+> vendored tree usable under version 3.
 
 Scion's implementation (`cGZFramework`, `cRZString`, …) and its bundled STLport
 are **not** vendored and are not needed, because SimCity 4 already provides the
@@ -113,8 +114,8 @@ directory.
 Re-copy from upstream rather than patching in place, and re-check two things:
 
 1. Every file still carries an intact LGPL notice **including** the "or (at your
-   option) any later version" clause. A file that is 2.1-only would pin scvk's
-   relicensing options.
+   option) any later version" clause. A file that is 2.1-only cannot be used
+   under version 3, and so cannot be part of scvk at all.
 2. `cIGZGDriver.h` still matches the vtable SC4 expects. A change in method
    order upstream is a silent ABI break: the game will call the wrong function
    rather than fail to load.
