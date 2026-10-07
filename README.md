@@ -32,8 +32,9 @@ few visual bugs left.
 Known issues:
 
 - The interface sometimes flickers for a single frame.
-- Scrolling while zoomed out stutters: frames where the game redraws the view take a
-  tenth to a third of a second.
+- Scrolling while zoomed out is slower than DirectX, by roughly 40% on average in a
+  large city. The occasional frame of a tenth of a second or more there is the game's
+  own: DirectX has them just as often.
 
 ## How it works
 
