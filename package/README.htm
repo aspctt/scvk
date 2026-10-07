@@ -33,9 +33,6 @@ since.</li>
 <li>SimCity 4 Deluxe, game version 641. Older versions are untested.</li>
 <li>Windows 10 or 11.</li>
 <li>A graphics card and driver with Vulkan support.</li>
-<li>The <a href="https://aka.ms/vc14/vc_redist.x86.exe">Microsoft Visual C++ v14
-Redistributable (x86)</a>. SimCity 4 is a 32-bit game, so it needs the x86 one
-even on 64-bit Windows.</li>
 <li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
 to choose the renderer.</li>
 </ul>
@@ -94,8 +91,9 @@ does not need one, and they can stay installed.</li>
 <p><code>scvk.log</code> is written beside <code>scvk.dll</code>, or in the
 Windows temp folder if the Plugins folder cannot be written to. It names the
 graphics card scvk chose and notes anything that went wrong.</p>
-<p>If there is no log at all, the game did not load scvk. Check that the x86
-Visual C++ Redistributable above is installed.</p>
+<p>If there is no log at all, the game did not load scvk. Check that
+<code>scvk.dll</code> is in the Plugins folder of the SimCity 4 installation, and
+that <code>Enabled</code> is not set to false in <code>scvk.ini</code>.</p>
 <p>Please report problems at
 <a href="https://github.com/aspctt/scvk/issues">https://github.com/aspctt/scvk/issues</a>,
 with your <code>scvk.log</code>, your graphics card and its driver version.</p>

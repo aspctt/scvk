@@ -89,8 +89,18 @@
            Text="Vulkan headers not found. Set VULKAN_SDK_32 or pass /p:VulkanSdkDir=&lt;sdk root&gt;. Looked in '$(VulkanSdkDir)'." />
     <Message Importance="high" Text="scvk: using Vulkan SDK at $(VulkanSdkDir)" />
   </Target>
+  <!--
+    C runtime.
+
+    Linked statically, so players need no Visual C++ Redistributable, and in
+    particular not one at least as new as the toolset that built the DLL. Its own
+    heap is no change in practice: the game links its own static VC++ 2003 runtime,
+    so nothing scvk allocates was ever freed by the game, or the other way round.
+    Objects cross only through reference counted interfaces, which free themselves.
+  -->
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <ConformanceMode>true</ConformanceMode>
@@ -111,6 +121,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
       <ConformanceMode>true</ConformanceMode>
