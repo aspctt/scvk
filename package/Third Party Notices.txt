@@ -1,0 +1,74 @@
+This file lists the original copyright and license information for the
+third-party code included in scvk, or that parts of it are derived from.
+
+scvk itself is licensed under the GNU Lesser General Public License, version
+2.1 or (at your option) any later version. See LICENSE.txt. Its source code is
+at https://github.com/aspctt/scvk.
+
+License notice for gzcom-dll
+--------------------------------------------------------------
+
+https://github.com/nsgomez/gzcom-dll
+Copyright (C) 2016 Nelson Gomez; Copyright (C) 2024 memo; and contributors
+
+LGPL 2.1 or later.
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+
+License notice for Scion
+--------------------------------------------------------------
+
+https://github.com/nsgomez/scion
+Copyright (C) 2021 Nelson Gomez
+
+LGPL 2.1 or later.
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+
+License notice for SCGL
+--------------------------------------------------------------
+
+https://github.com/nsgomez/scgl
+Copyright (C) 2025 Nelson Gomez
+
+LGPL 2.1 or later.
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+
+License notice for sc4-disable-fps-limits
+--------------------------------------------------------------
+
+https://github.com/caspervg/sc4-disable-fps-limits
+Copyright (c) caspervg
+
+The frame rate caps scvk raises, and the addresses that hold them, were
+identified by this project.
+
+LGPL 2.1 or later.
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+
+License notice for SC4Fix
+--------------------------------------------------------------
+
+https://github.com/nsgomez/sc4fix
+
+scvk's game version detection follows the approach taken by SC4Fix.
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Nelson Gomez (simmaster07)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

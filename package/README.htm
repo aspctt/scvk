@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scvk</title>
+</head>
+<body>
+<h1 id="scvk">scvk</h1>
+<p>A native Vulkan renderer for SimCity 4.</p>
+<p>SimCity 4 shipped in 2003 with a DirectX 7 renderer and an unfinished OpenGL
+one. scvk replaces the renderer with one built on Vulkan, loaded as a DLL plugin
+through the game's own plugin system.</p>
+<p>This project is not affiliated with, endorsed by, or supported by Electronic
+Arts Inc. or Maxis.</p>
+
+<h2 id="status">Status</h2>
+<p><strong>Early preview.</strong> The region view, cities, menus and loading
+screens all draw, windowed, full screen or borderless, with lighting that matches
+the DirectX renderer. So far it has been tested on a single NVIDIA graphics card,
+so expect problems on other hardware, and save often.</p>
+<p>Known issues:</p>
+<ul>
+<li>The interface sometimes flickers for a single frame.</li>
+<li>Scrolling while zoomed out is slower than DirectX, by roughly 40% on average
+in a large city.</li>
+<li>The game has stopped responding twice in testing, once after leaving the Big
+City Tutorial and once while exiting to Windows. Neither has happened again
+since.</li>
+</ul>
+
+<h2 id="system-requirements">System Requirements</h2>
+<ul>
+<li>SimCity 4 Deluxe, game version 641. Older versions are untested.</li>
+<li>Windows 10 or 11.</li>
+<li>A graphics card and driver with Vulkan support.</li>
+<li>The <a href="https://aka.ms/vc14/vc_redist.x86.exe">Microsoft Visual C++ v14
+Redistributable (x86)</a>. SimCity 4 is a 32-bit game, so it needs the x86 one
+even on 64-bit Windows.</li>
+<li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
+to choose the renderer.</li>
+</ul>
+
+<h2 id="installation">Installation</h2>
+<ol type="1">
+<li>Close SimCity 4.</li>
+<li>Copy <code>scvk.dll</code> and <code>scvk.ini</code> into the Plugins folder in
+the SimCity 4 installation directory.</li>
+<li>Open <code>SC4GraphicsOptions.ini</code> and set:
+<pre><code>Driver=OpenGL
+ColorDepth=32</code></pre></li>
+<li>Start the game. A <code>scvk.log</code> file appears beside
+<code>scvk.dll</code>.</li>
+</ol>
+<p><code>Driver=OpenGL</code> does not start the game's own unfinished OpenGL
+renderer. The game picks its renderer by an ID, and scvk registers under the
+OpenGL one with a higher version, so the game gets scvk instead.</p>
+<p><code>ColorDepth=32</code> matters too: Windows no longer offers the 16-bit
+display modes the game uses by default.</p>
+<p>To go back to DirectX, set <code>Driver=DirectX</code>. scvk still loads and
+its frame rate changes still apply, but the game draws with DirectX.</p>
+
+<h2 id="configuring-the-plugin">Configuring the plugin</h2>
+<p>Open <code>scvk.ini</code> in a text editor (e.g. Notepad). Each setting is
+explained in the file.</p>
+<p><code>MaxFPS</code> raises the game's frame rate caps, which are 30 at Turtle
+speed, 20 at Rhino and 15 at Cheetah. 0, the default, leaves them alone. A paused
+city is never held at 30 whatever this says.</p>
+<p><code>UnlockRunningFPS</code> lets <code>MaxFPS</code> go above about 60 while
+the city runs. The time comes out of the simulation, so the city simulates more
+slowly. Off by default.</p>
+<p><code>LogLevel</code> sets how much goes into <code>scvk.log</code>, from
+<code>trace</code> to <code>off</code>. <code>info</code> by default.</p>
+<p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading
+scvk at all. Set <code>Driver=DirectX</code> as well, or the game falls back to
+its own OpenGL renderer, which does not work.</p>
+<p>The frame rate changes only apply to game version 641, and scvk checks the
+game's code holds what it expects before changing anything.</p>
+
+<h2 id="compatibility">Compatibility</h2>
+<ul>
+<li><a href="https://github.com/nsgomez/scgl">SCGL</a> cannot be installed at the
+same time. Both register as the OpenGL renderer, so install one or the
+other.</li>
+<li><a href="https://github.com/nsgomez/sc4fix">SC4Fix</a> works alongside scvk.
+The two change unrelated parts of the game.</li>
+<li><a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
+works alongside scvk. If you use it, leave <code>MaxFPS</code> at 0.</li>
+<li>DirectX wrappers such as dgVoodoo 2 only affect the DirectX renderer. scvk
+does not need one, and they can stay installed.</li>
+</ul>
+
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><code>scvk.log</code> is written beside <code>scvk.dll</code>, or in the
+Windows temp folder if the Plugins folder cannot be written to. It names the
+graphics card scvk chose and notes anything that went wrong.</p>
+<p>If there is no log at all, the game did not load scvk. Check that the x86
+Visual C++ Redistributable above is installed.</p>
+<p>Please report problems at
+<a href="https://github.com/aspctt/scvk/issues">https://github.com/aspctt/scvk/issues</a>,
+with your <code>scvk.log</code>, your graphics card and its driver version.</p>
+
+<h1 id="license">License</h1>
+<p>scvk is licensed under the terms of the GNU Lesser General Public License,
+version 2.1 or (at your option) any later version.<br />
+See <a href="LICENSE.txt">LICENSE.txt</a> for more information. The source code
+is at <a href="https://github.com/aspctt/scvk">https://github.com/aspctt/scvk</a>.</p>
+<p>"SimCity" and "SimCity 4" are trademarks of Electronic Arts Inc. scvk contains
+no code or assets from SimCity 4.</p>
+
+<h2 id="3rd-party-code">3rd party code</h2>
+<p><a href="https://github.com/nsgomez/gzcom-dll">gzcom-dll</a> - GNU Lesser
+General Public License version 2.1 or later.<br />
+<a href="https://github.com/nsgomez/scion">Scion</a> - GNU Lesser General Public
+License version 2.1 or later.<br />
+<a href="https://github.com/nsgomez/scgl">SCGL</a> - GNU Lesser General Public
+License version 2.1 or later.<br />
+<a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
+- GNU Lesser General Public License version 2.1 or later.<br />
+<a href="https://github.com/nsgomez/sc4fix">SC4Fix</a> - MIT License.</p>
+<p>See <a href="Third%20Party%20Notices.txt">Third Party Notices.txt</a> for
+details.</p>
+<p>Particular thanks to Nelson Gomez, whose SCGL is the reference implementation
+that made the shape of the game's renderer interface legible at all.</p>
+</body>
+</html>
