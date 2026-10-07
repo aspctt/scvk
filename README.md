@@ -32,7 +32,8 @@ few visual bugs left.
 Known issues:
 
 - The interface sometimes flickers for a single frame.
-- Scrolling is slow, around 6 to 7 frames a second.
+- Scrolling while zoomed out stutters: frames where the game redraws the view take a
+  tenth to a third of a second.
 
 ## How it works
 
@@ -145,7 +146,8 @@ local `1.3.296.0` install, then `VULKAN_SDK`.
 
 Debug builds enable the validation layers when they are present and route
 their output into `scvk.log`, which is the only channel visible when running
-inside the game. Release builds enable neither.
+inside the game. Release builds enable neither. The layers check every draw,
+which makes a Debug build many times slower, so measure performance in Release.
 
 ### Shaders
 
