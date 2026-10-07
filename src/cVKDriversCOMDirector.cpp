@@ -81,8 +81,8 @@ namespace scvk
 			LogInfo("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
 
-			// Off unless scvk.ini asks for it. This is the only place scvk writes to game
-			// memory, and it is opt-in for that reason.
+			// Change the game's frame pacing, the only place scvk writes to game memory.
+			// Only the paused padding changes without scvk.ini asking.
 			ApplyFpsLimitSettings();
 			return true;
 		}

@@ -72,39 +72,49 @@ SC4Fix works by patching machine code at hardcoded addresses. On game version
 | `0x96DA1D` | The same crash, second site |
 | `0x5D3DE0` | Prop pox, a save corruption bug |
 
-**scvk patches no game code at all by default.** It registers a COM class and
-implements an interface, which is the mechanism the game itself provides for
-replacing a renderer. There is no address in common because scvk uses no
-addresses. The only exception is the opt-in FPS setting below, which is off
-unless you turn it on and touches three bytes in an unrelated function.
+**Rendering needs no patches.** scvk registers a COM class and implements an
+interface, which is the mechanism the game itself provides for replacing a
+renderer. The only game code it changes is frame pacing, below: five bytes in
+the simulator's frame tick by default, and a few more there and in its speed
+settings if you turn the frame rate settings on. None of it is near an SC4Fix
+address.
 
 SC4Fix's DLL unload patch is mildly helpful to scvk: it stops the game
 unloading plugins it does not recognise, which removes a class of shutdown
 race entirely.
 
-### FPS limits: built in, off by default
+### FPS limits: built in
 
 SimCity 4 caps its frame rate by simulation speed, at 30 for Turtle, 20 for
-Rhino and 15 for Cheetah. scvk can raise those caps itself, so
+Rhino and 15 for Cheetah, by filling the rest of each frame with simulation.
+A paused city is held at 30 the same way, though there is nothing to simulate.
+That is the 30 a still camera settles at; the game skips the padding while the
+camera moves.
+
+scvk always lifts the paused 30. It can also raise the speed caps itself, so
 [sc4-disable-fps-limits](https://github.com/caspervg/sc4-disable-fps-limits) is
 not required, though it remains compatible.
 
-Set `MaxFPS` in `scvk.ini` to enable it:
+Set `MaxFPS` in `scvk.ini` to raise the caps:
 
 ```ini
 [scvk]
 MaxFPS=120
 ```
 
+A running city still gets at least 15 ms of simulation every frame, which keeps
+it near 60 frames a second whatever `MaxFPS` says. `UnlockRunningFPS=true`
+lowers that to 3 ms. The time comes out of the simulation, so the city
+simulates more slowly, most of all at Cheetah. It is off by default.
+
 This lives in scvk because frame pacing and presentation are one concern. Once
 the swapchain exists, the present mode and this cap have to agree, and keeping
 them in separate plugins means two settings files that can contradict one
 another.
 
-It is off by default for two reasons. It is the only part of scvk that writes
-to game memory, and caspervg's plugin does the same job, so enabling both with
-different values would be confusing. **If you already use that plugin, leave
-`MaxFPS` at 0.**
+`MaxFPS` is off by default because caspervg's plugin does the same job, and
+enabling both with different values would be confusing. **If you already use
+that plugin, leave `MaxFPS` at 0.**
 
 scvk is more cautious than it strictly needs to be here. It requires game
 version 641, and it reads each byte before changing it: if a byte does not hold

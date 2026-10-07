@@ -28,24 +28,31 @@ namespace scvk
 	//// Public API
 
 	/**
-	 * Raises SimCity 4's per-simulation-speed frame rate caps.
+	 * Changes how SimCity 4 paces its frames.
 	 *
-	 * The game clamps its frame rate by simulation speed: 30 at Turtle, 20 at Rhino, 15
-	 * at Cheetah. Each limit is a one-byte immediate operand in the instruction stream,
-	 * so raising them is three byte writes.
+	 * The game's simulator pads every frame with simulation and idle work until it has
+	 * lasted 1000 / rate milliseconds. The rate is the speed's cap, 30 at Turtle, 20 at
+	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Three changes, each
+	 * a few bytes of the game's code:
+	 *
+	 * - A paused city's frames are no longer padded, always. The padding only gives the
+	 *   idle agents time while nothing is simulated, and it held a paused city at 30
+	 *   frames a second that no setting could raise.
+	 * - The speed caps become MaxFPS, when it is set. Each is a one-byte immediate.
+	 * - The 15 ms of padding every running frame gets becomes 3 ms, when UnlockRunningFPS
+	 *   is true, so MaxFPS can go past about 60. That time is the simulation's, so the
+	 *   city simulates more slowly. Off by default.
 	 *
 	 * This lives in scvk because frame pacing and presentation are the same concern. Once
-	 * the swapchain exists, the present mode and this cap have to agree, and splitting
+	 * the swapchain exists, the present mode and the caps have to agree, and splitting
 	 * them across two plugins means two settings files that can contradict each other.
+	 * caspervg's standalone plugin raises the same caps, so MaxFPS is off by default:
+	 * running both with different values would be needlessly confusing.
 	 *
-	 * Off by default, for two reasons. It writes to game memory, which the rest of scvk
-	 * never does, and caspervg's standalone plugin does the same job: running both with
-	 * different values would be needlessly confusing.
-	 *
-	 * Reads MaxFPS from scvk.ini beside the DLL. Zero or absent means leave the game
-	 * alone. Only game version 641 is patched, and only after the bytes at the target
-	 * addresses are confirmed to hold the values we expect. Calling it again changes
-	 * nothing, since a cap already at the requested value is left alone.
+	 * Reads MaxFPS and UnlockRunningFPS from scvk.ini beside the DLL. Only game version 641
+	 * is changed, and only after the bytes at the target addresses are confirmed to hold
+	 * what we expect. Calling it again changes nothing, since code already changed is left
+	 * alone.
 	 */
 	void ApplyFpsLimitSettings(void);
 }
