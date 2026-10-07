@@ -890,7 +890,7 @@ namespace scvk
 		// for BGRA8, which is already BMP's byte order.
 		bool const isDumpable = !texture.isCompressed && gdType == GD_TYPE_UNSIGNED_BYTE && gdFormat == GD_FORMAT_BGRA;
 
-		if (textureDumpsRemaining <= 0 || !isDumpable || presentedFrames <= TEXTURE_DUMP_AFTER_FRAMES)
+		if (textureDumpsRemaining <= 0 || !isDumpable || presentedFrames <= TEXTURE_DUMP_AFTER_FRAMES || !IsLogged(LOG_LEVEL_DEBUG))
 		{
 			return;
 		}

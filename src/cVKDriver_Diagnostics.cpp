@@ -1356,8 +1356,15 @@ namespace scvk
 			LogShadowSummary();
 		}
 
-		RequestPeriodicCaptures();
-		PollKeyCapture();
+		// Save pictures only when the log is kept for diagnostics
+		//
+		// Each one is a full-screen bitmap of several megabytes beside the DLL, which at
+		// the default level would only fill a player's Plugins folder.
+		if (IsLogged(LOG_LEVEL_DEBUG))
+		{
+			RequestPeriodicCaptures();
+			PollKeyCapture();
+		}
 	}
 
 	void cVKDriver::RequestPeriodicCaptures(void)

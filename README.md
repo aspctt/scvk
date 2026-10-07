@@ -181,10 +181,10 @@ pwsh shaders/compile.ps1
 the log. Options are listed at the top of the script.
 
 Set `LogLevel=trace` in `scvk.ini` to see everything the game asks of the
-renderer in `scvk.log`, and `debug` for the statistics below without that. A few
-screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are saved beside it
-during a session. Press Scroll Lock in game to save one on demand, along with
-the saved scene and its depth (`scvk-key-N-*`).
+renderer in `scvk.log`, and `debug` for the statistics below without that. At
+either level a few screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are
+saved beside it during a session, and Scroll Lock in game saves one on demand,
+along with the saved scene and its depth (`scvk-key-N-*`).
 
 Every 300 frames the log also notes the frame rate, the slowest frame and how
 its time split between the game and scvk's own work (drawing, copying geometry,
