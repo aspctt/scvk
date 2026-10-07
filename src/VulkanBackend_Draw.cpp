@@ -364,8 +364,11 @@ namespace scvk
 
 		// Describe assembly, viewport and rasterisation
 		//
-		// Culling is off deliberately. The game's winding convention is not known, and
-		// culling the wrong way round would hide geometry.
+		// Back faces are culled when the game asks, the way OpenGL's defaults cull them:
+		// the game's own OpenGL driver never calls glCullFace or glFrontFace, and its
+		// Direct3D driver culls faces that wind clockwise on screen. The clip space
+		// correction flips y and Vulkan's framebuffer y points down, so a face winding
+		// counter-clockwise on screen is front-facing here as it is under OpenGL.
 		VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
 		assembly.topology = key.topology;
 
@@ -375,7 +378,7 @@ namespace scvk
 
 		VkPipelineRasterizationStateCreateInfo rasterisation{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
 		rasterisation.polygonMode = VK_POLYGON_MODE_FILL;
-		rasterisation.cullMode    = VK_CULL_MODE_NONE;
+		rasterisation.cullMode    = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
 		rasterisation.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		rasterisation.lineWidth   = 1.0f;
 
@@ -799,7 +802,7 @@ namespace scvk
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& drawLayout)
 	{
 		// Find the pipeline for the current state
-		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, drawLayout.hasAppendedCoordinateSet };
+		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled, drawLayout.hasAppendedCoordinateSet };
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -1080,6 +1083,11 @@ namespace scvk
 		isDepthTestEnabled  = isTestEnabled;
 		isDepthWriteEnabled = isWriteEnabled;
 		depthComparison     = comparison;
+	}
+
+	void VulkanBackend::SetFaceCulling(bool isEnabled)
+	{
+		isFaceCullingEnabled = isEnabled;
 	}
 
 	void VulkanBackend::SetSceneTint(float red, float green, float blue, float alpha, bool isColourFromVertexColour, bool isAlphaFromVertexColour)

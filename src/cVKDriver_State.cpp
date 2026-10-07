@@ -124,6 +124,11 @@ namespace scvk
 		{
 			PushFog();
 		}
+
+		if (gdCapability == kGDCapability_CullFace)
+		{
+			vulkan->SetFaceCulling(isEnabled);
+		}
 	}
 
 	void cVKDriver::PushBlendState(void)

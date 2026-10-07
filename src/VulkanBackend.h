@@ -81,6 +81,9 @@ namespace scvk
 			// pass drawn with writes off needs its own pipeline.
 			bool     isColourWriteEnabled;
 
+			// Whether back faces are culled, pipeline state as well.
+			bool     isFaceCullingEnabled;
+
 			// Whether the vertex copy carries a second coordinate set the format lacks,
 			// which changes both the stride and the attributes.
 			bool     hasAppendedCoordinateSet;
@@ -434,6 +437,7 @@ namespace scvk
 		uint32_t blendSourceFactor      = 1;
 		uint32_t blendDestinationFactor = 0;
 		bool     isColourWriteEnabled   = true;
+		bool     isFaceCullingEnabled   = false;
 
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
@@ -929,6 +933,9 @@ namespace scvk
 
 		/** Sets depth testing, writing and the comparison, all pipeline state. */
 		void SetDepthState(bool isTestEnabled, bool isWriteEnabled, uint32_t comparison);
+
+		/** Whether back faces are culled. Pipeline state in Vulkan. */
+		void SetFaceCulling(bool isEnabled);
 
 		/** Clears the depth attachment to the given value. */
 		void ClearDepth(float depth);
