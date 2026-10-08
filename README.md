@@ -35,8 +35,8 @@ Known issues:
 - Scrolling while zoomed out is slower than DirectX, by roughly 40% on average in a
   large city. The occasional frame of a tenth of a second or more there is the game's
   own: DirectX has them just as often.
-- PrintScreen does not capture the game in exclusive fullscreen on at least one AMD
-  graphics card. A fix is waiting to be confirmed.
+- PrintScreen did not capture the game in exclusive fullscreen on at least one AMD
+  graphics card. 0.1.2 should fix it, but that is not confirmed yet.
 - On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
   the game out of exclusive fullscreen. Win+PrintScreen captures the game.
 

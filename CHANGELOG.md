@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-08
+
 ### Changed
 
 - In fullscreen, the graphics driver can no longer take exclusive control of the screen, which should let PrintScreen capture the game on AMD graphics cards
@@ -34,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.1.2...HEAD
+[0.1.2]: https://github.com/aspctt/scvk/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/aspctt/scvk/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/aspctt/scvk/releases/tag/0.1.0
