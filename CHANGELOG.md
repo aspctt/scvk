@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] - 2026-10-08
 
+### Added
+
+- A line in `scvk.log` once the first frame is on screen, confirming scvk is running
+
 ### Fixed
 
 - Thin dark seams along the edges of street and lot tiles

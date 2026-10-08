@@ -2432,6 +2432,16 @@ namespace scvk
 		// Count the frame
 		presentedFrames++;
 
+		// Confirm the first one
+		//
+		// At the default log level nothing follows the depth buffer line, so a log that
+		// stops there looked the same whether the game ran or not. The first present is
+		// the earliest point where every part of the renderer has worked once.
+		if (presentedFrames == 1)
+		{
+			LogInfo("scvk %s is running; the first frame is on screen.", SCVK_VERSION_STRING);
+		}
+
 		if ((presentedFrames % HEARTBEAT_FRAMES) == 0)
 		{
 			LogHeartbeat();
