@@ -683,10 +683,18 @@ namespace scvk
 	{
 		SCVK_CALL("current");
 
+		// Answer with an empty mode before one is set
+		//
+		// The game asks once at every startup, before its first SetVideoMode. The DirectX
+		// driver (0x886e10) copies its current mode record, which its constructor leaves
+		// at index -1 with everything else zero, and sets no error. scvk used to set
+		// OUT_OF_RANGE and warn, which every run logged; SetVideoMode cleared the error
+		// before the game read it.
 		if (currentVideoMode < 0)
 		{
-			LogWarn("  !! no video mode has been set yet");
-			SetLastError(DriverError::OUT_OF_RANGE);
+			LogDebug("  no video mode has been set yet; returning an empty mode");
+			outMode       = sGDMode{};
+			outMode.index = UINT32_MAX;
 			return;
 		}
 
