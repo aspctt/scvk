@@ -373,6 +373,11 @@ namespace scvk
 		std::string              apiVersion;
 		bool                     isDead         = false;
 
+		// Whether the instance can and the device does take a fullscreen policy for the
+		// swapchain. See CreateSwapchain.
+		bool canAskFullscreenPolicy     = false;
+		bool hasFullscreenPolicyControl = false;
+
 		// Vulkan only promises 4096 allocations, so every one is counted against the
 		// device's own limit.
 		uint32_t maximumMemoryAllocations = 0;

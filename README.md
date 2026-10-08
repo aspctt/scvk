@@ -36,7 +36,9 @@ Known issues:
   large city. The occasional frame of a tenth of a second or more there is the game's
   own: DirectX has them just as often.
 - PrintScreen does not capture the game in exclusive fullscreen on at least one AMD
-  graphics card.
+  graphics card. A fix is waiting to be confirmed.
+- On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
+  the game out of exclusive fullscreen. Win+PrintScreen captures the game.
 
 ## How it works
 

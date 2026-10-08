@@ -139,6 +139,34 @@ namespace scvk
 			return false;
 		}
 
+		/** Whether a physical device offers an extension. */
+		bool HasDeviceExtension(VkPhysicalDevice physicalDevice, char const* wanted)
+		{
+			// List the extensions
+			uint32_t count = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
+			{
+				return false;
+			}
+
+			std::vector<VkExtensionProperties> extensions(count);
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.data()) != VK_SUCCESS)
+			{
+				return false;
+			}
+
+			// Look for the wanted one among them
+			for (VkExtensionProperties const& extension : extensions)
+			{
+				if (strcmp(extension.extensionName, wanted) == 0)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 		/**
 		 * Routes validation output into scvk.log.
 		 *
@@ -378,20 +406,29 @@ namespace scvk
 			return false;
 		}
 
-		// Create the device with the swapchain extension
+		// Create the device with the swapchain extension, and the fullscreen policy one
+		// when the instance and the device both have what it needs
 		float priority = 1.0f;
 		VkDeviceQueueCreateInfo queueInformation{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
 		queueInformation.queueFamilyIndex = queueFamily;
 		queueInformation.queueCount       = 1;
 		queueInformation.pQueuePriorities = &priority;
 
-		char const* extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+		std::vector<char const*> extensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+		hasFullscreenPolicyControl = canAskFullscreenPolicy && HasDeviceExtension(physicalDevice, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+		if (hasFullscreenPolicyControl)
+		{
+			extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+		}
+
+		LogInfo("Vulkan: %s", hasFullscreenPolicyControl ? "the driver will not take exclusive control of a fullscreen window." : "the driver cannot be kept from taking exclusive control of a fullscreen window.");
 
 		VkDeviceCreateInfo deviceInformation{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 		deviceInformation.queueCreateInfoCount    = 1;
 		deviceInformation.pQueueCreateInfos       = &queueInformation;
-		deviceInformation.enabledExtensionCount   = _countof(extensions);
-		deviceInformation.ppEnabledExtensionNames = extensions;
+		deviceInformation.enabledExtensionCount   = extensions.size();
+		deviceInformation.ppEnabledExtensionNames = extensions.data();
 		deviceInformation.pEnabledFeatures        = nullptr;
 
 		VkResult const result = vkCreateDevice(physicalDevice, &deviceInformation, nullptr, &device);
@@ -616,6 +653,21 @@ namespace scvk
 		information.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
 		information.clipped          = VK_TRUE;
 		information.oldSwapchain     = VK_NULL_HANDLE;
+
+		// Keep the driver from taking exclusive control of the screen
+		//
+		// Left to decide, a driver may present a window that covers the monitor by taking
+		// the display for itself and bypassing the desktop compositor. For an AMD player in
+		// exclusive fullscreen, PrintScreen copied the desktop instead of the game, which is
+		// what bypassing the compositor looks like. DXVK disallows it by default too, since
+		// it blocks Alt+Tab and windows drawn over the game.
+		VkSurfaceFullScreenExclusiveInfoEXT fullscreenPolicy{ VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
+		fullscreenPolicy.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+
+		if (hasFullscreenPolicyControl)
+		{
+			information.pNext = &fullscreenPolicy;
+		}
 
 		result = vkCreateSwapchainKHR(device, &information, nullptr, &swapchain);
 		if (result != VK_SUCCESS)
@@ -1892,6 +1944,18 @@ namespace scvk
 			VK_KHR_SURFACE_EXTENSION_NAME,
 			VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 		};
+
+		// Ask for what the fullscreen policy needs when the loader has it
+		//
+		// VK_EXT_full_screen_exclusive builds on these two, and on Vulkan 1.0 the first
+		// has to be asked for by name. Without them the swapchain is created without a
+		// policy, as before.
+		canAskFullscreenPolicy = HasInstanceExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) && HasInstanceExtension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+		if (canAskFullscreenPolicy)
+		{
+			extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+			extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+		}
 
 		bool shouldCreateMessenger = false;
 #ifndef NDEBUG
