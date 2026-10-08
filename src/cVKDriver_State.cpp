@@ -187,9 +187,10 @@ namespace scvk
 		//         = ambient light,                when it is not
 		//   alpha = the vertex alpha or the alpha multiplier, see AlphaMultiplier
 		//
-		// OpenGL lights the default normal (0,0,1) instead, which adds about 0.59 of the
-		// vertex colour wherever diffuse is mapped. scvk did that once, and it washed the
-		// sea out to white and brightened the shaded cliff faces by half.
+		// OpenGL lights the default normal (0,0,1) instead, which brightens two of the
+		// four camera rotations under SCGL. An earlier scvk added that term with the
+		// normal transformed by the transposed matrix, and it washed the sea out to white
+		// and brightened the shaded cliff faces by half.
 		vulkan->SetSceneTint(colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient, isAlphaFromVertexColour);
 	}
 
