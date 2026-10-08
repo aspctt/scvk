@@ -172,14 +172,16 @@ namespace scvk
 		/**
 		 * The game's wrap values: 2 clamp, 3 repeat.
 		 *
-		 * GL_CLAMP, not CLAMP_TO_EDGE: it clamps to the border rather than smearing the
-		 * edge texel outward. That distinction is the whole point here, since a projected
-		 * cloud shadow needs nothing outside its own footprint, and a transparent border
-		 * gives exactly that.
+		 * Clamp is to the edge texel, as the DirectX driver does with D3DTADDRESS_CLAMP.
+		 * An earlier version clamped to a transparent black border like GL_CLAMP, and
+		 * linear filtering then blended every clamped tile's outer half texel toward
+		 * black, which drew dark seams along the terrain and lot tile edges. Textures
+		 * that must leave nothing outside their footprint, like the building shadow mask,
+		 * carry their own transparent edge texels instead.
 		 */
 		VkSamplerAddressMode MapAddressMode(uint32_t gdWrap)
 		{
-			return (gdWrap == 2) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			return (gdWrap == 2) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		}
 	}
 
