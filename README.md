@@ -35,6 +35,8 @@ Known issues:
 - Scrolling while zoomed out is slower than DirectX, by roughly 40% on average in a
   large city. The occasional frame of a tenth of a second or more there is the game's
   own: DirectX has them just as often.
+- PrintScreen does not capture the game in exclusive fullscreen on at least one AMD
+  graphics card.
 
 ## How it works
 
