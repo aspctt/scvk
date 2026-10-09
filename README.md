@@ -225,6 +225,28 @@ To see a debug view, put an empty file with one of these names next to
 - `scvk-prefer-integrated-gpu`: runs on the processor's built-in graphics instead
   of the graphics card, to test another maker's driver on the same machine
 
+## Benchmark
+
+`tools/benchmark.ps1` compares scvk with the game's own DirectX 7 driver on a city
+of your choice:
+
+```
+pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -Runs 2
+```
+
+Each run starts the game through Steam, which asks for a click, and the rest
+happens by itself. scvk opens the region and the city, pauses it and times every
+frame through eight camera scenes: a still view, scrolling at each zoom level, a
+full turn and a run of zoom changes. It then writes `scvk-benchmark.csv` and
+quits. The runs alternate between the two renderers, and
+`tools/benchmark-report.py` turns them into average fps, 1% and 0.1% lows and
+load times for each.
+
+DirectX runs keep scvk loaded without its renderer, so both get the same frame
+pacing fixes. Without them a paused city sits at 30 frames a second on DirectX,
+and the comparison would measure that instead. A single run can also be started
+by hand from the `[Benchmark]` section of `scvk.ini`.
+
 ## Installing
 
 scvk needs Windows 10 or 11, a graphics card with Vulkan support and game version

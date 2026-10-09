@@ -40,7 +40,11 @@ param(
 	# The LogLevel scvk runs with. Trace by default, since the summary below reads the
 	# heartbeat and the diagnostics; the live setting is put back after the run.
 	[ValidateSet("trace", "debug", "info", "warn", "error", "critical", "off")]
-	[string]$LogLevel = "trace"
+	[string]$LogLevel = "trace",
+
+	# Ends the run early once a file of this name appears beside scvk.dll, such as the
+	# results a benchmark writes. The game gets a moment to quit on its own first.
+	[string]$UntilFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -188,11 +192,23 @@ try {
 	Write-Host "  started, pid $($game.Id); running for $Seconds seconds"
 
 	# Let it run, then stop it
+	#
+	# A run waiting for a file shortens its deadline once the file is there, which leaves
+	# the game time to finish quitting by itself before it is stopped.
 	$deadline = (Get-Date).AddSeconds($Seconds)
 	$hasExitedEarly = $false
+	$untilPath = if ($UntilFile) { Join-Path $PluginsDir $UntilFile } else { $null }
+	$isUntilFileSeen = $false
 
 	while ((Get-Date) -lt $deadline) {
 		if ($game.HasExited) { $hasExitedEarly = $true; break }
+
+		if ($untilPath -and -not $isUntilFileSeen -and (Test-Path $untilPath)) {
+			$isUntilFileSeen = $true
+			$deadline = (Get-Date).AddSeconds(30)
+			Write-Host "  $UntilFile written; waiting for the game to quit"
+		}
+
 		Start-Sleep -Milliseconds 500
 	}
 
@@ -259,7 +275,7 @@ foreach ($bitmap in Get-ChildItem $PluginsDir -Filter "scvk-*.bmp" -ErrorAction 
 	}
 }
 
-$dataFiles = @(Get-ChildItem $PluginsDir -Filter "scvk-*.raw" -ErrorAction SilentlyContinue) + @(Get-ChildItem $PluginsDir -Filter "scvk-*.bin" -ErrorAction SilentlyContinue)
+$dataFiles = @(Get-ChildItem $PluginsDir -Filter "scvk-*.raw" -ErrorAction SilentlyContinue) + @(Get-ChildItem $PluginsDir -Filter "scvk-*.bin" -ErrorAction SilentlyContinue) + @(Get-ChildItem $PluginsDir -Filter "scvk-*.csv" -ErrorAction SilentlyContinue)
 
 foreach ($dataFile in $dataFiles) {
 	$destination = Join-Path $logDirectory (($dataFile.BaseName) + "-$timestamp$suffix" + $dataFile.Extension)
