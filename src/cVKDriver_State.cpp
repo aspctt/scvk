@@ -564,5 +564,13 @@ namespace scvk
 	void cVKDriver::PolygonOffset(int32_t offset)
 	{
 		SCVK_CALL("%d", offset);
+
+		// Leave depth unbiased
+		//
+		// Every call in a city session, about five million of them, came from the state
+		// the game sets up before drawing its interface (0x98ea30), which passes a
+		// constant 0. The DirectX driver (0x883710) turns the value into a z-bias, which
+		// at 0 does nothing. The OpenGL driver (0x87d230) hands it to glPolygonOffset but
+		// never enables GL_POLYGON_OFFSET_FILL, so there it does nothing whatever its value.
 	}
 }

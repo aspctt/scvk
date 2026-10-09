@@ -747,6 +747,7 @@ namespace scvk
 		// the game's window.
 		virtual void SetVideoMode(int32_t newModeIndex, void* windowProcedure, bool isUnknownFlag1Set, bool isUnknownFlag2Set) override;
 
+		// Ignored, as the game only ever asks for no offset. See the definition.
 		virtual void PolygonOffset(int32_t offset) override;
 
 		virtual void BitBlt(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2) override;
