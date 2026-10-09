@@ -102,15 +102,25 @@ namespace scvk
 		// The game's upload enumerations, from SCGL's translation tables. Formats: 0 RGB,
 		// 1 RGBA, 2 BGR, 3 BGRA. Types: 1 GL_UNSIGNED_BYTE, 8 GL_UNSIGNED_SHORT_4_4_4_4
 		// and 13 GL_UNSIGNED_SHORT_4_4_4_4_REV.
+		//
+		// Types 10 and 14 are placeholders in those tables and only arrive on a 16-bit
+		// screen. The game's own table (0x80a720) sends its A1R5G5B5 and R5G5B5 images as
+		// BGRA type 10, R5G6B5 as BGRA type 14 and A4R4G4B4 as BGRA type 13, so they are
+		// the reversed 1_5_5_5 and 5_6_5 packings, read like 13.
 		constexpr uint32_t GD_FORMAT_RGBA = 1;
 		constexpr uint32_t GD_FORMAT_BGR  = 2;
 		constexpr uint32_t GD_FORMAT_BGRA = 3;
 
 		constexpr uint32_t GD_TYPE_UNSIGNED_BYTE     = 1;
 		constexpr uint32_t GD_TYPE_4444              = 8;
+		constexpr uint32_t GD_TYPE_1555_REVERSED     = 10;
 		constexpr uint32_t GD_TYPE_4444_REVERSED     = 13;
+		constexpr uint32_t GD_TYPE_565_REVERSED      = 14;
 
-		// The game's internal format for plain RGBA8, which the default texture uses.
+		// The game's internal formats without alpha, RGB5 and RGB8, then plain RGBA8,
+		// which the default texture uses.
+		constexpr uint32_t GD_INTERNAL_FORMAT_RGB5  = 0;
+		constexpr uint32_t GD_INTERNAL_FORMAT_RGB8  = 1;
 		constexpr uint32_t GD_INTERNAL_FORMAT_RGBA8 = 4;
 
 		// Texture dumps wait until the startup screen is over, since its splash tiles
@@ -801,15 +811,24 @@ namespace scvk
 		// Work out the component order and packing
 		//
 		// Texels arrive either as one byte per component, or as one native-order 16-bit
-		// word with four bits per component. The packed types only exist for
-		// four-component formats.
+		// word. The 4-bit and 1_5_5_5 packings only exist for four-component formats;
+		// 5_6_5 carries no alpha whatever the format says.
 		bool const isReversed    = (gdFormat == GD_FORMAT_BGR || gdFormat == GD_FORMAT_BGRA);
 		bool const hasAlpha      = (gdFormat == GD_FORMAT_RGBA || gdFormat == GD_FORMAT_BGRA);
 		bool const isKnownOrder  = (gdFormat <= GD_FORMAT_BGRA);
-		bool const isPacked      = (gdType == GD_TYPE_4444);
-		bool const isPackedRev   = (gdType == GD_TYPE_4444_REVERSED);
+		bool const isPacked565   = (gdType == GD_TYPE_565_REVERSED);
+		bool const isPacked      = (gdType == GD_TYPE_4444 || gdType == GD_TYPE_4444_REVERSED || gdType == GD_TYPE_1555_REVERSED || isPacked565);
+		bool const isPackedRev   = (gdType != GD_TYPE_4444);
 
-		if (!isKnownOrder || (gdType != GD_TYPE_UNSIGNED_BYTE && !((isPacked || isPackedRev) && hasAlpha)))
+		// Component widths in the order the format names them
+		uint32_t const componentBits[4] = {
+			(gdType == GD_TYPE_4444 || gdType == GD_TYPE_4444_REVERSED) ? 4u : 5u,
+			(gdType == GD_TYPE_4444 || gdType == GD_TYPE_4444_REVERSED) ? 4u : (isPacked565 ? 6u : 5u),
+			(gdType == GD_TYPE_4444 || gdType == GD_TYPE_4444_REVERSED) ? 4u : 5u,
+			(gdType == GD_TYPE_4444 || gdType == GD_TYPE_4444_REVERSED) ? 4u : (isPacked565 ? 0u : 1u),
+		};
+
+		if (!isKnownOrder || (gdType != GD_TYPE_UNSIGNED_BYTE && !(isPacked && (hasAlpha || isPacked565))))
 		{
 			LogWarn("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.", gdFormat, gdType, width, height);
 			return false;
@@ -859,12 +878,33 @@ namespace scvk
 					memcpy(&word, sourceRow + x * 2u, 2u);
 
 					// The plain type packs the first component into the most significant
-					// bits, the reversed one into the least. A 4-bit value times 17 is
-					// its exact 8-bit equivalent, at most 255, so it fits a byte.
+					// bits, the reversed ones into the least. An n-bit value scales to 8
+					// bits rounded, at most 255, so it fits a byte; for 4 bits that is
+					// exactly times 17. A component of no bits reads as opaque.
+					uint32_t shift = isPackedRev ? 0u : 16u;
+
 					for (uint32_t i = 0; i < 4; i++)
 					{
-						uint32_t const shift = isPackedRev ? (i * 4u) : (12u - i * 4u);
-						components[i] = static_cast<uint8_t>(((word >> shift) & 0xFu) * 17u);
+						uint32_t const bits = componentBits[i];
+						if (bits == 0)
+						{
+							components[i] = 255u;
+							continue;
+						}
+
+						uint32_t const maximum = (1u << bits) - 1u;
+						if (!isPackedRev)
+						{
+							shift -= bits;
+						}
+
+						uint32_t const value = (word >> shift) & maximum;
+						components[i] = static_cast<uint8_t>((value * 255u + maximum / 2u) / maximum);
+
+						if (isPackedRev)
+						{
+							shift += bits;
+						}
 					}
 				}
 
@@ -876,6 +916,17 @@ namespace scvk
 				destinationRow[x * 4 + 1] = components[1];
 				destinationRow[x * 4 + 2] = isReversed ? components[0] : components[2];
 				destinationRow[x * 4 + 3] = components[3];
+			}
+		}
+
+		// Drop the alpha of a texture made without any
+		//
+		// A 16-bit R5G5B5 image arrives as 1_5_5_5 with its top bit undefined.
+		if (texture.isOpaque)
+		{
+			for (size_t i = 3; i < outStaged.size(); i += 4)
+			{
+				outStaged[i] = 255u;
 			}
 		}
 
@@ -1169,8 +1220,9 @@ namespace scvk
 
 		// Create the image
 		Texture texture;
-		texture.format = MapInternalFormat(gdInternalFormat, texture.isCompressed);
-		texture.width  = width;
+		texture.format   = MapInternalFormat(gdInternalFormat, texture.isCompressed);
+		texture.isOpaque = (gdInternalFormat == GD_INTERNAL_FORMAT_RGB5 || gdInternalFormat == GD_INTERNAL_FORMAT_RGB8);
+		texture.width    = width;
 		texture.height = height;
 		texture.levels = (levels == 0) ? 1 : levels;
 

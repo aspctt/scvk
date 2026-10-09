@@ -239,6 +239,10 @@ namespace scvk
 			bool            isCompressed = false;
 			bool            isLive       = false;
 
+			// Made with a format that has no alpha, so it samples as opaque whatever alpha
+			// the uploads carry, as on OpenGL and DirectX.
+			bool isOpaque = false;
+
 			// The texture pool its descriptor set came from, which is where it goes back.
 			uint32_t descriptorPoolIndex = 0;
 
