@@ -35,6 +35,8 @@
 #include <VertexFormatUtils.h>
 
 #include <algorithm>
+#include <emmintrin.h>
+#include <limits.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -142,6 +144,88 @@ namespace scvk
 			case 9:  return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
 			case 10: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
 			default: return VK_BLEND_FACTOR_ONE;
+			}
+		}
+
+		/** The lowest and highest of a run of 32-bit indices. */
+		void MeasureIndexRange(uint32_t const* indices, uint32_t count, uint32_t& outLowest, uint32_t& outHighest)
+		{
+			uint32_t lowest  = UINT32_MAX;
+			uint32_t highest = 0;
+
+			for (uint32_t i = 0; i < count; i++)
+			{
+				lowest  = std::min(lowest, indices[i]);
+				highest = std::max(highest, indices[i]);
+			}
+
+			outLowest  = lowest;
+			outHighest = highest;
+		}
+
+		/**
+		 * The lowest and highest of a run of 16-bit indices, eight at a time.
+		 *
+		 * Read one at a time, a draw's indices took several times longer to measure than
+		 * to copy. SSE2 compares 16-bit lanes only as signed numbers, so every index has its
+		 * top bit flipped on the way in, which maps 0 to 65535 onto -32768 to 32767 in the
+		 * same order, and flipped back on the way out.
+		 */
+		void MeasureIndexRange(uint16_t const* indices, uint32_t count, uint32_t& outLowest, uint32_t& outHighest)
+		{
+			// Take eight at a time
+			//
+			// The lanes start at the far ends of the range, so a run shorter than eight
+			// leaves them saying 65535 and 0. The intrinsic reads its unaligned source
+			// through a vector pointer.
+			__m128i const signFlip  = _mm_set1_epi16(SHRT_MIN);
+			__m128i       lowLanes  = _mm_set1_epi16(SHRT_MAX);
+			__m128i       highLanes = _mm_set1_epi16(SHRT_MIN);
+			uint32_t      i         = 0;
+
+			for (; i + 8u <= count; i += 8u)
+			{
+				__m128i const lanes = _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<__m128i const*>(indices + i)), signFlip);
+				lowLanes  = _mm_min_epi16(lowLanes, lanes);
+				highLanes = _mm_max_epi16(highLanes, lanes);
+			}
+
+			// Fold the eight lanes into the first
+			lowLanes  = _mm_min_epi16(lowLanes, _mm_shuffle_epi32(lowLanes, _MM_SHUFFLE(1, 0, 3, 2)));
+			lowLanes  = _mm_min_epi16(lowLanes, _mm_shuffle_epi32(lowLanes, _MM_SHUFFLE(2, 3, 0, 1)));
+			lowLanes  = _mm_min_epi16(lowLanes, _mm_shufflelo_epi16(lowLanes, _MM_SHUFFLE(2, 3, 0, 1)));
+			highLanes = _mm_max_epi16(highLanes, _mm_shuffle_epi32(highLanes, _MM_SHUFFLE(1, 0, 3, 2)));
+			highLanes = _mm_max_epi16(highLanes, _mm_shuffle_epi32(highLanes, _MM_SHUFFLE(2, 3, 0, 1)));
+			highLanes = _mm_max_epi16(highLanes, _mm_shufflelo_epi16(highLanes, _MM_SHUFFLE(2, 3, 0, 1)));
+
+			// Flip the sign back
+			//
+			// The extract zero-extends the lane into an int, so it is never negative.
+			uint32_t lowest  = static_cast<uint32_t>(_mm_extract_epi16(lowLanes, 0)) ^ 0x8000u;
+			uint32_t highest = static_cast<uint32_t>(_mm_extract_epi16(highLanes, 0)) ^ 0x8000u;
+
+			// Take the rest one at a time
+			for (; i < count; i++)
+			{
+				lowest  = std::min(lowest, uint32_t{ indices[i] });
+				highest = std::max(highest, uint32_t{ indices[i] });
+			}
+
+			outLowest  = lowest;
+			outHighest = highest;
+		}
+
+		/** Turns each quad of four indices into two triangles, at the same width. */
+		template <typename Index>
+		void ExpandQuadIndices(Index const* indices, uint32_t quads, Index* output)
+		{
+			for (uint32_t quad = 0; quad < quads; quad++)
+			{
+				Index const* const corner   = indices + quad * 4u;
+				Index* const       triangle = output + quad * 6u;
+
+				triangle[0] = corner[0]; triangle[1] = corner[1]; triangle[2] = corner[2];
+				triangle[3] = corner[0]; triangle[4] = corner[2]; triangle[5] = corner[3];
 			}
 		}
 	}
@@ -979,16 +1063,17 @@ namespace scvk
 		std::copy(offsets + firstChanged, offsets + lastChanged + 1u, boundState.vertexOffsets + firstChanged);
 	}
 
-	void VulkanBackend::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset)
+	void VulkanBackend::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 	{
-		if (buffer == boundState.indexBuffer && offset == boundState.indexOffset)
+		if (buffer == boundState.indexBuffer && offset == boundState.indexOffset && type == boundState.indexType)
 		{
 			return;
 		}
 
-		vkCmdBindIndexBuffer(commandBuffer, buffer, offset, VK_INDEX_TYPE_UINT32);
+		vkCmdBindIndexBuffer(commandBuffer, buffer, offset, type);
 		boundState.indexBuffer = buffer;
 		boundState.indexOffset = offset;
+		boundState.indexType   = type;
 	}
 
 	void VulkanBackend::UpdateDrawRecord(DrawRecord const& record)
@@ -1273,7 +1358,7 @@ namespace scvk
 			return;
 		}
 
-		BindIndexBuffer(quadIndexBuffer, 0);
+		BindIndexBuffer(quadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdDrawIndexed(commandBuffer, quads * 6u, 1, 0, 0, 0);
 	}
 
@@ -1310,15 +1395,16 @@ namespace scvk
 		uint32_t const* const wideIndices   = static_cast<uint32_t const*>(indices);
 		uint16_t const* const narrowIndices = static_cast<uint16_t const*>(indices);
 
-		uint32_t lowest  = UINT32_MAX;
+		uint32_t lowest  = 0;
 		uint32_t highest = 0;
 
-		for (uint32_t i = 0; i < indexCount; i++)
+		if (isIndex32Bit)
 		{
-			uint32_t const index = isIndex32Bit ? wideIndices[i] : narrowIndices[i];
-
-			lowest  = std::min(lowest, index);
-			highest = std::max(highest, index);
+			MeasureIndexRange(wideIndices, indexCount, lowest, highest);
+		}
+		else
+		{
+			MeasureIndexRange(narrowIndices, indexCount, lowest, highest);
 		}
 
 		// Count the indices, expanded when they describe quads
@@ -1334,7 +1420,8 @@ namespace scvk
 			return;
 		}
 
-		size_t const indexBytes = size_t{ emitted } * sizeof(uint32_t);
+		size_t const indexSize  = isIndex32Bit ? sizeof(uint32_t) : sizeof(uint16_t);
+		size_t const indexBytes = size_t{ emitted } * indexSize;
 
 		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, indexBytes))
 		{
@@ -1360,43 +1447,22 @@ namespace scvk
 			return;
 		}
 
-		// Write them as 32-bit indices
+		// Write them as wide as the game sent them
 		//
-		// The arena hands out bytes, aligned for 32-bit indices. Narrow indices are
-		// widened rather than kept narrow, so one buffer and one index type serve every
-		// draw regardless of what the game sent.
-		uint32_t* const output = reinterpret_cast<uint32_t*>(indexDestination);
-
-		if (isQuadList)
+		// Vulkan draws 16-bit indices as readily as 32-bit ones. Widening them took a
+		// second pass over every index and doubled what was written. The arena hands out
+		// bytes, aligned for either width.
+		if (!isQuadList)
 		{
-			uint32_t const quads = indexCount / 4u;
-			for (uint32_t quad = 0; quad < quads; quad++)
-			{
-				uint32_t corner[4];
-				for (uint32_t c = 0; c < 4; c++)
-				{
-					uint32_t const at = quad * 4u + c;
-					corner[c] = isIndex32Bit ? wideIndices[at] : narrowIndices[at];
-				}
-
-				output[quad * 6u + 0] = corner[0];
-				output[quad * 6u + 1] = corner[1];
-				output[quad * 6u + 2] = corner[2];
-				output[quad * 6u + 3] = corner[0];
-				output[quad * 6u + 4] = corner[2];
-				output[quad * 6u + 5] = corner[3];
-			}
+			memcpy(indexDestination, indices, indexBytes);
 		}
 		else if (isIndex32Bit)
 		{
-			memcpy(output, indices, indexBytes);
+			ExpandQuadIndices(wideIndices, indexCount / 4u, reinterpret_cast<uint32_t*>(indexDestination));
 		}
 		else
 		{
-			for (uint32_t i = 0; i < indexCount; i++)
-			{
-				output[i] = narrowIndices[i];
-			}
+			ExpandQuadIndices(narrowIndices, indexCount / 4u, reinterpret_cast<uint16_t*>(indexDestination));
 		}
 
 		// Bind the state and draw
@@ -1405,7 +1471,7 @@ namespace scvk
 			return;
 		}
 
-		BindIndexBuffer(indexBuffer, indexOffset);
+		BindIndexBuffer(indexBuffer, indexOffset, isIndex32Bit ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
 
 		// Offset the indices back to the start of the copied slice
 		//

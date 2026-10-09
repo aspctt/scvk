@@ -170,6 +170,7 @@ namespace scvk
 			VkDeviceSize      vertexOffsets[2] = {};
 			VkBuffer          indexBuffer      = VK_NULL_HANDLE;
 			VkDeviceSize      indexOffset      = 0;
+			VkIndexType       indexType        = VK_INDEX_TYPE_UINT32;
 			bool              hasViewport      = false;
 			VkViewport        viewport{};
 			VkRect2D          scissor{};
@@ -833,8 +834,8 @@ namespace scvk
 		/** Binds the vertex copy and the draw record's copy, skipping either already bound. */
 		void BindVertexBuffers(VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VkBuffer recordBuffer, VkDeviceSize recordOffset);
 
-		/** Binds 32-bit indices, unless they are already bound. */
-		void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset);
+		/** Binds indices of either width, unless they are already bound. */
+		void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset, VkIndexType type);
 
 		/** Changes the draw record, so the next draw writes a fresh copy of it. */
 		void UpdateDrawRecord(DrawRecord const& record);
