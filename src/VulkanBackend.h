@@ -24,6 +24,7 @@
 #include "VulkanApi.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace scvk
@@ -31,21 +32,141 @@ namespace scvk
 	//// Types
 
 	/**
+	 * What a plugin observing the frame is handed, and what the frame callback API passes
+	 * on. Valid only for the duration of the call that produced it.
+	 */
+	struct ExternalFrame
+	{
+		VkInstance       instance       = VK_NULL_HANDLE;
+		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+		VkDevice         device         = VK_NULL_HANDLE;
+		VkQueue          queue          = VK_NULL_HANDLE;
+		uint32_t         queueFamily    = 0;
+
+		// Recording, outside any render pass. The back buffer is in
+		// COLOR_ATTACHMENT_OPTIMAL and has to be left that way.
+		VkCommandBuffer  commandBuffer  = VK_NULL_HANDLE;
+		VkImage          backBuffer     = VK_NULL_HANDLE;
+		VkImageView      backBufferView = VK_NULL_HANDLE;
+		VkFormat         format         = VK_FORMAT_UNDEFINED;
+		uint32_t         width          = 0;
+		uint32_t         height         = 0;
+	};
+
+	/** How many lights the lighting extension has, and the lit vertex carries. */
+	constexpr uint32_t LIT_LIGHT_COUNT = 8;
+
+	/**
+	 * A vertex of a draw the lighting extension lights per pixel.
+	 *
+	 * Drawn under LIT_VERTEX_FORMAT, which stands in for the game's vertex format. The
+	 * colour holds the lighting that does not depend on direction, as BGRA like the game's;
+	 * the rest lets the fragment stage add each light's diffuse term per pixel. Disabled
+	 * lights have a black colour. See cVKDriver::LightVertices.
+	 */
+	struct LitVertex
+	{
+		float   position[3];
+		uint8_t colour[4];
+		float   coordinates[2][2];
+
+		// Eye space, normalised; zero for a vertex without a normal
+		float normal[3];
+
+		// Eye space, from the vertex to each light; the light's direction for a directional one
+		float toLight[LIT_LIGHT_COUNT][3];
+
+		// Each light's diffuse colour times the diffuse material, RGBA
+		uint8_t lightColour[LIT_LIGHT_COUNT][4];
+	};
+
+	/** The vertex format a LitVertex draw is made under, outside the game's packed ones. */
+	constexpr uint32_t LIT_VERTEX_FORMAT = 0x7f4c4954u;
+
+	/** A vertex of a shadow caster: world or model position, then its texture coordinate. */
+	struct ShadowVertex
+	{
+		float position[3];
+		float uv[2];
+	};
+
+	/** One draw into the shadow map. */
+	/** How a caster's indices are drawn into the shadow map. */
+	enum ShadowCasterTopology : uint32_t
+	{
+		SHADOW_CASTER_TRIANGLES = 0,
+		SHADOW_CASTER_LINES     = 1,
+		SHADOW_CASTER_POINTS    = 2,
+	};
+
+	struct ShadowCasterDraw
+	{
+		// Into the vertices and indices handed over with the batch.
+		uint32_t firstIndex   = 0;
+		uint32_t indexCount   = 0;
+		int32_t  vertexOffset = 0;
+
+		// The texture whose alpha cuts the silhouette, 0 for a solid caster, and the
+		// filter and wrap to sample it with, in the game's numbering.
+		uint32_t texture              = 0;
+		uint32_t samplerParameters[4] = { 1, 1, 2, 2 };
+
+		// The push constants: a light matrix, the two texture rows a 2D sample reads, then
+		// four floats whose meaning depends on the pipeline. See shadow.frag.
+		float constants[32] = {};
+
+		// Registry casters project their texture from the world position instead of
+		// reading the vertex coordinates. See the shadow shaders.
+		bool isRegistry = false;
+
+		// Lists of triangles, lines or points, as the game drew the caster. Registry
+		// casters are always triangles.
+		uint32_t topology = SHADOW_CASTER_TRIANGLES;
+	};
+
+	/** What the shadow composite reads, laid out as the composite shader declares its uniform block. */
+	struct ShadowCompositeConstants
+	{
+		float lightMatrix[16];
+		float material[4];
+		float projection0[4];
+		float projection1[4];
+		float viewport[4];
+		float tone[4];
+		float sun[4];
+		float eyeToWorld[16];
+		float terrainAxes[4];
+		float terrainGrid[4];
+		float terrainShade[4];
+		float terrainCell[4];
+	};
+
+	/**
 	 * The Vulkan device, swapchain and fixed function emulation behind the driver.
 	 *
 	 * The driver turns the game's OpenGL-shaped calls into state; this turns that state
-	 * into Vulkan work: pipelines keyed on vertex format, blend and depth state, push
-	 * constants for everything that changes per draw, textures with their samplers, and
-	 * the offscreen buffer regions the city view is saved into and restored from.
+	 * into Vulkan work: pipelines keyed on vertex format, blend, depth and stencil state,
+	 * push constants for everything that changes per draw, textures with their samplers,
+	 * and the offscreen buffer regions the city view is saved into and restored from.
+	 *
+	 * The game draws into a back buffer of scvk's own, the size of the video mode, that
+	 * survives from one frame to the next as a DirectX back buffer does: the game only
+	 * redraws what changed, and the rest of the picture has to still be there. Presenting
+	 * copies it into the swapchain image, scaling when the window is another size.
+	 *
+	 * Two frames are in flight. The CPU records one while the GPU draws the one before,
+	 * and the per-frame memory is handed out from rings that wait for a frame only when
+	 * they would otherwise overwrite something it still reads.
 	 *
 	 * The source is split by concern: VulkanBackend.cpp holds the device, swapchain,
 	 * frames and captures, VulkanBackend_Draw.cpp the pipelines and draws,
-	 * VulkanBackend_Textures.cpp the textures and samplers, and VulkanBackend_Regions.cpp
-	 * the depth buffer and buffer regions.
+	 * VulkanBackend_Textures.cpp the textures and samplers, VulkanBackend_Regions.cpp the
+	 * depth buffer and buffer regions, and VulkanBackend_Effects.cpp the blits, the shadow
+	 * passes and what ReShade and other plugins are handed.
 	 *
 	 * Every entry point is safe to call when initialisation failed. The game cannot be
 	 * allowed to crash because a machine has no Vulkan driver, so a dead backend simply
-	 * does nothing and says so once in the log.
+	 * does nothing and says so once in the log. A lost device is rebuilt instead.
 	 */
 	class VulkanBackend
 	{
@@ -84,13 +205,24 @@ namespace scvk
 			// Whether back faces are culled, pipeline state as well.
 			bool     isFaceCullingEnabled;
 
+			// The stencil test and its operations, in the game's numbering. The reference
+			// and masks are dynamic state.
+			bool     isStencilTestEnabled;
+			uint32_t stencilComparison;
+			uint32_t stencilFailOperation;
+			uint32_t stencilDepthFailOperation;
+			uint32_t stencilPassOperation;
+
+			// Flat shading takes the colour of a primitive's first vertex, as Direct3D does,
+			// which needs shader variants whose colour is not interpolated.
+			bool     isFlatShaded;
+
 			bool operator==(PipelineKey const& other) const = default;
 		};
 
-		struct PipelineEntry
+		struct PipelineKeyHash
 		{
-			PipelineKey key;
-			VkPipeline  pipeline;
+			size_t operator()(PipelineKey const& key) const;
 		};
 
 		/** Where a format's attributes live, decoded once per format. */
@@ -142,6 +274,16 @@ namespace scvk
 			float fogColour[4]      = { 0.0f, 0.0f, 0.0f, 0.0f };
 			float stageRows[16]     = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
 			float stageSources[4]   = { 0.0f, 1.0f, 0.0f, 0.0f };
+		};
+
+		/** The push constant block of the geometry pipelines, laid out as both shader stages declare it. */
+		struct PushConstantBlock
+		{
+			float    transform[16];
+			float    fragmentState[4];
+			uint32_t combinerState[4];
+			float    constantColour[4];
+			float    sceneTint[4];
 		};
 
 		/** A stretch of a texture block, by offset and size. */
@@ -206,6 +348,17 @@ namespace scvk
 			bool            isCompressed = false;
 			bool            isLive       = false;
 
+			// A name handed out by ReserveTexture that no image backs yet. The game's
+			// GenTextures and TexImage2D path names a texture before saying its size.
+			bool            isReserved   = false;
+
+			// The game's internal format, kept so a lost device can rebuild the texture.
+			uint32_t        internalFormat = 0;
+
+			// Distinguishes this texture from whatever reuses its handle later, so a draw
+			// captured for the shadow map can tell it still names the same picture.
+			uint32_t        serial = 0;
+
 			// The texture pool its descriptor set came from, which is where it goes back.
 			uint32_t descriptorPoolIndex = 0;
 
@@ -238,6 +391,7 @@ namespace scvk
 			VkImage         image               = VK_NULL_HANDLE;
 			ImageMemory     memory;
 			VkImageView     view                = VK_NULL_HANDLE;
+			VkImageView     secondView          = VK_NULL_HANDLE;
 			VkDescriptorSet descriptor          = VK_NULL_HANDLE;
 			uint32_t        descriptorPoolIndex = 0;
 		};
@@ -282,23 +436,40 @@ namespace scvk
 			bool           hasContent = false;
 		};
 
+		/** An image scvk renders into or samples, with the views it needs. */
+		struct RenderImage
+		{
+			VkImage        image      = VK_NULL_HANDLE;
+			VkDeviceMemory memory     = VK_NULL_HANDLE;
+			VkImageView    view       = VK_NULL_HANDLE;
+			VkImageView    secondView = VK_NULL_HANDLE;
+			VkFormat       format     = VK_FORMAT_UNDEFINED;
+			uint32_t       width      = 0;
+			uint32_t       height     = 0;
+			VkImageLayout  layout     = VK_IMAGE_LAYOUT_UNDEFINED;
+		};
+
 		/** One host-visible buffer of an arena, mapped for its whole life. */
 		struct ArenaBlock
 		{
 			VkBuffer       buffer = VK_NULL_HANDLE;
 			VkDeviceMemory memory = VK_NULL_HANDLE;
 			void*          mapped = nullptr;
+
+			// The last frame that took space in it. It cannot be rewound until the GPU has
+			// finished that frame.
+			uint64_t       lastFrame = 0;
 		};
 
 		/**
-		 * Per-frame vertex or index data, bump allocated and rewound each frame. The draw
-		 * is recorded now and runs later, so the bytes have to stay put until the submit
-		 * completes.
+		 * Per-frame vertex, index, staging or uniform data, handed out from a ring of
+		 * mapped blocks. A draw is recorded now and runs later, so the bytes have to stay
+		 * put until the GPU has finished the frame that reads them.
 		 *
-		 * Split into blocks and grown a block at a time. A single fixed buffer overflowed
-		 * at the widest zoom, where one frame redraws the whole city, and every draw past
-		 * that point was dropped, which left holes in the saved scene. A frame that fills
-		 * every block is submitted part way and the arena reused.
+		 * A frame carries on in the block the last one stopped in, and moves to the next
+		 * block when that one is full, waiting first for the frame that last wrote there
+		 * if the GPU has not finished it, or adding a block while there is room for one.
+		 * Only a single frame that fills every block has to be submitted part way.
 		 */
 		struct Arena
 		{
@@ -309,6 +480,30 @@ namespace scvk
 			std::vector<ArenaBlock> blocks;
 			size_t                  currentBlock  = 0;
 			VkDeviceSize            usedBytes     = 0;
+		};
+
+		/**
+		 * What one frame of the two in flight owns: the command buffers it records, the
+		 * fence its last submit signals, the semaphore its swapchain image arrives on, and
+		 * what it retired, which waits for that fence.
+		 */
+		struct FrameSlot
+		{
+			VkCommandPool                commandPool    = VK_NULL_HANDLE;
+			std::vector<VkCommandBuffer> commandBuffers;
+			uint32_t                     usedCommandBuffers = 0;
+			VkFence                      fence          = VK_NULL_HANDLE;
+			VkSemaphore                  imageAvailable = VK_NULL_HANDLE;
+			VkDescriptorPool             transientPool  = VK_NULL_HANDLE;
+			uint32_t                     transientSets  = 0;
+			std::vector<RetiredImage>    retiredImages;
+			std::vector<VkBuffer>        retiredBuffers;
+			std::vector<VkDeviceMemory>  retiredMemory;
+
+			// The frame whose work the fence stands for, and whether that work is still to
+			// be waited for.
+			uint64_t                     serial         = 0;
+			bool                         isFencePending = false;
 		};
 
 		/**
@@ -346,16 +541,47 @@ namespace scvk
 			FramePhase     interruptedPhase;
 		};
 
+		/** What the command buffer being recorded already has bound, so a draw binds only what changed. */
+		struct BindingCache
+		{
+			VkPipeline      pipeline         = VK_NULL_HANDLE;
+			VkPipelineLayout layout          = VK_NULL_HANDLE;
+			VkDescriptorSet sets[4]          = {};
+			VkBuffer        vertexBuffer     = VK_NULL_HANDLE;
+			VkDeviceSize    vertexOffset     = 0;
+			VkBuffer        recordBuffer     = VK_NULL_HANDLE;
+			VkDeviceSize    recordOffset     = 0;
+			VkBuffer        indexBuffer      = VK_NULL_HANDLE;
+			VkViewport      viewport         = {};
+			VkRect2D        scissor          = {};
+			bool            hasViewport      = false;
+			bool            hasPushConstants = false;
+			PushConstantBlock pushConstants  = {};
+			int32_t         depthBias        = INT32_MIN;
+			uint32_t        stencilReference = UINT32_MAX;
+			uint32_t        stencilCompareMask = UINT32_MAX;
+			uint32_t        stencilWriteMask = UINT32_MAX;
+			bool            hasStencilState  = false;
+		};
+
+		/** Which render pass, if any, the command buffer is inside. */
+		enum class ActivePass
+		{
+			None,
+			Main,
+			ColourOnly,
+		};
+
 		//// Constants
 
+	public:
+		/** Frames the CPU may record ahead of the GPU. */
+		static constexpr uint32_t FRAMES_IN_FLIGHT = 2;
+
+	private:
 		// Depth is read and written in both fragment test stages, early when the shader
 		// cannot discard and late when it can, so a dependency on depth names both.
 		static constexpr VkPipelineStageFlags DEPTH_STAGES = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-
-		// Where a frame waits for its swapchain image, and so where the first barrier on
-		// that image has to start for the two to form a chain. A frame's first use of the
-		// image is either a copy or a draw.
-		static constexpr VkPipelineStageFlags ACQUIRE_STAGES = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
 		// Distinct filter and wrap combinations; the game uses a handful.
 		static constexpr size_t MAXIMUM_SAMPLERS = 64;
@@ -366,44 +592,97 @@ namespace scvk
 		VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 		VkInstance               instance       = VK_NULL_HANDLE;
 		VkPhysicalDevice         physicalDevice = VK_NULL_HANDLE;
+		VkPhysicalDeviceProperties physicalDeviceProperties{};
 		VkDevice                 device         = VK_NULL_HANDLE;
 		VkQueue                  queue          = VK_NULL_HANDLE;
 		uint32_t                 queueFamily    = UINT32_MAX;
 		std::string              deviceName;
 		std::string              apiVersion;
 		bool                     isDead         = false;
+		VkPipelineCache          pipelineCache  = VK_NULL_HANDLE;
+
+		// A lost device is torn down and rebuilt at the next frame boundary, backing off
+		// between attempts that fail. The generation counts the devices made, so a plugin
+		// holding objects of an old one can tell.
+		bool     isDeviceLost           = false;
+		bool     isRecoveringDevice     = false;
+		uint32_t deviceRecoveryFailures = 0;
+		uint64_t nextDeviceRecoveryTick = 0;
+		uint32_t deviceGeneration       = 0;
+		void   (*beforeDeviceDestroyHook)(void* context) = nullptr;
+		void*    beforeDeviceDestroyHookContext          = nullptr;
+
+		// Pipelines made since the cache file was last written.
+		uint32_t unsavedPipelines       = 0;
+
+		// Whether the window is in exclusive fullscreen, which the driver says before the
+		// device is made, and whether the swapchain took the flip model's extra image.
+		bool isExclusiveFullscreen = false;
+		bool isFlipModel           = true;
+
+		// Whether the instance can and the device does take a fullscreen policy for the
+		// swapchain. See CreateSwapchain.
+		bool canAskFullscreenPolicy     = false;
+		bool hasFullscreenPolicyControl = false;
 
 		// Vulkan only promises 4096 allocations, so every one is counted against the
 		// device's own limit.
 		uint32_t maximumMemoryAllocations = 0;
 		uint32_t liveMemoryAllocations    = 0;
 
-		// The window, the swapchain and what renders into it
+		// The memory type the arenas take, and whether it is on the device. A
+		// device-local type the CPU can write, which resizable BAR offers, saves the GPU
+		// reading every vertex across the bus.
+		uint32_t arenaMemoryType          = UINT32_MAX;
+		bool     isArenaMemoryDeviceLocal = false;
+
+		// The window, the swapchain and the present
 		void*                      windowHandle    = nullptr;
 		VkSurfaceKHR               surface         = VK_NULL_HANDLE;
 		VkSwapchainKHR             swapchain       = VK_NULL_HANDLE;
 		VkFormat                   swapchainFormat = VK_FORMAT_UNDEFINED;
 		VkExtent2D                 swapchainExtent{};
+		VkPresentModeKHR           presentMode     = VK_PRESENT_MODE_FIFO_KHR;
 		std::vector<VkImage>       swapchainImages;
-		std::vector<VkImageView>   swapchainImageViews;
-		std::vector<VkFramebuffer> framebuffers;
-		VkRenderPass               renderPass      = VK_NULL_HANDLE;
-		uint32_t                   imageIndex      = 0;
+		std::vector<VkSemaphore>   renderFinishedSemaphores;
+		bool                       isPresentationPaused = false;
+		VkResult                   lastPresentResult    = VK_SUCCESS;
 
-		// The frame being recorded. One frame is in flight at a time.
-		VkCommandPool   commandPool             = VK_NULL_HANDLE;
-		VkCommandBuffer commandBuffer           = VK_NULL_HANDLE;
-		VkSemaphore     imageAvailableSemaphore = VK_NULL_HANDLE;
-		VkSemaphore     renderFinishedSemaphore = VK_NULL_HANDLE;
-		VkFence         frameFence              = VK_NULL_HANDLE;
-		VkImageLayout   currentLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-		bool            isFrameActive           = false;
-		bool            isRenderPassActive      = false;
-		uint64_t        presentedFrames         = 0;
+		// What the game draws into. The back buffer and depth buffer are the size of the
+		// video mode and outlive the swapchain, which is the size of the window.
+		uint32_t      renderWidth  = 0;
+		uint32_t      renderHeight = 0;
+		RenderImage   backBuffer;
+		RenderImage   depthBuffer;
+		bool          hasStencil          = false;
+		bool          isDepthSampleable   = false;
+		VkRenderPass  renderPass          = VK_NULL_HANDLE;
+		VkRenderPass  colourOnlyPass      = VK_NULL_HANDLE;
+		VkFramebuffer framebuffer         = VK_NULL_HANDLE;
+		VkFramebuffer colourOnlyFramebuffer = VK_NULL_HANDLE;
+		ActivePass    activePass          = ActivePass::None;
 
-		// Whether part of the frame has already been submitted, which consumed the wait for
-		// its swapchain image. A readback submits the frame early to wait for it.
-		bool            hasSubmittedImageWait   = false;
+		// Set when something outside scvk, ReShade or a frame callback, last touched the
+		// back buffer, so the next use waits for it.
+		bool          isExternalWorkPending = false;
+
+		// Objects retired between frames. The frame before may still be on the GPU, so
+		// they join the next frame's slot once it has been flushed, rather than the slot
+		// about to be flushed.
+		std::vector<RetiredImage> pendingRetiredImages;
+
+		// The frames. The serial counts frames begun; the completed one is the newest the
+		// GPU is known to have finished.
+		FrameSlot       frameSlots[FRAMES_IN_FLIGHT];
+		uint32_t        currentSlot       = 0;
+		uint64_t        frameSerial       = 1;
+		uint64_t        completedSerial   = 0;
+		VkCommandBuffer commandBuffer     = VK_NULL_HANDLE;
+		bool            isFrameActive     = false;
+		uint64_t        presentedFrames   = 0;
+
+		// What the command buffer being recorded has bound.
+		BindingCache    bound;
 
 		// The performance counter at the last heartbeat, for the frame rate it reports.
 		int64_t lastHeartbeatTicks = 0;
@@ -418,6 +697,11 @@ namespace scvk
 		// The phase clock. The running frame's time is split between the phases as it
 		// passes, then added at its present to the totals over every frame and over the
 		// slow ones, and kept when it is the slowest, until the next heartbeat.
+		//
+		// Only at the debug level, which is the only one its report reaches: a draw passes
+		// through several phases, and reading the clock for each, over a hundred thousand
+		// draws in a city redraw at the widest zoom, is time the player would lose.
+		bool       isPhaseTimingEnabled                      = false;
 		FramePhase activePhase                               = FRAME_PHASE_GAME;
 		int64_t    phaseStartTicks                           = 0;
 		int64_t    framePhaseTicks[FRAME_PHASE_COUNT]        = {};
@@ -425,33 +709,27 @@ namespace scvk
 		int64_t    slowFramesPhaseTicks[FRAME_PHASE_COUNT]   = {};
 		int64_t    slowestFramePhaseTicks[FRAME_PHASE_COUNT] = {};
 
-		// Reused when a Flush arrives with no frame started, so the swapchain keeps
-		// cycling instead of stalling.
-		float lastClearColour[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-
-		// Staging memory for pixel uploads. Commands are recorded now and executed later,
-		// so the bytes have to stay put until the submit completes. Each blit takes the
-		// next slice and the whole thing is rewound when a frame begins.
-		VkBuffer       stagingBuffer = VK_NULL_HANDLE;
-		VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-		VkDeviceSize   stagingSize   = 0;
-		VkDeviceSize   stagingUsed   = 0;
-		void*          stagingMapped = nullptr;
-
-		// Per-frame geometry, and the static indices turning consecutive quads into
-		// triangle pairs.
+		// Per-frame geometry, staging and uniforms, and the static indices turning
+		// consecutive quads into triangle pairs.
 		Arena          vertexArena;
 		Arena          indexArena;
+		Arena          stagingArena;
+		Arena          uniformArena;
 		VkBuffer       quadIndexBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory quadIndexMemory = VK_NULL_HANDLE;
 		uint32_t       quadCapacity    = 0;
 
-		// Shaders and pipelines. The vertex modules are indexed by hasColour * 3 +
-		// textureCoordinateSets.
-		VkShaderModule             vertexModules[6] = {};
-		VkShaderModule             fragmentModule   = VK_NULL_HANDLE;
-		VkPipelineLayout           pipelineLayout   = VK_NULL_HANDLE;
-		std::vector<PipelineEntry> pipelines;
+		// Shaders and pipelines. The vertex modules are indexed by flat * 6 + hasColour * 3
+		// + textureCoordinateSets, the fragment modules by flat.
+		VkShaderModule             vertexModules[13]  = {};
+		VkShaderModule             fragmentModules[3] = {};
+
+		// Whether the device takes the lit variant's 29 vertex attributes and its outputs
+		bool isPerPixelLightingSupported = false;
+		VkPipelineLayout           pipelineLayout     = VK_NULL_HANDLE;
+		std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
+		PipelineKey                lastPipelineKey{};
+		VkPipeline                 lastPipeline       = VK_NULL_HANDLE;
 
 		// The combined transform, already corrected into Vulkan clip space.
 		float transform[16] = {
@@ -484,6 +762,19 @@ namespace scvk
 		uint32_t blendDestinationFactor = 0;
 		bool     isColourWriteEnabled   = true;
 		bool     isFaceCullingEnabled   = false;
+		bool     isFlatShaded           = false;
+
+		// The stencil test, which the depth buffer carries when its format has room, and
+		// the polygon offset, a depth bias in the depth buffer's own units.
+		bool     isStencilTestEnabled      = false;
+		uint32_t stencilComparison         = 7;
+		uint32_t stencilReference          = 0;
+		uint32_t stencilReadMask           = 0xff;
+		uint32_t stencilWriteMask          = 0xff;
+		uint32_t stencilFailOperation      = 0;
+		uint32_t stencilDepthFailOperation = 0;
+		uint32_t stencilPassOperation      = 0;
+		int32_t  polygonOffset             = 0;
 
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
@@ -519,20 +810,6 @@ namespace scvk
 		bool shouldShowPassColours = false;
 		int  debugChannel          = -1;
 
-		// The depth attachment. The layout is pending when the image has just been
-		// created and is still UNDEFINED; whichever comes first, the next render pass or
-		// the game's next depth clear, moves it.
-		VkImage        depthImage            = VK_NULL_HANDLE;
-		VkDeviceMemory depthMemory           = VK_NULL_HANDLE;
-		VkImageView    depthView             = VK_NULL_HANDLE;
-		VkFormat       depthFormat           = VK_FORMAT_UNDEFINED;
-		bool           isDepthLayoutPending  = false;
-
-		// A copy of each frame as it is presented, sized with the swapchain. The game
-		// reads the screen back between frames for a photo, expecting the frame it last
-		// showed, and a presented swapchain image cannot be read.
-		BufferRegion   lastFrame;
-
 		// Descriptor layouts: one set per texture, and one per sampler.
 		VkDescriptorSetLayout imageSetLayout   = VK_NULL_HANDLE;
 		VkDescriptorSetLayout samplerSetLayout = VK_NULL_HANDLE;
@@ -547,18 +824,19 @@ namespace scvk
 		// of needing its own shader and pipeline.
 		std::vector<Texture>        textures;
 		std::vector<TextureBlock>   textureBlocks;
-		std::vector<RetiredImage>   retiredImages;
 		std::vector<SamplerEntry>   samplers;
 		uint32_t                    currentTexture  = 0;
 		uint32_t                    currentTexture1 = 0;
+		uint32_t                    nextTextureSerial = 1;
 
 		// Each stage's magnification filter, minification filter, wrap S and wrap T, in the
 		// game's own numbering. They belong to the stage, so binding another texture there
 		// leaves them alone. Linear with repeat until the game says otherwise.
 		uint32_t                    stageParameters[2][4] = { { 1, 1, 3, 3 }, { 1, 1, 3, 3 } };
 
-		// Commands run outside the frame and waited for at once, which reading the last
-		// frame back between frames needs.
+		// Commands run outside the frame and waited for at once, which reading the back
+		// buffer between frames needs.
+		VkCommandPool               utilityCommandPool  = VK_NULL_HANDLE;
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
 
@@ -595,6 +873,8 @@ namespace scvk
 		VkDeviceSize vertexUploadBytes       = 0;
 		VkDeviceSize frameVertexBytes        = 0;
 		VkDeviceSize largestFrameVertexBytes = 0;
+		uint32_t     arenaWaits              = 0;
+		uint32_t     partialSubmits          = 0;
 
 		// Handle n is index n - 1, matching what the game is handed back, and leaving 0
 		// free to mean failure.
@@ -613,28 +893,89 @@ namespace scvk
 		bool        isRegionCaptureDepth     = false;
 		std::string regionCapturePath;
 
+		// The blits: an image that only grows, holding the latest one's pixels, with the
+		// pipelines that draw it as a quad, opaque or blended.
+		RenderImage     blitImage;
+		VkDescriptorSet blitImageSet         = VK_NULL_HANDLE;
+		uint32_t        blitImagePoolIndex   = 0;
+		VkShaderModule  blitVertexModule     = VK_NULL_HANDLE;
+		VkShaderModule  blitFragmentModule   = VK_NULL_HANDLE;
+		VkPipelineLayout blitPipelineLayout  = VK_NULL_HANDLE;
+		VkPipeline      blitPipelines[2]     = {};
+
+		// Fixed samplers for the passes of scvk's own: point and linear, clamped and
+		// repeating, each with the set that binds it.
+		VkSampler       pointClampSampler    = VK_NULL_HANDLE;
+		VkSampler       linearClampSampler   = VK_NULL_HANDLE;
+		VkSampler       linearWrapSampler    = VK_NULL_HANDLE;
+		VkDescriptorSet pointClampSet        = VK_NULL_HANDLE;
+		VkDescriptorSet linearClampSet       = VK_NULL_HANDLE;
+		VkDescriptorSet linearWrapSet        = VK_NULL_HANDLE;
+
+		// The shadow map and what draws into it and composites it.
+		RenderImage           shadowMap;
+		VkRenderPass          shadowPass                 = VK_NULL_HANDLE;
+		VkFramebuffer         shadowFramebuffer          = VK_NULL_HANDLE;
+		VkShaderModule        shadowVertexModule         = VK_NULL_HANDLE;
+		VkShaderModule        shadowFragmentModule       = VK_NULL_HANDLE;
+		VkShaderModule        fullscreenVertexModule     = VK_NULL_HANDLE;
+		VkShaderModule        compositeFragmentModule    = VK_NULL_HANDLE;
+		VkPipelineLayout      shadowPipelineLayout       = VK_NULL_HANDLE;
+		VkPipeline            shadowCasterPipeline       = VK_NULL_HANDLE;
+		VkPipeline            shadowLinePipeline         = VK_NULL_HANDLE;
+		VkPipeline            shadowPointPipeline        = VK_NULL_HANDLE;
+		VkPipeline            shadowRegistryPipeline     = VK_NULL_HANDLE;
+		VkDescriptorSetLayout compositeSetLayout         = VK_NULL_HANDLE;
+		VkPipelineLayout      compositePipelineLayout    = VK_NULL_HANDLE;
+		VkPipeline            compositePipeline          = VK_NULL_HANDLE;
+		RenderImage           terrainCeilingImage;
+		RenderImage           terrainVertexImage;
+		bool                  isShadowMapPassActive      = false;
+		bool                  hasShadowResources         = false;
+
+		// The scene depth re-encoded for ReShade's DEPTH semantic.
+		RenderImage           sceneDepthImage;
+		VkRenderPass          sceneDepthPass             = VK_NULL_HANDLE;
+		VkFramebuffer         sceneDepthFramebuffer      = VK_NULL_HANDLE;
+		VkShaderModule        sceneDepthFragmentModule   = VK_NULL_HANDLE;
+		VkDescriptorSetLayout sceneDepthSetLayout        = VK_NULL_HANDLE;
+		VkPipelineLayout      sceneDepthPipelineLayout   = VK_NULL_HANDLE;
+		VkPipeline            sceneDepthPipeline         = VK_NULL_HANDLE;
+
 		//// Private Functions
 
 		// Device and swapchain, in VulkanBackend.cpp
 
-		/** Logs once per distinct failure, then goes quiet. */
+		/**
+		 * Logs once per distinct failure, then goes quiet. A lost device is noted for the
+		 * next frame boundary to rebuild; anything else leaves the backend dead.
+		 */
 		void Fail(char const* what, VkResult result);
+
+		/** Notes a result that may mean the device is gone. Returns whether it does. */
+		bool NoteDeviceLoss(VkResult result);
 
 		bool PickPhysicalDevice(void);
 		bool CreateLogicalDevice(void);
 		bool CreateFrameResources(void);
-		bool CreateStagingBuffer(VkDeviceSize size);
-		bool CreateSwapchain(uint32_t width, uint32_t height);
-		bool CreateRenderPass(void);
-		bool CreateFramebuffers(void);
-		void DestroyFramebuffers(void);
+		void DestroyFrameResources(void);
+		bool CreateSwapchain(void);
+		bool CreateRenderTargets(void);
+		void DestroyRenderTargets(void);
+		bool CreateRenderPasses(void);
 		void DestroySwapchain(void);
+		void LoadPipelineCache(void);
+		void SavePipelineCache(void);
+		void ChoosePresentMode(void);
 
 		/** Makes the swapchain again once the window has area, or returns false while it has none. */
 		bool RestoreSwapchain(void);
 
 		/** Destroys everything that belongs to the device and the window, keeping the instance. */
 		void DestroyDevice(void);
+
+		/** Destroys the device and makes it again, recreating every texture and region empty. */
+		bool RecoverDevice(void);
 
 		bool FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, uint32_t& outIndex) const;
 
@@ -646,27 +987,40 @@ namespace scvk
 
 		bool CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& outBuffer, VkDeviceMemory& outMemory, void*& outMapped);
 
-		/** The swapchain extent as signed numbers, for arithmetic against the game's signed rectangles. */
-		int32_t SwapchainWidth(void) const;
-		int32_t SwapchainHeight(void) const;
+		/** Creates an image with memory of its own and the views asked for. */
+		bool CreateRenderImage(VkFormat format, uint32_t width, uint32_t height, VkImageUsageFlags usage, VkImageAspectFlags viewAspect, VkFormat secondViewFormat, VkImageCreateFlags flags, RenderImage& outImage);
+		void DestroyRenderImage(RenderImage& image);
+
+		/** Retires a render image to the frame being recorded, so it outlives the GPU's use of it. */
+		void RetireRenderImage(RenderImage& image);
+
+		/** Hands objects to the frame being recorded, or the next one between frames, to destroy once the GPU is done. */
+		void Retire(RetiredImage const& retired);
+
+		/** The render size as signed numbers, for arithmetic against the game's signed rectangles. */
+		int32_t RenderWidth(void) const;
+		int32_t RenderHeight(void) const;
 
 		/** Starts a frame if one is not already in progress. */
 		bool EnsureFrame(void);
 
+		/** Begins the next command buffer of the current frame. */
+		bool BeginCommandBuffer(void);
+
+		/** Ends and submits the command buffer being recorded, optionally signalling the frame's fence. */
+		bool SubmitCommandBuffer(VkSemaphore waitSemaphore, VkPipelineStageFlags waitStages, VkSemaphore signalSemaphore, bool shouldSignalFence);
+
 		/** Submits what the frame has recorded so far, waits for it, and carries on recording the same frame. */
 		bool SubmitFrameSoFar(void);
+
+		/** Waits for the GPU to finish a frame, if it has not already. */
+		bool WaitForFrame(uint64_t serial);
 
 		/** vkQueueSubmit of one batch, timed as a submit. */
 		VkResult SubmitToQueue(VkSubmitInfo const& submit, VkFence fence);
 
 		/** vkWaitForFences on one fence, timed as waiting for the GPU. */
 		VkResult WaitForFence(VkFence fence, uint64_t timeoutNanoseconds);
-
-		/** Acquires the next swapchain image into imageIndex, timed as swapchain work. */
-		VkResult AcquireNextImage(void);
-
-		/** Presents imageIndex once rendering has finished, timed as swapchain work. */
-		VkResult PresentImage(void);
 
 		/** Charges the time since the last switch to the active phase and makes another active. Returns the one it replaced. */
 		FramePhase EnterPhase(FramePhase phase);
@@ -677,18 +1031,34 @@ namespace scvk
 		/** One heartbeat line splitting a time by phase. */
 		void LogPhaseTicks(char const* heading, int64_t const phaseTicks[FRAME_PHASE_COUNT]) const;
 
-		/** Barriers the swapchain image into a layout, tracking where it was. */
+		/** Barriers an image of scvk's own into a layout, tracking where it was. */
+		void TransitionImage(RenderImage& image, VkImageLayout newLayout, VkImageAspectFlags aspect);
+
+		/** Barriers the back buffer into a layout. */
 		void TransitionTo(VkImageLayout newLayout);
+
+		/** Barriers the depth buffer into a layout. */
+		void TransitionDepth(VkImageLayout newLayout);
 
 		/** What a layout implies about access and pipeline stage. */
 		static void LayoutAccess(VkImageLayout layout, VkAccessFlags& outAccess, VkPipelineStageFlags& outStages);
 
+		/** The aspects of the depth buffer: depth, and stencil when it has one. */
+		VkImageAspectFlags DepthAspects(void) const;
+
+		/** Orders the next use of the back buffer after work recorded outside scvk. */
+		void WaitForExternalWork(void);
+
 		void BeginRenderPassIfNeeded(void);
+		void BeginColourOnlyPass(void);
 		void EndRenderPassIfActive(void);
 		void ApplyViewport(void);
 
+		/** Forgets what the command buffer has bound, after something else bound its own. */
+		void InvalidateBindings(void);
+
 		/**
-		 * The viewport in framebuffer coordinates, clamped to the swapchain. Returns
+		 * The viewport in framebuffer coordinates, clamped to the back buffer. Returns
 		 * whether a sub-viewport is in force, which is when the game's OpenGL driver
 		 * enables its scissor test with the same rectangle.
 		 */
@@ -704,11 +1074,14 @@ namespace scvk
 		/** Records the copy of a saved region for a requested region capture. */
 		bool RecordRegionCapture(uint32_t& outWidth, uint32_t& outHeight);
 
-		/** Records the copy of the swapchain image for a requested frame capture. */
+		/** Records the copy of the back buffer for a requested frame capture. */
 		bool RecordFrameCapture(void);
 
 		/** Writes whichever capture this frame recorded, once the GPU has finished it. */
 		void WriteCapture(bool isRegion, uint32_t regionWidth, uint32_t regionHeight);
+
+		/** Records the copy of the back buffer into the swapchain image, scaling it when the two differ. */
+		void RecordPresentCopy(uint32_t swapchainImageIndex);
 
 		/** The periodic line saying the swapchain is still presenting. */
 		void LogHeartbeat(void);
@@ -723,6 +1096,7 @@ namespace scvk
 		bool CreatePipelineLayout(void);
 		bool CreateGeometryBuffers(void);
 		VkPipeline GetPipeline(PipelineKey const& key);
+		VkPipeline CreatePipeline(PipelineKey const& key);
 		void DestroyPipelines(void);
 
 		/** Where a format's attributes live, from the game's packed encoding. */
@@ -734,22 +1108,33 @@ namespace scvk
 		/** Adds one block to an arena. */
 		bool ArenaAddBlock(Arena& arena);
 
-		/** Reserves space, moving to the next block, or adding one, when this one is full. */
+		/**
+		 * Reserves space, moving on through the ring when this block is full: to a block
+		 * the GPU has finished with, to a new one while the arena may grow, or to one the
+		 * GPU still reads after waiting for it. Fails only when a single frame has filled
+		 * every block.
+		 */
 		bool ArenaAllocate(Arena& arena, VkDeviceSize bytes, VkDeviceSize alignment, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress);
 
-		/** Whether an arena can hand out this much, in one piece, before it is rewound. */
-		static bool ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment);
+		/** Whether an arena can hand out this much, in one piece, without the frame being submitted part way. */
+		bool ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment) const;
 
-		/** Rewinds an arena to its first block. */
+		/** Rewinds an arena to its first block, once nothing on the GPU reads it. */
 		static void ArenaRewind(Arena& arena);
 
 		void DestroyArena(Arena& arena);
 
-		/** Makes room for one draw's vertices and indices, submitting the frame so far when the arenas are full. */
-		bool ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes);
+		/**
+		 * Makes room for one draw's vertices and indices, submitting the frame so far when
+		 * the arenas are full. The stride, when given, is the alignment the vertices take.
+		 */
+		bool ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes, uint32_t vertexStride = 0);
 
-		/** Copies a vertex range into the per-frame arena. */
-		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		/**
+		 * Copies a vertex range into the per-frame arena, at a whole number of vertices
+		 * from the start of its block, and says which vertex of the block it starts at.
+		 */
+		bool UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, uint32_t& outBaseVertex);
 
 		/** Whether the second stage takes part in the draw. */
 		bool IsTwoStageDraw(uint32_t textureCoordinateSets) const;
@@ -763,11 +1148,20 @@ namespace scvk
 		/** Everything a draw needs bound, shared by the indexed and plain paths. */
 		bool BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout);
 
+		/** Binds the geometry pipeline layout's descriptor sets that changed. */
+		void BindDescriptorSets(VkPipelineLayout layout, VkDescriptorSet const sets[4]);
+
+		/** Sets the depth bias and the stencil state the dynamic state carries. */
+		void ApplyDynamicState(void);
+
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
 		void PushDrawConstants(bool isTwoStage, bool isCombining);
 
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);
+
+		/** Binds an index buffer at offset 0 unless it is bound already. Indices are then addressed through firstIndex. */
+		void BindIndexBuffer(VkBuffer buffer);
 
 		/** Changes the draw record, so the next draw writes a fresh copy of it. */
 		void UpdateDrawRecord(DrawRecord const& record);
@@ -779,7 +1173,14 @@ namespace scvk
 
 		bool CreateDescriptorResources(void);
 		bool CreateDefaultTexture(void);
+		bool CreateFixedSamplers(void);
 		void DestroyTextures(void);
+
+		/** Creates the image, view and set of a texture slot from its format, size and levels. */
+		bool CreateTextureObjects(Texture& texture);
+
+		/** Retires the image, view and set of a texture slot, leaving its description. */
+		void RetireTextureObjects(Texture& texture);
 
 		/** Finds memory for a texture image, in a texture block unless it is larger than one. */
 		bool AllocateTextureMemory(VkMemoryRequirements const& requirements, ImageMemory& outMemory);
@@ -793,8 +1194,8 @@ namespace scvk
 		/** Gives an image's memory back, to its block or to the device, and clears it. */
 		void ReleaseImageMemory(ImageMemory& memory);
 
-		/** Destroys everything retired since the last frame. */
-		void FlushRetiredImages(void);
+		/** Destroys everything a frame retired, once the GPU has finished it. */
+		void FlushRetired(FrameSlot& slot);
 
 		/** The sampler for one set of filter and wrap parameters. */
 		VkDescriptorSet GetSamplerSet(uint32_t const parameters[4]);
@@ -802,11 +1203,17 @@ namespace scvk
 		/** A descriptor set for a new texture, from the first texture pool with room. */
 		bool AllocateTextureSet(VkDescriptorSet& outSet, uint32_t& outPoolIndex);
 
+		/** A descriptor set for this frame only, from its transient pool. */
+		bool AllocateTransientSet(VkDescriptorSetLayout layout, VkDescriptorSet& outSet);
+
 		/** Records a draw sampling a texture, and reports the hazards counted above. */
 		void NoteTextureUse(uint32_t handle);
 
 		/** Converts one level's texels into the image's own layout. Returns false for a format it cannot read. */
-		bool StageTexels(Texture const& texture, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels, std::vector<uint8_t>& outStaged);
+		bool StageTexels(Texture const& texture, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels, uint8_t* outStaged);
+
+		/** How many bytes StageTexels writes for one level. */
+		static VkDeviceSize StagedBytes(Texture const& texture, uint32_t width, uint32_t height);
 
 		/** The heartbeat's line on live textures and the traffic since the last one. */
 		void LogTextureTraffic(void);
@@ -833,33 +1240,42 @@ namespace scvk
 		void WaitForTextureBatch(void);
 
 		/** Finds staging for an upload in the batch, finishing the batch first when the arena is full. */
-		bool StageTextureUpload(std::vector<uint8_t> const& staged, VkBuffer& outBuffer, VkDeviceSize& outOffset);
+		bool AllocateTextureStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress);
 
 		// Depth and buffer regions, in VulkanBackend_Regions.cpp
 
-		bool CreateDepthResources(void);
-		void DestroyDepthResources(void);
+		/** Picks the depth format: with stencil where the device offers one, and sampleable where it can be. */
+		bool ChooseDepthFormat(void);
 
-		/** Barriers the depth image, which is not tracked the way the swapchain image is. */
-		void BarrierDepthImage(VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess, VkPipelineStageFlags sourceStages, VkPipelineStageFlags destinationStages);
-
-		/** The depth image's layout outside a copy: UNDEFINED until something first moves it. */
-		VkImageLayout DepthRestingLayout(void) const;
-
-		/** Barriers a region image, which is not the tracked swapchain one. */
+		/** Barriers a region image, which is not tracked the way the back buffer is. */
 		void TransitionRegion(BufferRegion const& region, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-		/** Clamps a copy between the window and a region to both images. Returns false when either origin is negative. */
+		/** Clamps a copy between the back buffer and a region to both images. Returns false when either origin is negative. */
 		bool ClampRegionCopy(BufferRegion const& region, int32_t regionX, int32_t regionY, int32_t screenX, int32_t screenY, int32_t& width, int32_t& height) const;
 
-		/** Creates a region's image and memory at the window's size, without giving it a handle. */
+		/** Creates a region's image and memory at the render size, without giving it a handle. */
 		bool AllocateRegionImage(bool isDepth, BufferRegion& outRegion);
 
-		bool CreateLastFrame(void);
-		void DestroyLastFrame(void);
+		// Blits, shadows and what other modules are handed, in VulkanBackend_Effects.cpp
 
-		/** Records the copy of the frame into lastFrame, as the last thing before presenting. */
-		void SaveLastFrame(void);
+		bool CreateEffectResources(void);
+		void DestroyEffectResources(void);
+		bool CreateBlitPipelines(void);
+		bool CreateShadowResources(void);
+		bool CreateSceneDepthResources(void);
+
+		/** A simple pipeline with no vertex input, for the full-screen and blit passes. */
+		VkPipeline CreateFullscreenPipeline(VkShaderModule vertexModule, VkShaderModule fragmentModule, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isAlphaBlended, bool isShadowBlend);
+
+		/**
+		 * Staging for this frame: from the staging arena, submitting the frame so far when
+		 * it is full, or a buffer of its own retired with the frame when it is larger than
+		 * a block.
+		 */
+		bool AllocateFrameStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress);
+
+		/** Uploads one of the terrain shadow textures, recreating it when its size changed. */
+		bool UploadFloatTexture(RenderImage& image, VkFormat format, uint32_t width, uint32_t height, void const* texels, VkDeviceSize bytes);
 
 	public:
 		//// Public API
@@ -875,16 +1291,39 @@ namespace scvk
 		/** Loads Vulkan, creates the instance, and picks a physical device. Does nothing once done. */
 		bool CreateInstance(void);
 
+		/** Says whether the next window is in exclusive fullscreen, which keeps the legacy swapchain. */
+		void SetExclusiveFullscreen(bool isExclusive) { isExclusiveFullscreen = isExclusive; }
+
 		/**
-		 * Creates the surface, device and swapchain for a window. Calling it again for a
-		 * new window first destroys what the previous call made.
+		 * Creates the surface, device, swapchain and render targets for a window, drawing
+		 * at the given size whatever the window's. Calling it again for a new window first
+		 * destroys what the previous call made.
 		 */
 		bool CreateSurfaceAndDevice(void* newWindowHandle, uint32_t width, uint32_t height);
 
 		void Destroy(void);
 
-		/** Whether frames can be drawn, rebuilding a swapchain lost while the window had no area. */
+		/** Whether frames can be drawn: the device and render targets exist, whatever the window is doing. */
 		bool IsReady(void);
+
+		/** Whether the device was lost and is waiting to be rebuilt. */
+		bool IsDeviceLost(void) const { return isDeviceLost; }
+
+		/**
+		 * Rebuilds a lost device at a frame boundary, backing off from half a second to
+		 * eight between attempts that fail. Returns whether the device works now.
+		 */
+		bool TryRecoverDevice(void);
+
+		/** Counts the devices made, so a plugin can tell its objects belong to an old one. */
+		uint32_t DeviceGeneration(void) const { return deviceGeneration; }
+
+		/** Called just before a device is destroyed, while its objects can still be released. */
+		void SetBeforeDeviceDestroyHook(void (*hook)(void* context), void* context)
+		{
+			beforeDeviceDestroyHook        = hook;
+			beforeDeviceDestroyHookContext = context;
+		}
 
 		/** Description of the selected GPU, for GetDriverInfo. */
 		std::string const& DeviceName(void) const { return deviceName; }
@@ -892,17 +1331,27 @@ namespace scvk
 
 		// Frames
 
+		/** Clears the colour, within the scissor when a sub-viewport is in force. */
 		void Clear(float red, float green, float blue, float alpha);
 
 		/**
-		 * Copies tightly packed BGRA8 pixels into the current image.
+		 * Copies tightly packed BGRA8 pixels into the back buffer.
 		 *
-		 * The game hands over BGRA8 and the Windows swapchain is natively B8G8R8A8_UNORM,
-		 * so the pixels go straight in with no conversion. sourceWidth is the row stride
-		 * of the source in pixels, which matters when the destination is clipped: the
-		 * rows still have to be strided by the full source width.
+		 * The game hands over BGRA8 and the back buffer is B8G8R8A8_UNORM, so the pixels
+		 * go straight in with no conversion. sourceWidth is the row stride of the source
+		 * in pixels, which matters when the destination is clipped: the rows still have to
+		 * be strided by the full source width.
 		 */
 		void BlitPixels(int32_t destinationX, int32_t destinationY, uint32_t width, uint32_t height, uint32_t sourceWidth, void const* pixels);
+
+		/**
+		 * Draws tightly packed BGRA8 pixels as a quad over a rectangle of the back buffer,
+		 * scaled to it, the way the DirectX driver draws its blits. The colour is
+		 * multiplied by the modulate colour; the source alpha is used when asked for, and
+		 * texels matching the colour key, when it has one, become transparent. Sampling
+		 * is point, so a 1:1 blit stays exact.
+		 */
+		void DrawPixels(int32_t destinationX, int32_t destinationY, int32_t destinationWidth, int32_t destinationHeight, uint32_t sourceWidth, uint32_t sourceHeight, uint8_t const* bgraPixels, float const modulate[4], float const colourKey[4], bool isSourceAlphaUsed, bool isBlended);
 
 		/**
 		 * Copies a rectangle of the screen into tightly packed BGRA8 rows, top row first,
@@ -910,14 +1359,14 @@ namespace scvk
 		 *
 		 * Mid-frame that is what the frame has drawn so far, and the commands recorded so
 		 * far are submitted early to wait for them. Between frames it is the frame last
-		 * presented. The rectangle is in window coordinates measured from the top, and
-		 * has to lie inside the window.
+		 * presented, which the back buffer still holds. The rectangle is in window
+		 * coordinates measured from the top, and has to lie inside the window.
 		 */
 		bool ReadFramePixels(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t* outPixels);
 
-		/** The window's size, which bounds what ReadFramePixels can read. */
-		uint32_t FrameWidth(void) const { return swapchainExtent.width; }
-		uint32_t FrameHeight(void) const { return swapchainExtent.height; }
+		/** The render size, which bounds what ReadFramePixels can read. */
+		uint32_t FrameWidth(void) const { return renderWidth; }
+		uint32_t FrameHeight(void) const { return renderHeight; }
 
 		/** Ends the frame, submits, and presents. */
 		void Present(void);
@@ -925,12 +1374,12 @@ namespace scvk
 		/**
 		 * Writes the next presented frame to a file, as a 32 bit BMP.
 		 *
-		 * Captured from the swapchain image rather than from the screen. That is the only
-		 * way to be sure the picture is what scvk drew: grabbing the desktop needs the
-		 * window focused, cannot see a Vulkan surface reliably, and captures whatever
-		 * else happens to be on screen.
+		 * Captured from the back buffer rather than from the screen. That is the only way
+		 * to be sure the picture is what scvk drew: grabbing the desktop needs the window
+		 * focused, cannot see a Vulkan surface reliably, and captures whatever else
+		 * happens to be on screen.
 		 *
-		 * BMP because its 32 bit layout is already BGRA, matching the swapchain exactly,
+		 * BMP because its 32 bit layout is already BGRA, matching the back buffer exactly,
 		 * so no encoder and no conversion are needed.
 		 */
 		void RequestCapture(char const* path);
@@ -941,7 +1390,7 @@ namespace scvk
 		 * something wrong was saved into it or only drawn over it afterwards.
 		 *
 		 * For depth it reads the saved depth region instead, written as a width and
-		 * height followed by raw 32-bit floats.
+		 * height followed by raw 32-bit values.
 		 */
 		void RequestRegionCapture(char const* path, bool isDepth = false);
 
@@ -997,11 +1446,23 @@ namespace scvk
 		/** Sets depth testing, writing and the comparison, all pipeline state. */
 		void SetDepthState(bool isTestEnabled, bool isWriteEnabled, uint32_t comparison);
 
+		/**
+		 * Sets the stencil test, in the game's numbering for the comparison and the
+		 * operations. Ignored by a depth buffer without stencil.
+		 */
+		void SetStencilState(bool isTestEnabled, uint32_t comparison, uint32_t reference, uint32_t readMask, uint32_t writeMask, uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation);
+
+		/** The polygon offset, a constant depth bias in units of the depth buffer's resolution. */
+		void SetPolygonOffset(int32_t offset);
+
+		/** Whether primitives take the colour of their first vertex instead of interpolating it. */
+		void SetFlatShading(bool isEnabled);
+
 		/** Whether back faces are culled. Pipeline state in Vulkan. */
 		void SetFaceCulling(bool isEnabled);
 
-		/** Clears the depth attachment to the given value. */
-		void ClearDepth(float depth);
+		/** Clears the depth attachment, and the stencil with it when asked, within the scissor of a sub-viewport. */
+		void ClearDepth(bool shouldClearDepth, float depth, bool shouldClearStencil, uint32_t stencil);
 
 		/**
 		 * The ambient light and alpha multiplier applied to every lit draw, and whether the
@@ -1084,6 +1545,21 @@ namespace scvk
 		 */
 		uint32_t CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels);
 
+		/** Hands out a texture name with no image behind it yet, for the GenTextures path. */
+		uint32_t ReserveTexture(void);
+
+		/**
+		 * Gives a named texture an image of this format and size, as TexImage2D does for
+		 * its top level. An image already matching is kept, contents and all.
+		 */
+		bool DefineTexture(uint32_t handle, uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels);
+
+		/** Whether a handle names a texture, with an image behind it or reserved for one. */
+		bool IsTextureName(uint32_t handle) const;
+
+		/** Whether draws under LIT_VERTEX_FORMAT can be made on this device. */
+		bool IsPerPixelLightingSupported(void) const { return isPerPixelLightingSupported; }
+
 		/** Uploads one level, or a rectangle of one level. */
 		void UploadTextureLevel(uint32_t handle, uint32_t level, int32_t offsetX, int32_t offsetY, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
 
@@ -1116,6 +1592,9 @@ namespace scvk
 		/** A live texture's size, levels and upload count, or false when there is none. */
 		bool DescribeTexture(uint32_t handle, uint32_t& outWidth, uint32_t& outHeight, uint32_t& outLevels, uint32_t& outUploadedLevels, uint32_t& outUploadCount) const;
 
+		/** The serial of the texture a handle names now, or 0 when it names none. */
+		uint32_t TextureSerial(uint32_t handle) const;
+
 		/** Both hazard counts together, so a caller can tell whether any happened. */
 		uint64_t TextureHazardCount(void) const { return drawsBeforeUpload + uploadsAfterDraw; }
 
@@ -1129,14 +1608,67 @@ namespace scvk
 		 */
 		uint32_t CreateBufferRegion(bool isDepth);
 
-		/** Copies a rectangle of the framebuffer into a region. */
+		/** Copies a rectangle of the back buffer into a region. */
 		bool SaveBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY, int32_t width, int32_t height, int32_t screenX, int32_t screenY);
 
-		/** Copies a rectangle of a region back into the framebuffer. */
+		/** Copies a rectangle of a region back into the back buffer. */
 		bool RestoreBufferRegion(uint32_t handle, int32_t regionX, int32_t regionY, int32_t width, int32_t height, int32_t screenX, int32_t screenY);
 
 		bool IsBufferRegion(uint32_t handle) const;
 		void DestroyBufferRegion(uint32_t handle);
 		void DestroyAllBufferRegions(void);
+
+		// Shadows
+
+		/** Whether the shadow passes can run: the depth buffer can be sampled and their resources exist. */
+		bool CanDrawShadows(void);
+
+		/**
+		 * Draws casters into the shadow map, cleared first. The vertices and indices are
+		 * copied; each draw names its range of them, its texture and its constants.
+		 */
+		bool DrawShadowCasters(ShadowVertex const* vertices, uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, ShadowCasterDraw const* draws, uint32_t drawCount);
+
+		/** Uploads the terrain's shadow ceiling and its height field, one RGBA float texel per vertex. */
+		bool UploadTerrainShadowMaps(float const* ceiling, uint32_t ceilingWidth, uint32_t ceilingHeight, float const* vertices, uint32_t verticesX, uint32_t verticesZ);
+
+		/**
+		 * Darkens the back buffer where the scene depth lies in shadow, within a rectangle
+		 * of window pixels measured from the top left. Uses the shadow map drawn last and,
+		 * when asked, the terrain maps uploaded last.
+		 */
+		void CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed);
+
+		// What ReShade and other plugins are handed
+
+		/** The back buffer's views, linear and sRGB, for ReShade's render targets. */
+		VkImageView BackBufferView(bool isSrgb) const;
+
+		/**
+		 * Re-encodes the scene depth into an R32 float image ReShade can sample, so that
+		 * ReShade.fxh's linearization with this far plane returns the depth unchanged.
+		 * Returns the image's view, or null when it could not.
+		 */
+		VkImageView PrepareSceneDepth(float farPlane);
+
+		/**
+		 * Submits what the frame has recorded so far without waiting, leaving the back
+		 * buffer as a colour attachment and the scene depth image ready to sample, so work
+		 * submitted after it by someone else sees the frame so far. The frame carries on in
+		 * a new command buffer that waits for that work.
+		 */
+		bool SubmitForExternalWork(void);
+
+		/**
+		 * Describes the frame to a plugin, starting one if needed. The back buffer is left
+		 * a colour attachment outside any render pass. Call ReturnExternalFrame after.
+		 */
+		bool BorrowExternalFrame(ExternalFrame& outFrame);
+
+		/** Takes the frame back after a plugin recorded into it, forgetting what was bound. */
+		void ReturnExternalFrame(void);
+
+		/** The instance, device and queue alone, for a plugin letting go of what it made with them. */
+		void DescribeDevice(ExternalFrame& outFrame) const;
 	};
 }

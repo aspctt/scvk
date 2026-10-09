@@ -20,11 +20,15 @@ the DirectX renderer. Players have run it on NVIDIA and AMD graphics cards, on
 Windows and on Linux, but expect problems on other hardware, and save often.</p>
 <p>Known issues:</p>
 <ul>
-<li>The interface sometimes flickers for a single frame.</li>
-<li>Scrolling while zoomed out is slower than DirectX, by roughly 40% on average
-in a large city.</li>
-<li>PrintScreen does not capture the game in exclusive fullscreen on at least one
-AMD graphics card.</li>
+<li>Scrolling while zoomed out was slower than DirectX, by roughly 40% on average
+in a large city. This version does less work for every draw, but it has not been
+measured again yet.</li>
+<li>The interface flickered for a single frame now and then. This version should
+fix it, but that is not confirmed yet.</li>
+<li>In fullscreen, PrintScreen now copies the game's picture to the clipboard, ready
+to paste, instead of opening the Snipping Tool, which took the game out of
+fullscreen, or copying the desktop, as it did on at least one AMD graphics card.
+Win+PrintScreen still saves a file in the Screenshots folder.</li>
 <li>The game stopped responding once in testing, after leaving the Big City
 Tutorial. It has not happened again since.</li>
 </ul>
@@ -32,7 +36,10 @@ Tutorial. It has not happened again since.</li>
 <h2 id="system-requirements">System Requirements</h2>
 <ul>
 <li>SimCity 4 Deluxe, game version 641. Older versions are untested.</li>
-<li>Windows 10 or 11.</li>
+<li>Windows 10 or 11, or Linux with Wine or Proton (Steam Play). On Linux,
+<code>scvk.dll</code> goes in the same Plugins folder inside the Wine or Proton
+prefix, and Wine needs its 32-bit Vulkan support (on Debian and Ubuntu,
+<code>libvulkan1:i386</code> and <code>mesa-vulkan-drivers:i386</code>).</li>
 <li>A graphics card and driver with Vulkan support.</li>
 <li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
 to choose the renderer.</li>
@@ -41,7 +48,7 @@ to choose the renderer.</li>
 <h2 id="installation">Installation</h2>
 <ol type="1">
 <li>Close SimCity 4.</li>
-<li>Copy <code>scvk.dll</code> and <code>scvk.ini</code> into the Plugins folder in
+<li>Copy <code>scvk.dll</code> into the Plugins folder in
 the SimCity 4 installation directory.</li>
 <li>Open <code>SC4GraphicsOptions.ini</code> and set:
 <pre><code>Driver=OpenGL
@@ -57,20 +64,24 @@ display modes the game uses by default.</p>
 <p>To go back to DirectX, set <code>Driver=DirectX</code>. scvk still loads and
 its frame rate changes still apply, but the game draws with DirectX.</p>
 
-<h2 id="configuring-the-plugin">Configuring the plugin</h2>
-<p>Open <code>scvk.ini</code> in a text editor (e.g. Notepad). Each setting is
-explained in the file.</p>
-<p><code>MaxFPS</code> raises the game's frame rate caps, which are 30 at Turtle
-speed, 20 at Rhino and 15 at Cheetah. 0, the default, leaves them alone. A paused
-city is never held at 30 whatever this says.</p>
-<p><code>UnlockRunningFPS</code> lets <code>MaxFPS</code> go above about 60 while
-the city runs. The time comes out of the simulation, so the city simulates more
-slowly. Off by default.</p>
-<p><code>LogLevel</code> sets how much goes into <code>scvk.log</code>, from
-<code>trace</code> to <code>off</code>. <code>info</code> by default.</p>
-<p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading
-scvk at all. Set <code>Driver=DirectX</code> as well, or the game falls back to
-its own OpenGL renderer, which does not work.</p>
+<h2 id="settings">Settings</h2>
+<p>There is nothing to configure. scvk sets everything itself:</p>
+<ul>
+<li>The game's frame rate caps (30 at Turtle speed, 20 at Rhino and 15 at
+Cheetah) are raised to the refresh rate of your screen, and a paused city is
+never held at 30.</li>
+<li>Vertical sync is on, the faster graphics card is used on laptops with two,
+and ReShade works if it is installed.</li>
+<li>Props and networks cast True3D shadows. <code>-NativeShadowMasks:off</code>
+goes back to the game's own shadows, and <code>-NativeShadowMasks:replace</code> also
+replaces the game's flat shadows and the terrain's shading, which is experimental.</li>
+<li><code>scvk.log</code> records the usual information.</li>
+</ul>
+<p>Advanced users can still change these with SCD3D11's command line switches,
+added to the game's shortcut: <code>-VSync:off</code>, <code>-GPU:default</code>,
+<code>-Borderless</code>, <code>-ReShade:off</code>, <code>-FlipModel:off</code> and
+<code>-LogLevel:trace</code> (or <code>debug</code>, <code>warn</code>,
+<code>error</code>, <code>off</code>).</p>
 <p>The frame rate changes only apply to game version 641, and scvk checks the
 game's code holds what it expects before changing anything.</p>
 
@@ -83,7 +94,8 @@ other.</li>
 <li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>
 is fully compatible, and is how you choose scvk as the renderer.</li>
 <li><a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
-works alongside scvk. If you use it, leave <code>MaxFPS</code> at 0.</li>
+is no longer needed, but works alongside scvk: scvk leaves alone any cap it has
+already changed.</li>
 <li>DirectX wrappers such as dgVoodoo 2 only affect the DirectX renderer. scvk
 does not need one, and they can stay installed.</li>
 </ul>
@@ -93,8 +105,7 @@ does not need one, and they can stay installed.</li>
 Windows temp folder if the Plugins folder cannot be written to. It names the
 graphics card scvk chose and notes anything that went wrong.</p>
 <p>If there is no log at all, the game did not load scvk. Check that
-<code>scvk.dll</code> is in the Plugins folder of the SimCity 4 installation, and
-that <code>Enabled</code> is not set to false in <code>scvk.ini</code>.</p>
+<code>scvk.dll</code> is in the Plugins folder of the SimCity 4 installation,.</p>
 <p>Please report problems at
 <a href="https://github.com/aspctt/scvk/issues">https://github.com/aspctt/scvk/issues</a>,
 with your <code>scvk.log</code>, your graphics card and its driver version.</p>

@@ -22,7 +22,8 @@
 #include "Logger.h"
 #include "version.h"
 
-#include <Windows.h>
+#include <windows.h>
+#include <mutex>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,8 @@ namespace scvk
 
 	//// State
 
+	bool areCallsRecorded = false;
+
 	namespace
 	{
 		FILE*     logFile       = nullptr;
@@ -79,7 +82,7 @@ namespace scvk
 		CallSite* callSites     = nullptr;
 		bool      hasEverOpened = false;
 
-		// Read from scvk.ini on the first open, and kept for the rest of the process.
+		// Read from the command line on the first open, and kept for the rest of the process.
 		LogLevel  logLevel        = DEFAULT_LOG_LEVEL;
 		bool      hasReadLogLevel = false;
 		bool      isLogLevelKnown = true;
@@ -92,6 +95,10 @@ namespace scvk
 		// identical consecutive notes keeps the signal without capping it.
 		char     lastNote[512] = {};
 		uint32_t repeatCount   = 0;
+
+		// The render watchdog writes from a thread of its own, so every write to the file
+		// and to the repeat state above is made under this.
+		std::recursive_mutex logMutex;
 	}
 
 	//// Private Functions
@@ -142,18 +149,28 @@ namespace scvk
 			return true;
 		}
 
-		/** The LogLevel setting from scvk.ini, or the default when it is absent or unknown. */
+		/** The log level from -LogLevel:<name>, or info when it is absent or unknown. */
 		void ReadLogLevel(void)
 		{
 			hasReadLogLevel = true;
 
-			char path[MAX_PATH];
-			if (!LogFilePath("scvk.ini", path, sizeof(path)))
-			{
-				return;
-			}
+			// Info unless -LogLevel:<name> on the game's command line says otherwise, as
+			// SCD3D11 takes it
+			strcpy_s(logLevelSetting, sizeof(logLevelSetting), "info");
 
-			GetPrivateProfileStringA("scvk", "LogLevel", "info", logLevelSetting, sizeof(logLevelSetting), path);
+			char const* const commandLineLevel = strstr(GetCommandLineA(), "-LogLevel:");
+			if (commandLineLevel != nullptr)
+			{
+				size_t length = 0;
+				char const* const value = commandLineLevel + strlen("-LogLevel:");
+				while (value[length] != '\0' && value[length] != ' ' && value[length] != '\t' && value[length] != '"' && length + 1 < sizeof(logLevelSetting))
+				{
+					length++;
+				}
+
+				memcpy(logLevelSetting, value, length);
+				logLevelSetting[length] = '\0';
+			}
 
 			for (LogLevelEntry const& entry : LOG_LEVEL_NAMES)
 			{
@@ -188,6 +205,8 @@ namespace scvk
 			{
 				return;
 			}
+
+			std::lock_guard<std::recursive_mutex> const lock(logMutex);
 
 			// Format the line
 			char message[sizeof(lastNote)];
@@ -242,6 +261,8 @@ namespace scvk
 
 	void LogOpen(void)
 	{
+		std::lock_guard<std::recursive_mutex> const lock(logMutex);
+
 		if (logFile != nullptr)
 		{
 			return;
@@ -252,6 +273,9 @@ namespace scvk
 		{
 			ReadLogLevel();
 		}
+
+		// Count calls only where the counts are reported
+		areCallsRecorded = IsLogged(LOG_LEVEL_DEBUG);
 
 		if (logLevel == LOG_LEVEL_OFF)
 		{
@@ -294,7 +318,7 @@ namespace scvk
 
 			if (!isLogLevelKnown)
 			{
-				fprintf(logFile, "LogLevel=%s in scvk.ini is not a level; using %s.\n", logLevelSetting, LogLevelName(logLevel));
+				fprintf(logFile, "-LogLevel:%s is not a level; using %s.\n", logLevelSetting, LogLevelName(logLevel));
 			}
 
 			if (logLevel == LOG_LEVEL_TRACE)
@@ -320,6 +344,7 @@ namespace scvk
 			return;
 		}
 
+		std::lock_guard<std::recursive_mutex> const lock(logMutex);
 		FlushRepeats();
 
 		// Order the sites by first call
@@ -422,6 +447,11 @@ namespace scvk
 		va_end(arguments);
 	}
 
+	void LogMessage(LogLevel level, char const* format, va_list arguments)
+	{
+		WriteLine(level, format, arguments);
+	}
+
 	void LogCall(CallSite& site, char const* argumentFormat, ...)
 	{
 		// Count the call
@@ -456,6 +486,7 @@ namespace scvk
 		}
 
 		// Write the trace line
+		std::lock_guard<std::recursive_mutex> const lock(logMutex);
 		FlushRepeats();
 		fprintf(logFile, "%6u  %s(", tracedCount++, site.name);
 

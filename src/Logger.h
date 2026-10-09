@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <stdarg.h>
+
 //// Dependencies
 
 #include <stddef.h>
@@ -30,7 +32,7 @@ namespace scvk
 
 	/**
 	 * How much goes into the log, most to least. A level writes its own messages and every
-	 * more severe one; the names are the ones the LogLevel setting in scvk.ini takes.
+	 * more severe one; the names are the ones -LogLevel:<name> on the command line takes.
 	 *
 	 *   trace     the ordered trace of the game's calls into the driver, from startup
 	 *   debug     diagnostics: the heartbeat's statistics, draw probes, state changes
@@ -72,7 +74,7 @@ namespace scvk
 	/**
 	 * Opens the trace file. Safe to call any number of times.
 	 *
-	 * Reads the LogLevel setting from scvk.ini on the first call, and opens nothing when it
+	 * Reads -LogLevel:<name> from the game's command line on the first call, and opens nothing when it
 	 * is off. Truncates only on the first open in a process. Reopening never discards what is
 	 * already there, because the game may drive the driver through more than one
 	 * lifecycle and losing the earlier one would hide exactly the sequence we are trying
@@ -115,13 +117,25 @@ namespace scvk
 	void LogError(char const* format, ...);
 	void LogCritical(char const* format, ...);
 
+	/** Writes a line at a level from arguments already gathered, for wrappers of these. */
+	void LogMessage(LogLevel level, char const* format, va_list arguments);
+
 	/** Records a call against its site. Called via SCVK_CALL, not directly. */
 	void LogCall(CallSite& site, char const* argumentFormat, ...);
+
+	/**
+	 * Whether SCVK_CALL records anything: at the debug level and below, where the call
+	 * summary and the trace are written. Set when the log is opened.
+	 */
+	extern bool areCallsRecorded;
 }
 
 /**
- * Records the calling method. The counter always advances; the ordered trace line is
- * written only at the trace level, and only while the trace budget lasts.
+ * Records the calling method. The counter advances at the debug level and below, where
+ * the call summary reports it; the ordered trace line is written only at the trace
+ * level, and only while the trace budget lasts. At the default level the macro costs one
+ * test, which matters on the draw path: the game makes several calls a draw, and over a
+ * hundred thousand draws in a city redraw at the widest zoom.
  *
  * The budget exists because the two things we want are in tension. Boot order is the
  * interesting signal, and it is a few thousand calls. Steady-state rendering is tens of
@@ -133,8 +147,11 @@ namespace scvk
  * The first argument is a printf format for the method's own arguments; pass "" for a
  * method that takes none.
  */
-#define SCVK_CALL(...)                                       \
-	do {                                                     \
-		static ::scvk::CallSite scvkCallSite(__FUNCTION__);  \
-		::scvk::LogCall(scvkCallSite, __VA_ARGS__);          \
+#define SCVK_CALL(...)                                           \
+	do {                                                         \
+		if (::scvk::areCallsRecorded)                            \
+		{                                                        \
+			static ::scvk::CallSite scvkCallSite(__FUNCTION__);  \
+			::scvk::LogCall(scvkCallSite, __VA_ARGS__);          \
+		}                                                        \
 	} while (0)

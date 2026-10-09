@@ -1,32 +1,10 @@
 /*
- * scvk - a native Vulkan renderer for SimCity 4
+ * The depth buffer and the buffer regions.
  *
- * Copyright (C) 2026 aspctt
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation, under
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <https://www.gnu.org/licenses/>.
- */
-
-/*
- * The depth buffer, the buffer regions, and the copy of the last frame.
- *
- * The city view is drawn once into the framebuffer, saved into a region, and restored
- * from it every frame, with only what changed redrawn on top. Both copies go through
- * images the render pass does not track, so each one carries its own barriers.
- *
- * The copy of the last frame is a region of scvk's own. The game reads the screen back
- * for a photo between frames, expecting to find the frame it last showed, which a
- * DirectX back buffer still holds and a presented swapchain image cannot be read for.
+ * The city view is drawn once into the back buffer, saved into a region, and restored
+ * from it every frame, with only what changed redrawn on top. Regions are images the
+ * render pass does not track, so each copy carries its own barriers; the back buffer and
+ * the depth buffer track their own layouts.
  */
 
 //// Dependencies
@@ -38,145 +16,62 @@
 
 namespace scvk
 {
-	//// Constants
-
-	namespace
-	{
-		// Depth attachment access, both read and written by the depth test.
-		constexpr VkAccessFlags DEPTH_ATTACHMENT_ACCESS = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	}
-
 	//// Private Functions
 
-	bool VulkanBackend::CreateDepthResources(void)
+	bool VulkanBackend::ChooseDepthFormat(void)
 	{
-		// Pick a depth format
+		// Pick a depth format, with stencil first
 		//
-		// D32 first, falling back to the packed depth-stencil format. One or the other is
-		// guaranteed present, and the game only needs depth: its stencil calls are
-		// recorded but not yet honoured.
-		VkFormat const candidates[] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+		// D24S8 is what the DirectX driver asks for and what the game's stencil passes
+		// assume; D32S8 is the other format with stencil a device may offer instead. Depth
+		// alone is the last resort, and the stencil test is then left out.
+		struct Candidate
+		{
+			VkFormat format;
+			bool     hasStencil;
+		};
 
-		depthFormat = VK_FORMAT_UNDEFINED;
-		for (VkFormat candidate : candidates)
+		Candidate const candidates[] = {
+			{ VK_FORMAT_D24_UNORM_S8_UINT, true },
+			{ VK_FORMAT_D32_SFLOAT_S8_UINT, true },
+			{ VK_FORMAT_D32_SFLOAT, false },
+			{ VK_FORMAT_D16_UNORM, false },
+		};
+
+		depthBuffer.format = VK_FORMAT_UNDEFINED;
+		hasStencil         = false;
+		isDepthSampleable  = false;
+
+		for (Candidate const& candidate : candidates)
 		{
 			VkFormatProperties properties{};
-			vkGetPhysicalDeviceFormatProperties(physicalDevice, candidate, &properties);
+			vkGetPhysicalDeviceFormatProperties(physicalDevice, candidate.format, &properties);
 
-			if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+			if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0)
 			{
-				depthFormat = candidate;
-				break;
+				continue;
 			}
+
+			depthBuffer.format = candidate.format;
+			hasStencil         = candidate.hasStencil;
+
+			// Sampling it is what the shadow composite and ReShade's depth need
+			isDepthSampleable = (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+			break;
 		}
 
-		if (depthFormat == VK_FORMAT_UNDEFINED)
+		if (depthBuffer.format == VK_FORMAT_UNDEFINED)
 		{
-			LogError("Vulkan: no usable depth format; depth testing will be unavailable.");
+			LogError("Vulkan: no usable depth format.");
 			return false;
 		}
 
-		// Create the image
-		//
-		// TRANSFER_DST for the game's depth clears, TRANSFER_SRC because it also saves
-		// the depth buffer into a buffer region.
-		VkImageCreateInfo imageInformation{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-		imageInformation.imageType     = VK_IMAGE_TYPE_2D;
-		imageInformation.format        = depthFormat;
-		imageInformation.extent        = { swapchainExtent.width, swapchainExtent.height, 1 };
-		imageInformation.mipLevels     = 1;
-		imageInformation.arrayLayers   = 1;
-		imageInformation.samples       = VK_SAMPLE_COUNT_1_BIT;
-		imageInformation.tiling        = VK_IMAGE_TILING_OPTIMAL;
-		imageInformation.usage         = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-		imageInformation.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-		imageInformation.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-		VkResult result = vkCreateImage(device, &imageInformation, nullptr, &depthImage);
-		if (result != VK_SUCCESS)
+		if (!hasStencil)
 		{
-			Fail("vkCreateImage (depth)", result);
-			return false;
+			LogWarn("Vulkan: no depth format with stencil; the game's stencil passes are left out.");
 		}
 
-		// Back it with device-local memory
-		VkMemoryRequirements requirements{};
-		vkGetImageMemoryRequirements(device, depthImage, &requirements);
-
-		uint32_t typeIndex = 0;
-		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
-		{
-			LogError("Vulkan: no device-local memory for the depth buffer.");
-			return false;
-		}
-
-		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-		allocationInformation.allocationSize  = requirements.size;
-		allocationInformation.memoryTypeIndex = typeIndex;
-
-		result = AllocateDeviceMemory(allocationInformation, depthMemory);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkAllocateMemory (depth)", result);
-			return false;
-		}
-
-		vkBindImageMemory(device, depthImage, depthMemory, 0);
-
-		// Create its view
-		VkImageViewCreateInfo viewInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-		viewInformation.image    = depthImage;
-		viewInformation.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInformation.format   = depthFormat;
-		viewInformation.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		viewInformation.subresourceRange.levelCount = 1;
-		viewInformation.subresourceRange.layerCount = 1;
-
-		result = vkCreateImageView(device, &viewInformation, nullptr, &depthView);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkCreateImageView (depth)", result);
-			return false;
-		}
-
-		// Record that its layout still has to move
-		//
-		// The image is still UNDEFINED, and the render pass declares the attachment
-		// layout as its initial one. Whichever comes first, the next render pass or the
-		// game's next depth clear, moves it there.
-		isDepthLayoutPending = true;
-
-		LogInfo("Vulkan: depth buffer ready, %ux%u, format %d.", swapchainExtent.width, swapchainExtent.height, depthFormat);
 		return true;
-	}
-
-	void VulkanBackend::DestroyDepthResources(void)
-	{
-		if (depthView != VK_NULL_HANDLE)   { vkDestroyImageView(device, depthView, nullptr); depthView = VK_NULL_HANDLE; }
-		if (depthImage != VK_NULL_HANDLE)  { vkDestroyImage(device, depthImage, nullptr); depthImage = VK_NULL_HANDLE; }
-		FreeDeviceMemory(depthMemory);
-	}
-
-	void VulkanBackend::BarrierDepthImage(VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess, VkPipelineStageFlags sourceStages, VkPipelineStageFlags destinationStages)
-	{
-		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-		barrier.oldLayout           = oldLayout;
-		barrier.newLayout           = newLayout;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image               = depthImage;
-		barrier.srcAccessMask       = sourceAccess;
-		barrier.dstAccessMask       = destinationAccess;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-
-		vkCmdPipelineBarrier(commandBuffer, sourceStages, destinationStages, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-	}
-
-	VkImageLayout VulkanBackend::DepthRestingLayout(void) const
-	{
-		return isDepthLayoutPending ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	}
 
 	void VulkanBackend::TransitionRegion(BufferRegion const& region, VkImageLayout oldLayout, VkImageLayout newLayout)
@@ -199,7 +94,7 @@ namespace scvk
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.image               = region.image;
-		barrier.subresourceRange.aspectMask = region.isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.aspectMask = region.isDepth ? DepthAspects() : VkImageAspectFlags{ VK_IMAGE_ASPECT_COLOR_BIT };
 		barrier.subresourceRange.levelCount = 1;
 		barrier.subresourceRange.layerCount = 1;
 
@@ -214,122 +109,23 @@ namespace scvk
 		}
 
 		// Both rectangles have to stay inside their image, and they share one extent, so
-		// the smaller of the two limits governs. Region sizes match the window, far below
-		// INT32_MAX, so they convert without loss.
+		// the smaller of the two limits governs. Region sizes match the render size, far
+		// below INT32_MAX, so they convert without loss.
 		int32_t const regionWidth  = static_cast<int32_t>(region.width);
 		int32_t const regionHeight = static_cast<int32_t>(region.height);
 
-		width  = std::min(width, std::min(SwapchainWidth() - screenX, regionWidth - regionX));
-		height = std::min(height, std::min(SwapchainHeight() - screenY, regionHeight - regionY));
-		return true;
-	}
-
-	//// Public API
-
-	void VulkanBackend::ClearDepth(float depth)
-	{
-		if (!EnsureFrame() || depthImage == VK_NULL_HANDLE)
-		{
-			return;
-		}
-
-		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
-
-		// Clear only the scissor under a sub-viewport, the same way as the colour clear
-		VkRect2D scissor{};
-		if (ViewportRectangle(scissor))
-		{
-			if (scissor.extent.width == 0 || scissor.extent.height == 0)
-			{
-				return;
-			}
-
-			BeginRenderPassIfNeeded();
-
-			VkClearAttachment attachment{};
-			attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			attachment.clearValue.depthStencil.depth   = depth;
-			attachment.clearValue.depthStencil.stencil = 0;
-
-			VkClearRect clearRectangle{};
-			clearRectangle.rect       = scissor;
-			clearRectangle.layerCount = 1;
-
-			vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRectangle);
-			return;
-		}
-
-		// Move the image into the transfer layout
-		//
-		// A whole-image depth clear is a transfer operation, so it cannot run inside a
-		// render pass any more than a colour clear can. Discarding the old contents is
-		// exactly what a clear does, so the still-UNDEFINED first clear needs no special
-		// handling beyond naming the layout the image is actually in. The barrier starts
-		// from the depth tests, not the top of the pipe: a clear later in a frame has to
-		// wait for the draws that wrote depth before it.
-		EndRenderPassIfActive();
-
-		BarrierDepthImage(DepthRestingLayout(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, DEPTH_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
-		isDepthLayoutPending = false;
-
-		// Clear it
-		VkClearDepthStencilValue value{};
-		value.depth   = depth;
-		value.stencil = 0;
-
-		VkImageSubresourceRange range{};
-		range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		range.levelCount = 1;
-		range.layerCount = 1;
-
-		vkCmdClearDepthStencilImage(commandBuffer, depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
-
-		// Move it back for the depth tests
-		BarrierDepthImage(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, DEPTH_ATTACHMENT_ACCESS, VK_PIPELINE_STAGE_TRANSFER_BIT, DEPTH_STAGES);
-	}
-
-	uint32_t VulkanBackend::CreateBufferRegion(bool isDepth)
-	{
-		if (isDead || device == VK_NULL_HANDLE || swapchainExtent.width == 0)
-		{
-			return 0;
-		}
-
-		if (isDepth && depthFormat == VK_FORMAT_UNDEFINED)
-		{
-			return 0;
-		}
-
-		// Create an image the size of the window, in the format it copies
-		BufferRegion region;
-		if (!AllocateRegionImage(isDepth, region))
-		{
-			return 0;
-		}
-
-		// Reuse a dead slot before growing
-		//
-		// So a game that cycles regions does not walk the handle space upward forever.
-		for (size_t i = 0; i < bufferRegions.size(); i++)
-		{
-			if (!bufferRegions[i].isLive)
-			{
-				bufferRegions[i] = region;
-				return i + 1;
-			}
-		}
-
-		bufferRegions.push_back(region);
-		return bufferRegions.size();
+		width  = std::min(width, std::min(RenderWidth() - screenX, regionWidth - regionX));
+		height = std::min(height, std::min(RenderHeight() - screenY, regionHeight - regionY));
+		return width > 0 && height > 0;
 	}
 
 	bool VulkanBackend::AllocateRegionImage(bool isDepth, BufferRegion& outRegion)
 	{
 		BufferRegion region;
 		region.isDepth = isDepth;
-		region.format  = isDepth ? depthFormat : swapchainFormat;
-		region.width   = swapchainExtent.width;
-		region.height  = swapchainExtent.height;
+		region.format  = isDepth ? depthBuffer.format : backBuffer.format;
+		region.width   = renderWidth;
+		region.height  = renderHeight;
 
 		VkImageCreateInfo imageInformation{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		imageInformation.imageType     = VK_IMAGE_TYPE_2D;
@@ -346,7 +142,8 @@ namespace scvk
 		VkResult result = vkCreateImage(device, &imageInformation, nullptr, &region.image);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateImage (buffer region)", result);
+			LogError("Vulkan: could not create a buffer region: %s", VkResultName(result));
+			NoteDeviceLoss(result);
 			return false;
 		}
 
@@ -368,7 +165,8 @@ namespace scvk
 		result = AllocateDeviceMemory(allocationInformation, region.memory);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkAllocateMemory (buffer region)", result);
+			LogError("Vulkan: could not allocate a buffer region: %s", VkResultName(result));
+			NoteDeviceLoss(result);
 			vkDestroyImage(device, region.image, nullptr);
 			return false;
 		}
@@ -380,56 +178,88 @@ namespace scvk
 		return true;
 	}
 
-	bool VulkanBackend::CreateLastFrame(void)
+	//// Public API
+
+	void VulkanBackend::ClearDepth(bool shouldClearDepth, float depth, bool shouldClearStencil, uint32_t stencil)
 	{
-		// The swapchain does not depend on it: only reading the screen back between
-		// frames needs it.
-		if (!AllocateRegionImage(false, lastFrame))
+		VkImageAspectFlags aspects = 0;
+		if (shouldClearDepth)
 		{
-			LogError("Vulkan: could not create the copy of the last frame; reading the screen back between frames will fail.");
-			lastFrame = BufferRegion{};
-			return false;
+			aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
 		}
 
-		return true;
-	}
+		if (shouldClearStencil && hasStencil)
+		{
+			aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
 
-	void VulkanBackend::DestroyLastFrame(void)
-	{
-		if (lastFrame.image != VK_NULL_HANDLE)  { vkDestroyImage(device, lastFrame.image, nullptr); }
-		FreeDeviceMemory(lastFrame.memory);
-
-		lastFrame = BufferRegion{};
-	}
-
-	void VulkanBackend::SaveLastFrame(void)
-	{
-		if (!lastFrame.isLive)
+		if (aspects == 0 || !EnsureFrame() || depthBuffer.image == VK_NULL_HANDLE)
 		{
 			return;
 		}
 
-		// Copy the whole frame, after everything drawn into it
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
+		// Clear inside the pass, only the scissor under a sub-viewport
 		//
-		// Recorded last, just before the image is handed over for presenting. The two are
-		// made at the same size, and only a swapchain rebuild changes that, which
-		// recreates this as well.
-		EndRenderPassIfActive();
-		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		TransitionRegion(lastFrame, lastFrame.hasContent ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		// The same way as the colour clear: the pass stays open and the depth buffer in
+		// its attachment layout, and the clear is ordered against the draws around it by
+		// the pass itself.
+		VkRect2D scissor{};
+		ViewportRectangle(scissor);
 
-		VkImageCopy copy{};
-		copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copy.srcSubresource.layerCount = 1;
-		copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copy.dstSubresource.layerCount = 1;
-		copy.extent = { std::min(lastFrame.width, swapchainExtent.width), std::min(lastFrame.height, swapchainExtent.height), 1 };
+		if (scissor.extent.width == 0 || scissor.extent.height == 0)
+		{
+			return;
+		}
 
-		vkCmdCopyImage(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, lastFrame.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		BeginRenderPassIfNeeded();
 
-		// Leave it ready to be read
-		TransitionRegion(lastFrame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		lastFrame.hasContent = true;
+		VkClearAttachment attachment{};
+		attachment.aspectMask = aspects;
+		attachment.clearValue.depthStencil.depth   = std::clamp(depth, 0.0f, 1.0f);
+		attachment.clearValue.depthStencil.stencil = stencil & 0xffu;
+
+		VkClearRect clearRectangle{};
+		clearRectangle.rect       = scissor;
+		clearRectangle.layerCount = 1;
+
+		vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRectangle);
+	}
+
+	uint32_t VulkanBackend::CreateBufferRegion(bool isDepth)
+	{
+		if (isDead || device == VK_NULL_HANDLE || renderWidth == 0 || backBuffer.image == VK_NULL_HANDLE)
+		{
+			return 0;
+		}
+
+		if (isDepth && depthBuffer.image == VK_NULL_HANDLE)
+		{
+			return 0;
+		}
+
+		// Create an image the size of the back buffer, in the format it copies
+		BufferRegion region;
+		if (!AllocateRegionImage(isDepth, region))
+		{
+			return 0;
+		}
+
+		// Reuse a dead slot before growing
+		//
+		// So a game that cycles regions does not walk the handle space upward forever.
+		for (size_t i = 0; i < bufferRegions.size(); i++)
+		{
+			if (!bufferRegions[i].isLive)
+			{
+				bufferRegions[i] = region;
+				return static_cast<uint32_t>(i + 1);
+			}
+		}
+
+		bufferRegions.push_back(region);
+		return static_cast<uint32_t>(bufferRegions.size());
 	}
 
 	bool VulkanBackend::IsBufferRegion(uint32_t handle) const
@@ -465,30 +295,26 @@ namespace scvk
 		}
 
 		// Move the source into the transfer source layout
-		VkImage const       source       = region.isDepth ? depthImage : swapchainImages[imageIndex];
-		VkImageLayout const sourceLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-
+		//
+		// The depth buffer and the back buffer track their own layouts, and the next pass
+		// moves them back into the attachment ones.
 		if (region.isDepth)
 		{
-			if (depthImage == VK_NULL_HANDLE)
-			{
-				return false;
-			}
-
-			BarrierDepthImage(DepthRestingLayout(), sourceLayout, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, DEPTH_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
-			isDepthLayoutPending = false;
+			TransitionDepth(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		}
 		else
 		{
-			TransitionTo(sourceLayout);
+			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		}
+
+		VkImage const source = region.isDepth ? depthBuffer.image : backBuffer.image;
 
 		// Copy into the region
 		TransitionRegion(region, region.hasContent ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 		// Both extents were clamped to more than zero above.
 		VkImageCopy copy{};
-		copy.srcSubresource.aspectMask = region.isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.aspectMask = region.isDepth ? DepthAspects() : VkImageAspectFlags{ VK_IMAGE_ASPECT_COLOR_BIT };
 		copy.srcSubresource.layerCount = 1;
 		copy.srcOffset = { screenX, screenY, 0 };
 		copy.dstSubresource.aspectMask = copy.srcSubresource.aspectMask;
@@ -496,20 +322,13 @@ namespace scvk
 		copy.dstOffset = { regionX, regionY, 0 };
 		copy.extent    = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 
-		vkCmdCopyImage(commandBuffer, source, sourceLayout, region.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		vkCmdCopyImage(commandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, region.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
 		// Leave the region ready to be read
 		//
 		// Restoring is the only thing that happens to a region after it has been saved.
 		TransitionRegion(region, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		region.hasContent = true;
-
-		// Return the depth image to the depth tests
-		if (region.isDepth)
-		{
-			BarrierDepthImage(sourceLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, DEPTH_ATTACHMENT_ACCESS, VK_PIPELINE_STAGE_TRANSFER_BIT, DEPTH_STAGES);
-		}
-
 		return true;
 	}
 
@@ -545,30 +364,24 @@ namespace scvk
 
 		// Move the destination into the transfer destination layout
 		//
-		// From the layout the depth image is really in. UNDEFINED would let the driver
-		// discard the depth outside the rectangle being restored.
-		VkImage const destination = region.isDepth ? depthImage : swapchainImages[imageIndex];
-
+		// From the layout it is really in, which the tracking keeps. UNDEFINED would let
+		// the driver discard the depth outside the rectangle being restored.
 		if (region.isDepth)
 		{
-			if (depthImage == VK_NULL_HANDLE)
-			{
-				return false;
-			}
-
-			BarrierDepthImage(DepthRestingLayout(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, DEPTH_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
-			isDepthLayoutPending = false;
+			TransitionDepth(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 		}
 		else
 		{
 			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 		}
 
+		VkImage const destination = region.isDepth ? depthBuffer.image : backBuffer.image;
+
 		// Copy out of the region
 		//
 		// Both extents were clamped to more than zero above.
 		VkImageCopy copy{};
-		copy.srcSubresource.aspectMask = region.isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		copy.srcSubresource.aspectMask = region.isDepth ? DepthAspects() : VkImageAspectFlags{ VK_IMAGE_ASPECT_COLOR_BIT };
 		copy.srcSubresource.layerCount = 1;
 		copy.srcOffset = { regionX, regionY, 0 };
 		copy.dstSubresource.aspectMask = copy.srcSubresource.aspectMask;
@@ -577,13 +390,6 @@ namespace scvk
 		copy.extent    = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 
 		vkCmdCopyImage(commandBuffer, region.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-
-		// Return the depth image to the depth tests
-		if (region.isDepth)
-		{
-			BarrierDepthImage(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, DEPTH_ATTACHMENT_ACCESS, VK_PIPELINE_STAGE_TRANSFER_BIT, DEPTH_STAGES);
-		}
-
 		return true;
 	}
 
@@ -606,7 +412,7 @@ namespace scvk
 		retired.image  = region.image;
 		retired.memory.memory = region.memory;
 
-		retiredImages.push_back(retired);
+		Retire(retired);
 
 		region = BufferRegion{};
 	}

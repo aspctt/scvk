@@ -162,6 +162,35 @@ namespace scvk
 			uint8_t padding;
 		};
 
+		/**
+		 * One draw captured for the shadow map, kept in model space with the transforms it
+		 * was drawn with. The world-space fields are filled in when a static pass keeps
+		 * its casters for the next. See cVKDriver_LiveShadows.cpp.
+		 */
+		struct LiveShadowDraw
+		{
+			std::vector<float>    vertices;             // position xyz, texture coordinate uv
+			std::vector<uint32_t> indices;              // a list of the topology's primitives
+			uint32_t              topology        = 0;  // ShadowCasterTopology
+			uint32_t              texture         = 0;  // backend handle, 0 untextured
+			uint32_t              textureSerial   = 0;  // which picture the handle named
+			uint32_t              samplerParameters[4] = { 1, 1, 3, 3 };
+			float                 modelView[16]     = {};
+			float                 projection[16]    = {};
+			float                 textureMatrix[16] = {};
+			uint32_t              alphaFunction  = 7;
+			float                 alphaReference = 0.0f;
+			bool                  isAlphaTested  = false;
+			bool                  isNetwork      = false;
+			float                 modelToWorld[16] = {};
+			float                 worldLow[3]      = {};
+			float                 worldHigh[3]     = {};
+			float                 shadowLow[3]     = {};
+			float                 shadowHigh[3]    = {};
+			uint64_t              shape    = 0;
+			uint64_t              seenPass = 0;
+		};
+
 	public:
 		//// Constants
 
@@ -258,9 +287,8 @@ namespace scvk
 		// sequence.
 		bool isCapabilityEnabled[kGDNumCapabilities] = {};
 
-		// Handed out by GenTextures. The game stores these and passes them back, and
-		// treats zero as "no texture", so names must be unique and non-zero.
-		uint32_t nextTextureName = 1;
+		// The row length, in pixels, of what TexImage2D and the blits read; 0 is the width.
+		uint32_t pixelStoreRowLength = 0;
 
 		// The texture on each stage, as backend handles.
 		uint32_t boundTexture  = 0;
@@ -301,8 +329,18 @@ namespace scvk
 
 		// Held from ClearColor and ClearDepth until the next Clear, because the interface
 		// splits what Vulkan takes as a single call.
-		float clearColour[4]  = { 0.0f, 0.0f, 0.0f, 1.0f };
-		float clearDepthValue = 1.0f;
+		float    clearColour[4]    = { 0.0f, 0.0f, 0.0f, 1.0f };
+		float    clearDepthValue   = 1.0f;
+		uint32_t clearStencilValue = 0;
+
+		// The stencil test, in the game's numbering, held for the backend's pipeline key.
+		uint32_t stencilComparison         = 7;
+		uint32_t stencilReference          = 0;
+		uint32_t stencilReadMask           = 0xff;
+		uint32_t stencilWriteMask          = 0xff;
+		uint32_t stencilFailOperation      = 0;
+		uint32_t stencilDepthFailOperation = 0;
+		uint32_t stencilPassOperation      = 0;
 
 		// Blend, alpha test, depth and colour write state, in the game's own
 		// enumerations. All of it is pipeline or shader state in Vulkan rather than
@@ -322,6 +360,63 @@ namespace scvk
 		float    projectionMatrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 		uint32_t activeMatrix         = 0;
 
+		// Whether the transform, and the stage coordinates that fold in the modelview,
+		// changed since a draw last handed them over. Most draws change neither.
+		bool isTransformDirty         = true;
+		bool areStageCoordinatesDirty = true;
+
+		// The vertex buffer extension's one buffer: the terrain's vertices, written by the
+		// game into memory of the driver's, as SCD3D11 keeps it.
+		std::vector<uint8_t> extensionVertexData;
+		uint32_t             extensionVertexCursor      = 0;
+		uint32_t             extensionVertexStart       = 0;
+		bool                 areExtensionVerticesLocked = false;
+
+		// Whether the blits that name no alpha use the source alpha, which the game sets
+		// through Punt, and where pixels are converted on their way to the backend.
+		bool                 isBlitSourceAlphaUsed = false;
+		std::vector<uint8_t> blitScratch;
+
+		// The frame's ReShade effects: whether the back buffer holds effects drawn since its
+		// last clear, and whether they were drawn this frame.
+		bool isReShadeEffectsInBackBuffer = false;
+		bool isReShadeEffectsThisFrame    = false;
+
+		// The shadow uniforms ReShade effects can ask for, from the scene's orthographic
+		// projection: world units per unit of depth and per screen height.
+		bool  areShadowUniformsValid = false;
+		float shadowDepthScale       = 1.0f;
+		float shadowWorldPerScreen   = 1.0f;
+
+		// Live shadows: the draws captured this pass, the casters kept in world space, and
+		// what the passes have reported about the view, the sun and the shadow's tone.
+		std::vector<LiveShadowDraw> liveShadowDraws;
+		std::vector<LiveShadowDraw> liveShadowWorldCasters;
+		bool     isLiveShadowWorldValid         = false;
+		uint64_t liveShadowPassSerial           = 0;
+		float    liveShadowTerrainView[16]      = {};
+		float    liveShadowTerrainVertex[3]     = {};
+		bool     isLiveShadowTerrainViewValid   = false;
+		bool     isLiveShadowTerrainViewTrusted = false;
+		bool     isLiveShadowTerrainViewRejected = false;
+		float    liveShadowSunWorld[3]          = {};
+		bool     isLiveShadowSunWorldValid      = false;
+		uint64_t liveShadowMatchCalls           = 0;
+		uint64_t liveShadowMatchHits            = 0;
+		uint64_t liveShadowLightsLeftOut        = 0;
+		uint64_t litDrawsPerPixel               = 0;
+		uint64_t litDrawsPerVertex              = 0;
+		bool     isLiveShadowCleanRedrawPending = false;
+		bool     wasLiveShadowEverCaptured      = false;
+		uint32_t liveShadowPartialPasses        = 0;
+		float    liveShadowSceneProjection[16]  = {};
+		bool     isLiveShadowSceneProjectionValid = false;
+		float    liveShadowColour[3]            = {};
+		float    liveShadowStrength             = 0.0f;
+		bool     isLiveShadowToneValid          = false;
+		uint64_t liveShadowTerrainGeneration    = 0;
+		uint32_t liveShadowDeviceGeneration     = 0;
+
 		// The global ambient light colour and the diffuse material alpha, plus whether
 		// the vertex colour feeds either. Together these are all the lighting SimCity 4
 		// uses.
@@ -333,6 +428,29 @@ namespace scvk
 		// Mostly the diffuse mapping, except that an alpha multiplier below one takes it
 		// back. See AlphaMultiplier.
 		bool isAlphaFromVertexColour = false;
+
+		// The lighting extension's state, kept as SCD3D11 keeps it: Direct3D 7's fixed
+		// function lighting, as the game's DirectX driver set it up. The global ambient
+		// light is colourMultiplier and the diffuse material's alpha its fourth value.
+		// Lighting starts on, as the colour multiplier the game sets first turns it on
+		// under SCD3D11; switched off, the vertex colour is drawn as it is. See
+		// cVKDriver_Lighting.cpp.
+		static constexpr uint32_t LIGHT_COUNT = 8;
+
+		bool  isFixedLightingEnabled           = true;
+		bool  isLightEnabled[LIGHT_COUNT]      = {};
+		float lightAmbient[LIGHT_COUNT][4]     = { { 0, 0, 0, 1 } };
+		float lightDiffuse[LIGHT_COUNT][4]     = { { 1, 1, 1, 1 } };
+		float lightSpecular[LIGHT_COUNT][4]    = { { 1, 1, 1, 1 } };
+		float lightPosition[LIGHT_COUNT][4]    = { { 1, 1, 0, 0 } };
+		float materialAmbient[4]               = { 1, 1, 1, 1 };
+		float materialDiffuse[4]               = { 1, 1, 1, 1 };
+		float materialSpecular[4]              = { 0, 0, 0, 1 };
+		float materialEmission[4]              = { 0, 0, 0, 1 };
+		float materialShininess                = 0.0f;
+
+		// The vertices of a draw lit on the CPU, in a format carrying the lit colour.
+		std::vector<uint8_t> litVertices;
 
 		// The last format handed to InterleavedArrays, and the client pointer it named.
 		// Draws read from that pointer, so the driver has to keep both until the draw
@@ -369,6 +487,7 @@ namespace scvk
 		// instead reported only tiny sub-pixel quads, which said nothing about what was
 		// actually on screen.
 		int      blitProbesRemaining          = 3;
+		bool     areDrawDiagnosticsEnabled    = false;
 		uint32_t probedKeys[48]               = {};
 		uint32_t probedCombinations           = 0;
 		int      textureMatrixProbesRemaining = 4;
@@ -463,6 +582,9 @@ namespace scvk
 
 		void DestroyRenderWindow(void);
 
+		/** Puts the frame just presented on the clipboard, for PrintScreen in fullscreen. */
+		void CopyFrameToClipboard(void);
+
 		// Render state, in cVKDriver_State.cpp
 
 		/** Applies Enable or Disable to one capability. */
@@ -474,6 +596,9 @@ namespace scvk
 		/** Forwards depth test, write and comparison. */
 		void PushDepthState(void);
 
+		/** Forwards the stencil test and its operations. */
+		void PushStencilState(void);
+
 		/** Forwards the alpha comparison, disabled when the capability is off. */
 		void PushAlphaTest(void);
 
@@ -483,6 +608,32 @@ namespace scvk
 		/** Forwards the ambient light and where the lit colour and alpha come from. */
 		void PushLighting(void);
 
+		// The fixed function lights, in cVKDriver_Lighting.cpp
+
+		/**
+		 * Whether the next draw needs the full fixed function lighting: a light switched
+		 * on, an emissive material, or an ambient material other than the white the
+		 * shader's own lighting assumes.
+		 */
+		bool IsFixedFunctionLightingNeeded(void) const;
+
+		/**
+		 * Lights a vertex range on the CPU, per vertex as Direct3D 7 does, into
+		 * litVertices in a format that carries the lit colour, at the same vertex
+		 * indices. Returns that format, or 0 when the draw should go as it is.
+		 */
+		uint32_t LightVertices(uint32_t firstVertex, uint32_t vertexCount);
+
+		/**
+		 * Prepares a vertex range for the shader's lit variant into litVertices, as
+		 * LitVertex, at the same vertex indices. Needs a format with a normal. Returns
+		 * LIT_VERTEX_FORMAT, or 0 when the copy would be too large.
+		 */
+		uint32_t LightVerticesPerPixel(uint32_t firstVertex, uint32_t vertexCount);
+
+		/** Draws through the lit vertices, with the shader passing their colour through. */
+		void DrawLit(uint32_t gdPrimitiveType, uint32_t firstVertex, uint32_t vertexCount, void const* indices, uint32_t indexCount, bool isIndex32Bit);
+
 		/** Forwards the fog, or the 3D view's own while the marker forces it. */
 		void PushFog(void);
 
@@ -490,6 +641,18 @@ namespace scvk
 
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
+
+		/** The shared body of DrawArrays and the vertex buffer extension's DrawPrims. */
+		void DrawClientArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count);
+
+		/** The shared body of DrawElements and the vertex buffer extension's DrawPrimsIndexed. */
+		void DrawClientElements(uint32_t gdPrimitiveType, int32_t count, void const* indices, bool isIndex32Bit);
+
+		/** With -GridDebug, logs the texture state of the terrain grid pass once a second, as SCD3D11 does. */
+		void NoteGridDebug(void);
+
+		/** Whether the extension's current reservation holds this many bytes of whole vertices. */
+		bool HasExtensionVertices(uint32_t bytes) const;
 
 		/** Recomputes and forwards where each stage's coordinates come from. */
 		void PushStageCoordinates(void);
@@ -508,6 +671,9 @@ namespace scvk
 		/** Applies a texture enable to the stage TexStage last selected. */
 		void SetTextureStageEnabled(bool isEnabled);
 
+		/** Binds a texture to a stage, here and in the backend. */
+		void BindStageTexture(uint32_t stage, uint32_t texture);
+
 		/** Recomputes both stages from the mode and network and pushes them. */
 		void PushCombinerState(void);
 
@@ -519,7 +685,44 @@ namespace scvk
 		 * They differ only in how they scale and how they treat alpha; the pixel upload
 		 * underneath is identical, so it lives in one place.
 		 */
-		void UploadBlit(char const* caller, int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer1, void const* buffer2);
+		void UploadBlit(char const* caller, int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* pixels, bool isColourKeyed, void const* colourKey, uint32_t alphaMode, uint32_t alphaValue);
+
+		// Live shadows, in cVKDriver_LiveShadows.cpp
+
+		/** Whether the draw about to be made is one the shadow modules asked to cast. */
+		bool MatchesLiveShadowMesh(uint8_t const* vertices, uint32_t vertexCount);
+
+		/**
+		 * Captures a matched draw: its vertices from the first, and its triangles, lines
+		 * or points relative to it, as a list of the topology's primitives.
+		 */
+		void CaptureLiveShadowDraw(uint8_t const* vertices, uint32_t vertexCount, std::vector<uint32_t> const& primitives, uint32_t topology);
+
+		/** Captures the draws a caster made, if it is one; the shared check of every draw path. */
+		void NoteLiveShadowCandidate(uint32_t gdPrimitiveType, uint8_t const* firstVertex, uint32_t vertexCount, void const* indices, uint32_t indexCount, bool isIndex32Bit, uint32_t indexBase);
+
+		/** Remembers the terrain's modelview, which stands in for the view in a city without shadow records. */
+		void NoteLiveShadowTerrainView(uint8_t const* firstVertex);
+
+		/** Keeps a static pass's casters in world space and works out what a partial pass changed. */
+		bool TrackLiveShadowWorldCasters(float const* eyeToWorld, float const* worldToView, float const* projection, float const sun[3], bool isSunKnown, bool isPartialPass);
+
+		/** Snapshots the scene's orthographic projection for ReShade's shadow uniforms and the composite. */
+		void CaptureShadowUniforms(void);
+
+		// ReShade and the frame callbacks, in cVKDriver_ReShade.cpp
+
+		/** Registers scvk with ReShade, when it is loaded, and hooks the 3D view's draw. */
+		void InstallReShadeAddon(void);
+
+		/** Tells ReShade not to draw its effects again at present, when they are already in the back buffer. */
+		void FinishReShadeFrame(void);
+
+		/** Hands the frame to a plugin's callback, if one is registered. */
+		void InvokeFrameCallback(void);
+
+		/** Lets go of the hooks, which stay patched but do nothing without a driver. */
+		void UninstallReShadeAddon(void);
 
 		// Diagnostics, in cVKDriver_Diagnostics.cpp
 
@@ -632,6 +835,18 @@ namespace scvk
 	public:
 		//// Public API
 
+		/** Called once the 3D view has drawn, before the interface: the shadows, then ReShade's effects. */
+		void RenderSceneEffects(void);
+
+		/** Draws the live shadows of the pass just drawn, a static pass of the city view or the view as a whole. */
+		void RenderLivePropShadows(bool isStaticPass);
+
+		/** Whether a partial pass asked for the city view to be drawn whole next time, clearing the request. */
+		bool ConsumeLiveShadowCleanRedraw(void);
+
+		/** Called before the device goes, so plugins holding its objects can let them go. */
+		void NotifyBeforeDeviceDestroy(void);
+
 		cVKDriver(void);
 		virtual ~cVKDriver(void) override;
 
@@ -736,7 +951,7 @@ namespace scvk
 		virtual void StretchBlt(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2) override;
 		virtual void BitBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2, uint32_t alpha) override;
 		virtual void StretchBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2, uint32_t alpha) override;
-		virtual void BitBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t width, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2, uint32_t alpha) override;
+		virtual void BitBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2, uint32_t alpha) override;
 		virtual void StretchBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isUnknownFlagSet, void const* buffer2, uint32_t alpha) override;
 
 		virtual void SetViewport(void) override;
@@ -787,11 +1002,11 @@ namespace scvk
 		virtual char const* GetVertexBufferName(uint32_t gdVertexFormat) override;
 		virtual uint32_t    VertexBufferType(uint32_t unknown) override;
 		virtual uint32_t    MaxVertices(uint32_t unknown) override;
-		virtual uint32_t    GetVertices(int32_t count, bool isUnknownFlagSet) override;
+		virtual uint32_t    GetVertices(int32_t name, uint32_t count) override;
 		virtual uint32_t    ContinueVertices(uint32_t unknown, uint32_t unknown2) override;
 		virtual void        ReleaseVertices(uint32_t unknown) override;
 		virtual void        DrawPrims(uint32_t unknown, uint32_t gdPrimitiveType, void* primitives, uint32_t count) override;
-		virtual void        DrawPrimsIndexed(uint32_t unknown, uint32_t gdPrimitiveType, uint32_t count, uint16_t* indices, void* primitives, uint32_t secondCount) override;
+		virtual void        DrawPrimsIndexed(uint32_t name, uint32_t gdPrimitiveType, uint32_t count, uint16_t* indices) override;
 		virtual void        Reset(void) override;
 	};
 }

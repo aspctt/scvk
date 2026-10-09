@@ -62,12 +62,22 @@ namespace scvk
 	{
 		refCount = 0;
 
+		// Plugins drawing with the frame callback hear when the device is about to go
+		vulkan->SetBeforeDeviceDestroyHook([](void* driver) { static_cast<cVKDriver*>(driver)->NotifyBeforeDeviceDestroy(); }, this);
+
 		LogOpen();
 		LogDebug("cVKDriver constructed.");
+
+		// The per-draw diagnostics write only at the debug level
+		areDrawDiagnosticsEnabled = IsLogged(LOG_LEVEL_DEBUG);
 	}
 
 	cVKDriver::~cVKDriver(void)
 	{
+		// Destroy the device while the driver it notifies still exists
+		vulkan->Destroy();
+		vulkan->SetBeforeDeviceDestroyHook(nullptr, nullptr);
+		UninstallReShadeAddon();
 		LogDebug("cVKDriver destroyed (refcount reached zero).");
 	}
 
@@ -116,12 +126,11 @@ namespace scvk
 			break;
 
 		case GZIID_cIGZGDriverVertexBufferExtension:
-			// Deliberately declined. Accepting it opts the game into a buffer-object draw
-			// path, and the client-memory path is the one scvk implements. SCGL also
-			// leaves this one disabled. Logged so the boot trace still records that the
-			// game asked.
-			LogDebug("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension DECLINED (stub stage)", interfaceId);
-			return false;
+			// Accepted, as SCD3D11 accepts it: the game then draws the terrain from a
+			// buffer of the driver's rather than from client arrays.
+			LogDebug("QueryInterface(%08x) -> cIGZGDriverVertexBufferExtension", interfaceId);
+			*outInterface = static_cast<cIGZGDriverVertexBufferExtension*>(this);
+			break;
 
 		default:
 			LogDebug("QueryInterface(%08x) -> unrecognised, declined", interfaceId);
@@ -174,7 +183,18 @@ namespace scvk
 
 	bool cVKDriver::Punt(uint32_t unknown, void* unknown2)
 	{
-		SCVK_CALL("%u, %p", unknown, unknown2);
-		return false;
+		SCVK_CALL("0x%08x, %p", unknown, unknown2);
+
+		// The one Punt SCD3D11 answers: whether the plain blits use the source alpha, the
+		// flag pointed to
+		constexpr uint32_t PUNT_BLIT_SOURCE_ALPHA = 0x6C4236E7;
+
+		if (unknown != PUNT_BLIT_SOURCE_ALPHA || unknown2 == nullptr)
+		{
+			return false;
+		}
+
+		isBlitSourceAlphaUsed = *static_cast<bool const*>(unknown2);
+		return true;
 	}
 }

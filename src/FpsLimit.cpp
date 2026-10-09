@@ -27,7 +27,7 @@
 #include "Logger.h"
 #include "SC4Version.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -67,9 +67,9 @@ namespace scvk
 		// work until the frame has lasted 1000 / rate milliseconds, at least 15 of them
 		// padding. While the city is paused, or hidden-paused while the camera moves, the
 		// rate is a fixed 30 rather than the speed's cap, so a paused city sits at 30 frames
-		// a second that MaxFPS never reaches.
+		// a second that no cap reaches.
 		//
-		// The short budget both patches use instead. The idle agents each get a third of the
+		// The short budget the paused path uses instead. The idle agents each get a third of the
 		// budget, so this is the smallest that still hands each of them a whole millisecond.
 		constexpr uint8_t TICK_BUDGET_MILLISECONDS = 3;
 
@@ -79,13 +79,6 @@ namespace scvk
 		constexpr uintptr_t PAUSED_RATE_ADDRESS_641 = 0x703EE2;
 		constexpr uint8_t   PAUSED_RATE_ORIGINAL[]  = { 0xB9, 0x1E, 0x00, 0x00, 0x00 };
 		constexpr uint8_t   PAUSED_RATE_PATCHED[]   = { 0x6A, TICK_BUDGET_MILLISECONDS, 0x58, 0xEB, 0x14 };
-
-		// CMP EAX,15, JG and MOV EAX,15 clamp the running budget to at least 15 ms, which
-		// keeps a padded frame near 60 frames a second whatever the cap. Lowering both
-		// immediates lets MaxFPS go past that, at the cost of the simulation's time.
-		constexpr uintptr_t MINIMUM_BUDGET_ADDRESS_641 = 0x703EF1;
-		constexpr uint8_t   MINIMUM_BUDGET_ORIGINAL[]  = { 0x83, 0xF8, 0x0F, 0x7F, 0x05, 0xB8, 0x0F, 0x00, 0x00, 0x00 };
-		constexpr uint8_t   MINIMUM_BUDGET_PATCHED[]   = { 0x83, 0xF8, TICK_BUDGET_MILLISECONDS, 0x7F, 0x05, 0xB8, TICK_BUDGET_MILLISECONDS, 0x00, 0x00, 0x00 };
 
 		// The animation clock (cSC4AnimationTickManager) hands lot animations the time since
 		// its last tick, once a frame, but counts any tick shorter than 2 ms as 2 ms. Above
@@ -102,7 +95,6 @@ namespace scvk
 		constexpr uint8_t   ANIMATION_FLOOR_PATCHED[]   = { 0xC7, 0x46, 0x50, ANIMATION_FLOOR_MICROSECONDS, 0x00, 0x00, 0x00 };
 
 		static_assert(sizeof(PAUSED_RATE_ORIGINAL) == sizeof(PAUSED_RATE_PATCHED), "a patch must replace exactly the bytes it checked");
-		static_assert(sizeof(MINIMUM_BUDGET_ORIGINAL) == sizeof(MINIMUM_BUDGET_PATCHED), "a patch must replace exactly the bytes it checked");
 		static_assert(sizeof(ANIMATION_FLOOR_ORIGINAL) == sizeof(ANIMATION_FLOOR_PATCHED), "a patch must replace exactly the bytes it checked");
 	}
 
@@ -110,51 +102,23 @@ namespace scvk
 
 	namespace
 	{
-		/** Absolute path of scvk.ini, beside the DLL. */
-		bool SettingsPath(char* outPath, size_t capacity)
+		/**
+		 * The frame rate the speed caps are raised to: the main display's refresh rate,
+		 * so a running city can show every frame the display can, and no more. Zero when
+		 * the display does not say, or refreshes no faster than the game's own caps.
+		 */
+		int AutomaticFrameRateCap(void)
 		{
-			// Find the module this code lives in
-			//
-			// The flag makes the API read its second argument as an address inside the
-			// module rather than as a name, which is why a function pointer is passed
-			// where the signature asks for a string.
-			HMODULE module = nullptr;
-			DWORD const flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
-			if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(&SettingsPath), &module))
+			DEVMODEA mode{};
+			mode.dmSize = sizeof(mode);
+
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &mode) == 0 || mode.dmDisplayFrequency <= 30)
 			{
-				return false;
+				return 0;
 			}
 
-			// Replace the file name in its path with the settings file's
-			DWORD const written = GetModuleFileNameA(module, outPath, capacity);
-			if (written == 0 || written >= capacity)
-			{
-				return false;
-			}
-
-			char* const separator = strrchr(outPath, '\\');
-			if (separator == nullptr)
-			{
-				return false;
-			}
-
-			separator[1] = '\0';
-			if (strlen(outPath) + strlen("scvk.ini") >= capacity)
-			{
-				return false;
-			}
-
-			strcat_s(outPath, capacity, "scvk.ini");
-			return true;
-		}
-
-		/** Whether a true or false setting in scvk.ini is true, or the default when it is absent. */
-		bool IsSettingTrue(char const* settingsPath, char const* key, bool isTrueByDefault)
-		{
-			char value[16] = {};
-			GetPrivateProfileStringA("scvk", key, isTrueByDefault ? "true" : "false", value, sizeof(value), settingsPath);
-
-			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
+			// At most a few hundred, so it fits.
+			return static_cast<int>(mode.dmDisplayFrequency);
 		}
 
 		/** Writes bytes of the game's code, restoring the page protection after. */
@@ -220,20 +184,9 @@ namespace scvk
 
 	void ApplyFpsLimitSettings(void)
 	{
-		// Read the settings
-		//
-		// Without a settings path both stay as if absent: no cap, and the running padding
-		// left alone. The API hands the cap back unsigned; it is range checked as a signed
-		// one.
-		int  frameRateCap              = 0;
-		bool shouldUnlockRunningFrames = false;
-
-		char settingsPath[MAX_PATH];
-		if (SettingsPath(settingsPath, sizeof(settingsPath)))
-		{
-			frameRateCap              = static_cast<int>(GetPrivateProfileIntA("scvk", "MaxFPS", 0, settingsPath));
-			shouldUnlockRunningFrames = IsSettingTrue(settingsPath, "UnlockRunningFPS", false);
-		}
+		// Raise the speed caps to the display's refresh rate, and leave the running
+		// city's simulation time alone, which lowering would slow the city down for
+		int frameRateCap = AutomaticFrameRateCap();
 
 		// Only patch the build the addresses came from
 		uint16_t const gameVersion = GetGameVersion();
@@ -256,13 +209,7 @@ namespace scvk
 		// scvk starts, so they all get the new floor.
 		PatchCode("animation clock floor", ANIMATION_FLOOR_ADDRESS_641, ANIMATION_FLOOR_ORIGINAL, ANIMATION_FLOOR_PATCHED, sizeof(ANIMATION_FLOOR_ORIGINAL));
 
-		// Lower the running city's minimum padding, when asked
-		if (shouldUnlockRunningFrames)
-		{
-			PatchCode("running frame padding minimum", MINIMUM_BUDGET_ADDRESS_641, MINIMUM_BUDGET_ORIGINAL, MINIMUM_BUDGET_PATCHED, sizeof(MINIMUM_BUDGET_ORIGINAL));
-		}
-
-		// Raise the speed caps, when asked
+		// Raise the speed caps, when the display refreshes faster than they allow
 		if (frameRateCap <= 0)
 		{
 			return;
@@ -270,7 +217,7 @@ namespace scvk
 
 		if (frameRateCap > LARGEST_CAP)
 		{
-			LogWarn("MaxFPS=%d exceeds the one-byte field; clamping to 255.", frameRateCap);
+			LogWarn("A frame rate cap of %d exceeds the one-byte field; clamping to 255.", frameRateCap);
 			frameRateCap = LARGEST_CAP;
 		}
 

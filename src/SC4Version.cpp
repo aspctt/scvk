@@ -26,10 +26,12 @@
 #include "SC4Version.h"
 #include "Logger.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <vector>
 
+#if defined(_MSC_VER)
 #pragma comment(lib, "version.lib")
+#endif
 
 namespace scvk
 {

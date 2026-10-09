@@ -43,6 +43,7 @@
 
 #include <cGDCombiner.h>
 
+#include <algorithm>
 #include <string.h>
 
 namespace scvk
@@ -67,6 +68,10 @@ namespace scvk
 
 		// Argument 2 is the texture, read through its alpha.
 		constexpr uint32_t ARGUMENT2_TEXTURE_ALPHA = (0u << 13) | (2u << 15);
+
+		// Argument 0 the environment colour, argument 2 the texture's own colour.
+		constexpr uint32_t ARGUMENT0_FROM_CONSTANT  = 2u << 3;
+		constexpr uint32_t ARGUMENT2_TEXTURE_COLOUR = (0u << 13) | (0u << 15);
 
 		constexpr float IDENTITY_MATRIX[16] = {
 			1, 0, 0, 0,
@@ -138,8 +143,17 @@ namespace scvk
 
 				return COMBINE_INTERPOLATE | ARGUMENT0_FROM_TEXTURE | ARGUMENT1_FROM_PREVIOUS | ARGUMENT2_TEXTURE_ALPHA;
 
-			// Blend needs the environment colour, which the game has not been seen
-			// setting, so it stays on the default rather than being invented.
+			case kGDTextureEnvParam_Blend:
+				// The texture's colour weighs the environment colour against what came
+				// before, and the alpha is the texture's times the previous one, as OpenGL
+				// defines GL_BLEND and SCD3D11 draws it, rather than as modulate.
+				if (isAlphaChannel)
+				{
+					return COMBINE_MODULATE | ARGUMENT0_FROM_TEXTURE | ARGUMENT1_FROM_PREVIOUS;
+				}
+
+				return COMBINE_INTERPOLATE | ARGUMENT0_FROM_CONSTANT | ARGUMENT1_FROM_PREVIOUS | ARGUMENT2_TEXTURE_COLOUR;
+
 			case kGDTextureEnvParam_Modulate:
 			default:
 				return COMBINE_MODULATE | ARGUMENT0_FROM_TEXTURE | ARGUMENT1_FROM_PREVIOUS;
@@ -179,16 +193,100 @@ namespace scvk
 	void cVKDriver::BindTexture(uint32_t gdTextureTarget, uint32_t texture)
 	{
 		SCVK_CALL("%u, %u", gdTextureTarget, texture);
+
+		// Binds a name GenTextures handed out, or CreateTexture made, to the active stage,
+		// as SCD3D11 does
+		if (gdTextureTarget != 0 || (texture != 0 && !vulkan->IsTextureName(texture)))
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+
+		BindStageTexture(activeTextureStage, texture);
 	}
 
 	void cVKDriver::TexImage2D(uint32_t gdTextureTarget, int32_t level, int32_t gdInternalTextureFormat, int32_t width, int32_t height, int32_t border, uint32_t gdTextureFormat, uint32_t gdType, void const* pixels)
 	{
 		SCVK_CALL("%u, %d, %d, %dx%d, border %d, fmt %u, type %u, %p", gdTextureTarget, level, gdInternalTextureFormat, width, height, border, gdTextureFormat, gdType, pixels);
+
+		// Defines a level of the texture bound to the active stage, OpenGL's way of making
+		// a texture, which SCD3D11 implements alongside CreateTexture
+		uint32_t const texture = (activeTextureStage == 0) ? boundTexture : stage1Texture;
+
+		if (gdTextureTarget != 0 || level < 0 || border != 0 || width <= 0 || height <= 0 || gdInternalTextureFormat < 0 || !vulkan->IsTextureName(texture))
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+
+		// All of them are positive, checked just above.
+		uint32_t const levelIndex     = static_cast<uint32_t>(level);
+		uint32_t const levelWidth     = static_cast<uint32_t>(width);
+		uint32_t const levelHeight    = static_cast<uint32_t>(height);
+		uint32_t const internalFormat = static_cast<uint32_t>(gdInternalTextureFormat);
+
+		if (levelIndex == 0)
+		{
+			// The top level gives the texture its size and format, keeping an image that
+			// already has them
+			if (!vulkan->DefineTexture(texture, internalFormat, levelWidth, levelHeight, 1))
+			{
+				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
+				return;
+			}
+		}
+		else
+		{
+			// A smaller level has to match the top level's size halved that many times,
+			// and adds every level to the image the first time one is named
+			uint32_t topWidth = 0, topHeight = 0, levels = 0, uploadedLevels = 0, uploads = 0;
+			if (!vulkan->DescribeTexture(texture, topWidth, topHeight, levels, uploadedLevels, uploads))
+			{
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+
+			uint32_t maximumLevels = 1;
+			for (uint32_t dimension = std::max(topWidth, topHeight); dimension > 1; dimension >>= 1)
+			{
+				maximumLevels++;
+			}
+
+			if (levelIndex >= maximumLevels || levelWidth != std::max(topWidth >> levelIndex, 1u) || levelHeight != std::max(topHeight >> levelIndex, 1u))
+			{
+				SetLastError(DriverError::INVALID_VALUE);
+				return;
+			}
+
+			if (levelIndex >= levels && !vulkan->DefineTexture(texture, internalFormat, topWidth, topHeight, maximumLevels))
+			{
+				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
+				return;
+			}
+		}
+
+		// Bind the image the name now has, which a reserved name did not have before
+		BindStageTexture(activeTextureStage, texture);
+
+		if (pixels != nullptr)
+		{
+			vulkan->UploadTextureLevel(texture, levelIndex, 0, 0, levelWidth, levelHeight, gdTextureFormat, gdType, pixelStoreRowLength, pixels);
+		}
 	}
 
 	void cVKDriver::PixelStore(uint32_t gdParameter, int32_t parameter)
 	{
 		SCVK_CALL("%u, %d", gdParameter, parameter);
+
+		// The one parameter is the row length, in pixels, of what TexImage2D and the
+		// blits read
+		if (gdParameter != 0 || parameter < 0)
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+
+		pixelStoreRowLength = static_cast<uint32_t>(parameter);
 	}
 
 	void cVKDriver::TexEnv(uint32_t gdTextureEnvironmentTarget, uint32_t gdTextureEnvironmentParameterType, int32_t gdTextureEnvironmentMode)
@@ -219,7 +317,7 @@ namespace scvk
 		textureEnvironmentMode[activeTextureStage] = gdTextureEnvironmentMode;
 		PushCombinerState();
 
-		// The backend treats anything outside its three modes as modulate, so a value
+		// The backend treats anything outside its four modes as modulate, so a value
 		// that wraps around when made unsigned is harmless.
 		if (activeTextureStage == 0)
 		{
@@ -295,15 +393,17 @@ namespace scvk
 	{
 		SCVK_CALL("%d, %p", count, textures);
 
-		if (textures == nullptr || count <= 0)
+		if (count < 0 || (count > 0 && textures == nullptr))
 		{
 			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 
+		// Names come from the same space as CreateTexture's handles, so either kind can be
+		// bound, deleted and asked about the same way
 		for (int32_t i = 0; i < count; i++)
 		{
-			textures[i] = nextTextureName++;
+			textures[i] = vulkan->ReserveTexture();
 		}
 	}
 
@@ -311,16 +411,26 @@ namespace scvk
 	{
 		SCVK_CALL("%d, %p", count, textures);
 
-		// These are the handles CreateTexture returned. The interface also has
-		// GenTextures, which hands out names from a separate space, but the game never
-		// calls it, so there is only one kind of value arriving here.
-		if (textures == nullptr || count <= 0)
+		// The handles CreateTexture returned and the names GenTextures handed out share
+		// one space
+		if (count < 0 || (count > 0 && textures == nullptr))
 		{
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 
 		for (int32_t i = 0; i < count; i++)
 		{
+			if (boundTexture == textures[i])
+			{
+				boundTexture = 0;
+			}
+
+			if (stage1Texture == textures[i])
+			{
+				stage1Texture = 0;
+			}
+
 			vulkan->DestroyTexture(textures[i]);
 		}
 	}
@@ -329,8 +439,8 @@ namespace scvk
 	{
 		SCVK_CALL("%u", texture);
 
-		// Any name GenTextures has issued.
-		return texture != 0 && texture < nextTextureName;
+		// A name with an image behind it, as SCD3D11 answers.
+		return vulkan->TextureSerial(texture) != 0;
 	}
 
 	void cVKDriver::PrioritizeTextures(int32_t count, uint32_t const* textures, float const* priorities)
@@ -342,17 +452,22 @@ namespace scvk
 	{
 		SCVK_CALL("%d, %p, %p", count, textures, residences);
 
-		if (residences == nullptr)
+		if (count < 0 || (count > 0 && (textures == nullptr || residences == nullptr)))
 		{
-			return true;
+			SetLastError(DriverError::INVALID_VALUE);
+			return false;
 		}
+
+		// Every texture with an image is resident; Vulkan keeps no other kind
+		bool areAllResident = true;
 
 		for (int32_t i = 0; i < count; i++)
 		{
-			residences[i] = true;
+			residences[i]   = vulkan->TextureSerial(textures[i]) != 0;
+			areAllResident = areAllResident && residences[i];
 		}
 
-		return true;
+		return areAllResident;
 	}
 
 	void cVKDriver::TexStage(uint32_t textureUnit)
@@ -372,6 +487,7 @@ namespace scvk
 		// stage's source decides whether the draw generates its coordinates, which is
 		// what the cloud shadows do.
 		textureCoordinateSource[activeTextureStage] = gdTextureCoordinateSource;
+		areStageCoordinatesDirty = true;
 
 		if (NoteOnce(NOTE_COORDINATE_SOURCE, activeTextureStage | (gdTextureCoordinateSource << 8)))
 		{
@@ -399,6 +515,7 @@ namespace scvk
 		// alone. A 2D sample uses only those first two rows, so none of that distinction
 		// reaches here, and the fourth row is taken to leave q at one.
 		memcpy(textureStageMatrices[activeTextureStage], (matrix != nullptr) ? matrix : IDENTITY_MATRIX, sizeof(textureStageMatrices[activeTextureStage]));
+		areStageCoordinatesDirty = true;
 
 		// Report the first few matrices
 		//
@@ -462,12 +579,23 @@ namespace scvk
 		}
 
 		// Bind it to its stage
-		if (textureUnit == 0)
+		if (textureUnit >= STAGE_COUNT || (texture != 0 && !vulkan->IsTextureName(texture)))
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return;
+		}
+
+		BindStageTexture(textureUnit, texture);
+	}
+
+	void cVKDriver::BindStageTexture(uint32_t stage, uint32_t texture)
+	{
+		if (stage == 0)
 		{
 			boundTexture = texture;
 			vulkan->SetTexture(texture);
 		}
-		else if (textureUnit == 1)
+		else
 		{
 			stage1Texture = texture;
 			vulkan->SetTexture1(texture);
@@ -478,9 +606,15 @@ namespace scvk
 	{
 		SCVK_CALL("%u", textureUnit);
 
+		if (textureUnit >= STAGE_COUNT)
+		{
+			SetLastError(DriverError::INVALID_VALUE);
+			return 0;
+		}
+
 		// Handles are small positive numbers, so they fit the signed type the interface
 		// returns.
-		return (textureUnit == 0) ? static_cast<intptr_t>(boundTexture) : 0;
+		return static_cast<intptr_t>((textureUnit == 0) ? boundTexture : stage1Texture);
 	}
 
 	intptr_t cVKDriver::CreateTexture(uint32_t gdInternalTextureFormat, uint32_t width, uint32_t height, uint32_t levels, uint32_t gdTextureHintFlags)
@@ -489,15 +623,25 @@ namespace scvk
 
 		// Must be non-zero: the game tests the result before using it. Handles are small
 		// positive numbers, so they fit the signed type the interface returns.
-		return static_cast<intptr_t>(vulkan->CreateTexture(gdInternalTextureFormat, width, height, levels));
+		uint32_t const texture = vulkan->CreateTexture(gdInternalTextureFormat, width, height, levels);
+		if (texture == 0)
+		{
+			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
+			return 0;
+		}
+
+		// The new texture is bound to the active stage, as SCD3D11 binds it
+		BindStageTexture(activeTextureStage, texture);
+		return static_cast<intptr_t>(texture);
 	}
 
 	void cVKDriver::LoadTextureLevel(uint32_t texture, int32_t level, int32_t offsetX, int32_t offsetY, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, uint32_t rowLength, void const* pixels)
 	{
 		SCVK_CALL("%u, level %d, +%d+%d, %dx%d, fmt %u, type %u, row %u, %p", texture, level, offsetX, offsetY, width, height, gdTextureFormat, gdType, rowLength, pixels);
 
-		if (level < 0 || width <= 0 || height <= 0)
+		if (level < 0 || width <= 0 || height <= 0 || offsetX < 0 || offsetY < 0 || pixels == nullptr)
 		{
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 

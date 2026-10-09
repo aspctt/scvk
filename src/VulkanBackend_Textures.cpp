@@ -22,18 +22,24 @@
  *
  * Each texture owns an image, a view and a descriptor set that never changes, and a range
  * of a memory block it shares with other textures. Uploads are gathered into batches that
- * run ahead of the frame drawing with them. Filter and wrap live on each stage, as they
- * do on a Direct3D texture stage, and pick a sampler from a small cache when a draw binds
- * them.
+ * run ahead of the frame drawing with them, staged straight into the batch's arena in the
+ * image's own layout. Filter and wrap live on each stage, as they do on a Direct3D texture
+ * stage, and pick a sampler from a small cache when a draw binds them.
+ *
+ * Uncompressed textures are B8G8R8A8, the order the game hands most of them over in, so
+ * the common upload is a plain copy, as it is for SCD3D11's B8G8R8A8 textures.
  */
 
 //// Dependencies
 
 #include "VulkanBackend.h"
 #include "Logger.h"
+#include "TextureUploadUtils.h"
 
-#include <Windows.h>
+#include <windows.h>
+#include <algorithm>
 #include <stdio.h>
+#include <vector>
 #include <string.h>
 
 namespace scvk
@@ -99,6 +105,9 @@ namespace scvk
 		// bytes at most here (DXT3 and DXT5).
 		constexpr VkDeviceSize TEXTURE_UPLOAD_ALIGNMENT = 16;
 
+		// The fixed samplers of scvk's own passes come from the sampler pool as well.
+		constexpr uint32_t FIXED_SAMPLERS = 3;
+
 		// The game's upload enumerations, from SCGL's translation tables. Formats: 0 RGB,
 		// 1 RGBA, 2 BGR, 3 BGRA. Types: 1 GL_UNSIGNED_BYTE, 8 GL_UNSIGNED_SHORT_4_4_4_4
 		// and 13 GL_UNSIGNED_SHORT_4_4_4_4_REV.
@@ -141,11 +150,12 @@ namespace scvk
 			case 7: return VK_FORMAT_BC3_UNORM_BLOCK;        // DXT5
 
 			default:
-				// RGB5, RGB8, RGBA4, RGB5_A1 and RGBA8 all become RGBA8. The narrower
+				// RGB5, RGB8, RGBA4, RGB5_A1 and RGBA8 all become BGRA8. The narrower
 				// ones lose nothing that matters here, and the upload path only ever
-				// hands over 8 bits per channel anyway.
+				// hands over 8 bits per channel anyway. BGRA because that is the order
+				// the game's interface textures arrive in, so they are copied unchanged.
 				outIsCompressed = false;
-				return VK_FORMAT_R8G8B8A8_UNORM;
+				return VK_FORMAT_B8G8R8A8_UNORM;
 			}
 		}
 
@@ -213,15 +223,16 @@ namespace scvk
 		// Create the sampler pool
 		//
 		// Samplers are their own descriptor type and their own sets, one per distinct
-		// filter and wrap combination the game asks for. Texture sets live in pools of
-		// their own, made by AllocateTextureSet as they are needed.
+		// filter and wrap combination the game asks for, and the fixed ones of scvk's own
+		// passes. Texture sets live in pools of their own, made by AllocateTextureSet as
+		// they are needed.
 		VkDescriptorPoolSize samplerPoolSize{};
 		samplerPoolSize.type            = VK_DESCRIPTOR_TYPE_SAMPLER;
-		samplerPoolSize.descriptorCount = MAXIMUM_SAMPLERS;
+		samplerPoolSize.descriptorCount = MAXIMUM_SAMPLERS + FIXED_SAMPLERS;
 
 		VkDescriptorPoolCreateInfo poolInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		poolInformation.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-		poolInformation.maxSets       = MAXIMUM_SAMPLERS;
+		poolInformation.maxSets       = MAXIMUM_SAMPLERS + FIXED_SAMPLERS;
 		poolInformation.poolSizeCount = 1;
 		poolInformation.pPoolSizes    = &samplerPoolSize;
 
@@ -259,9 +270,10 @@ namespace scvk
 
 		// Reserve command buffers and fences for work outside the frame
 		//
-		// One runs the texture batches, the other anything waited for at once.
+		// One runs the texture batches, the other anything waited for at once. They come
+		// from the utility pool, since the frames' pools are reset as a whole.
 		VkCommandBufferAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-		allocationInformation.commandPool        = commandPool;
+		allocationInformation.commandPool        = utilityCommandPool;
 		allocationInformation.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocationInformation.commandBufferCount = 1;
 
@@ -294,7 +306,13 @@ namespace scvk
 			return false;
 		}
 
+		isTextureBatchOpen     = false;
+		isTextureBatchInFlight = false;
+
 		// Create the staging arena for texture uploads
+		//
+		// Unlike the frame arenas it is rewound as a whole whenever a batch has finished,
+		// so within a batch it only ever moves forward.
 		textureUploadArena.name          = "texture upload";
 		textureUploadArena.usage         = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 		textureUploadArena.blockSize     = TEXTURE_UPLOAD_BLOCK_SIZE;
@@ -305,7 +323,71 @@ namespace scvk
 			return false;
 		}
 
-		return CreateDefaultTexture();
+		return CreateFixedSamplers() && CreateDefaultTexture();
+	}
+
+	bool VulkanBackend::CreateFixedSamplers(void)
+	{
+		// Point and linear, clamped, for the blits and the full-screen passes, and linear
+		// repeating for the shadow casters' alpha
+		struct FixedSampler
+		{
+			VkFilter             filter;
+			VkSamplerAddressMode address;
+			VkSampler*           sampler;
+			VkDescriptorSet*     set;
+		};
+
+		FixedSampler const fixedSamplers[FIXED_SAMPLERS] = {
+			{ VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, &pointClampSampler, &pointClampSet },
+			{ VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, &linearClampSampler, &linearClampSet },
+			{ VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, &linearWrapSampler, &linearWrapSet },
+		};
+
+		for (FixedSampler const& fixed : fixedSamplers)
+		{
+			VkSamplerCreateInfo information{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+			information.magFilter    = fixed.filter;
+			information.minFilter    = fixed.filter;
+			information.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+			information.addressModeU = fixed.address;
+			information.addressModeV = fixed.address;
+			information.addressModeW = fixed.address;
+			information.maxLod       = 0.25f;
+
+			VkResult result = vkCreateSampler(device, &information, nullptr, fixed.sampler);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkCreateSampler (fixed)", result);
+				return false;
+			}
+
+			VkDescriptorSetAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+			allocationInformation.descriptorPool     = descriptorPool;
+			allocationInformation.descriptorSetCount = 1;
+			allocationInformation.pSetLayouts        = &samplerSetLayout;
+
+			result = vkAllocateDescriptorSets(device, &allocationInformation, fixed.set);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkAllocateDescriptorSets (fixed sampler)", result);
+				return false;
+			}
+
+			VkDescriptorImageInfo imageInformation{};
+			imageInformation.sampler = *fixed.sampler;
+
+			VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+			write.dstSet          = *fixed.set;
+			write.dstBinding      = 0;
+			write.descriptorCount = 1;
+			write.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
+			write.pImageInfo      = &imageInformation;
+
+			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+		}
+
+		return true;
 	}
 
 	bool VulkanBackend::CreateDefaultTexture(void)
@@ -333,6 +415,7 @@ namespace scvk
 		// so leaving it would destroy each of them twice.
 		textures[0] = textures[handle];
 		textures[handle] = Texture{};
+		textures.pop_back();
 
 		return true;
 	}
@@ -379,28 +462,30 @@ namespace scvk
 		}
 
 		texturePools.clear();
+		blitImageSet = VK_NULL_HANDLE;
 	}
 
-	void VulkanBackend::FlushRetiredImages(void)
+	void VulkanBackend::FlushRetired(FrameSlot& slot)
 	{
-		PhaseScope const releasing(*this, FRAME_PHASE_TEXTURES);
-
-		// Settle the texture batch first
-		//
-		// Its commands may name an image retired here. Destroying the image would make a
-		// batch still to be submitted invalid, and one still running would write freed
-		// memory.
-		if (!retiredImages.empty())
+		if (device == VK_NULL_HANDLE)
 		{
-			FinishTextureBatch();
+			slot.retiredImages.clear();
+			slot.retiredBuffers.clear();
+			slot.retiredMemory.clear();
+			return;
 		}
 
-		// Called once a frame's fence, or the whole device, has been waited on, which means
-		// every command that could still have been reading these has completed.
-		for (RetiredImage& retired : retiredImages)
+		PhaseScope const releasing(*this, FRAME_PHASE_TEXTURES);
+
+		// Called once the slot's fence, or the whole device, has been waited on, which
+		// means every command that could still have been reading these has completed.
+		// Texture batches go to the queue ahead of the frame that retired anything they
+		// name, so they have finished too.
+		for (RetiredImage& retired : slot.retiredImages)
 		{
-			if (retired.view != VK_NULL_HANDLE)  { vkDestroyImageView(device, retired.view, nullptr); }
-			if (retired.image != VK_NULL_HANDLE) { vkDestroyImage(device, retired.image, nullptr); }
+			if (retired.secondView != VK_NULL_HANDLE) { vkDestroyImageView(device, retired.secondView, nullptr); }
+			if (retired.view != VK_NULL_HANDLE)       { vkDestroyImageView(device, retired.view, nullptr); }
+			if (retired.image != VK_NULL_HANDLE)      { vkDestroyImage(device, retired.image, nullptr); }
 			ReleaseImageMemory(retired.memory);
 
 			// The descriptor set matters as much as the image. Each pool is capped, and
@@ -413,7 +498,19 @@ namespace scvk
 			}
 		}
 
-		retiredImages.clear();
+		for (VkBuffer buffer : slot.retiredBuffers)
+		{
+			vkDestroyBuffer(device, buffer, nullptr);
+		}
+
+		for (VkDeviceMemory& memory : slot.retiredMemory)
+		{
+			FreeDeviceMemory(memory);
+		}
+
+		slot.retiredImages.clear();
+		slot.retiredBuffers.clear();
+		slot.retiredMemory.clear();
 	}
 
 	bool VulkanBackend::AllocateTextureMemory(VkMemoryRequirements const& requirements, ImageMemory& outMemory)
@@ -439,7 +536,8 @@ namespace scvk
 			VkResult const result = AllocateDeviceMemory(allocationInformation, dedicated.memory);
 			if (result != VK_SUCCESS)
 			{
-				Fail("vkAllocateMemory (texture)", result);
+				LogError("Vulkan: could not allocate %llu bytes for a texture: %s", requirements.size, VkResultName(result));
+				NoteDeviceLoss(result);
 				return false;
 			}
 
@@ -483,7 +581,10 @@ namespace scvk
 		VkResult const result = AllocateDeviceMemory(allocationInformation, block.memory);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkAllocateMemory (texture block)", result);
+			// Out of video memory is not the end of the backend: this texture is left
+			// out, and the game carries on with the white one in its place
+			LogError("Vulkan: could not allocate another texture block: %s", VkResultName(result));
+			NoteDeviceLoss(result);
 			return false;
 		}
 
@@ -493,12 +594,12 @@ namespace scvk
 		TakeBlockRange(block, requirements.size, requirements.alignment, range, offset);
 
 		textureBlocks.push_back(block);
-		LogDebug("Vulkan: textures now take %u blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
+		LogDebug("Vulkan: textures now take %zu blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
 
 		outMemory.memory      = block.memory;
 		outMemory.offset      = offset;
 		outMemory.size        = requirements.size;
-		outMemory.blockIndex  = textureBlocks.size() - 1;
+		outMemory.blockIndex  = static_cast<uint32_t>(textureBlocks.size() - 1);
 		outMemory.isDedicated = false;
 		outMemory.range       = range;
 		return true;
@@ -637,7 +738,7 @@ namespace scvk
 			}
 		}
 
-		VkDescriptorSet const fallback = samplers.empty() ? VK_NULL_HANDLE : samplers[0].set;
+		VkDescriptorSet const fallback = samplers.empty() ? linearWrapSet : samplers[0].set;
 
 		if (samplers.size() >= MAXIMUM_SAMPLERS)
 		{
@@ -760,6 +861,42 @@ namespace scvk
 		return true;
 	}
 
+	bool VulkanBackend::AllocateTransientSet(VkDescriptorSetLayout layout, VkDescriptorSet& outSet)
+	{
+		if (!isFrameActive)
+		{
+			return false;
+		}
+
+		FrameSlot& slot = frameSlots[currentSlot];
+
+		VkDescriptorSetAllocateInfo setInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+		setInformation.descriptorPool     = slot.transientPool;
+		setInformation.descriptorSetCount = 1;
+		setInformation.pSetLayouts        = &layout;
+
+		// A full pool means the frame asked for more passes than it should; the pass is
+		// skipped rather than the frame
+		VkResult const result = vkAllocateDescriptorSets(device, &setInformation, &outSet);
+		if (result != VK_SUCCESS)
+		{
+			if (slot.transientSets != UINT32_MAX)
+			{
+				LogWarn("Vulkan: no transient descriptor set left this frame (%u used): %s", slot.transientSets, VkResultName(result));
+				slot.transientSets = UINT32_MAX;
+			}
+
+			return false;
+		}
+
+		if (slot.transientSets != UINT32_MAX)
+		{
+			slot.transientSets++;
+		}
+
+		return true;
+	}
+
 	void VulkanBackend::NoteTextureUse(uint32_t handle)
 	{
 		// Zero is the default white texture, which is never uploaded to.
@@ -786,15 +923,19 @@ namespace scvk
 		}
 	}
 
-	bool VulkanBackend::StageTexels(Texture const& texture, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels, std::vector<uint8_t>& outStaged)
+	VkDeviceSize VulkanBackend::StagedBytes(Texture const& texture, uint32_t width, uint32_t height)
+	{
+		return texture.isCompressed ? CompressedSize(texture.format, width, height) : VkDeviceSize{ width } * height * 4u;
+	}
+
+	bool VulkanBackend::StageTexels(Texture const& texture, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels, uint8_t* outStaged)
 	{
 		// Copy compressed blocks as they are
 		//
 		// A level of a texture in a 32-bit process fits a size_t.
 		if (texture.isCompressed)
 		{
-			outStaged.resize(static_cast<size_t>(CompressedSize(texture.format, width, height)));
-			memcpy(outStaged.data(), pixels, outStaged.size());
+			memcpy(outStaged, pixels, static_cast<size_t>(CompressedSize(texture.format, width, height)));
 			return true;
 		}
 
@@ -811,8 +952,39 @@ namespace scvk
 
 		if (!isKnownOrder || (gdType != GD_TYPE_UNSIGNED_BYTE && !((isPacked || isPackedRev) && hasAlpha)))
 		{
-			LogWarn("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.", gdFormat, gdType, width, height);
-			return false;
+			// Any other format and type the game's tables name, read one texel at a time
+			// the way SCD3D11 reads them: alpha, luminance, 16-bit and float components
+			uint32_t const pixelBytes = TextureSourcePixelBytes(gdFormat, gdType);
+			if (pixelBytes == 0)
+			{
+				LogWarn("Vulkan: texture upload format %u type %u (%ux%u) is not handled; skipping.", gdFormat, gdType, width, height);
+				return false;
+			}
+
+			uint32_t const stride   = (rowLength != 0) ? rowLength : width;
+			size_t const   rowBytes = (size_t{ stride } * pixelBytes + 3u) & ~size_t{ 3 };
+
+			for (uint32_t y = 0; y < height; y++)
+			{
+				uint8_t const* sourceTexel    = static_cast<uint8_t const*>(pixels) + size_t{ y } * rowBytes;
+				uint8_t*       destinationRow = outStaged + size_t{ y } * width * 4u;
+
+				for (uint32_t x = 0; x < width; x++, sourceTexel += pixelBytes)
+				{
+					uint8_t rgba[4];
+					if (!ConvertTextureSourcePixel(gdFormat, gdType, sourceTexel, rgba))
+					{
+						return false;
+					}
+
+					destinationRow[x * 4 + 0] = rgba[2];
+					destinationRow[x * 4 + 1] = rgba[1];
+					destinationRow[x * 4 + 2] = rgba[0];
+					destinationRow[x * 4 + 3] = rgba[3];
+				}
+			}
+
+			return true;
 		}
 
 		// Work out the source rows
@@ -820,27 +992,36 @@ namespace scvk
 		// Rows are padded to the unpack alignment, which the game leaves at OpenGL's
 		// default of 4 bytes. That only changes anything for 16-bit or 24-bit texels,
 		// such as on an odd width.
-		uint32_t const sourceStride  = (rowLength != 0) ? rowLength : width;
-		uint32_t const bytesPerTexel = (gdType != GD_TYPE_UNSIGNED_BYTE) ? 2u : (hasAlpha ? 4u : 3u);
+		uint32_t const sourceStride   = (rowLength != 0) ? rowLength : width;
+		uint32_t const bytesPerTexel  = (gdType != GD_TYPE_UNSIGNED_BYTE) ? 2u : (hasAlpha ? 4u : 3u);
 		size_t const   sourceRowBytes = (size_t{ sourceStride } * bytesPerTexel + 3u) & ~size_t{ 3 };
+		size_t const   rowBytes       = size_t{ width } * 4u;
 
-		outStaged.resize(size_t{ width } * height * 4u);
-
-		// Convert each row into RGBA8
-		//
 		// The game's pixels are untyped bytes.
 		uint8_t const* const source = static_cast<uint8_t const*>(pixels);
 
+		// Copy BGRA8 as it is, the whole level at once when the rows are tight
+		if (gdType == GD_TYPE_UNSIGNED_BYTE && gdFormat == GD_FORMAT_BGRA)
+		{
+			if (sourceRowBytes == rowBytes)
+			{
+				memcpy(outStaged, source, rowBytes * height);
+				return true;
+			}
+
+			for (uint32_t y = 0; y < height; y++)
+			{
+				memcpy(outStaged + size_t{ y } * rowBytes, source + size_t{ y } * sourceRowBytes, rowBytes);
+			}
+
+			return true;
+		}
+
+		// Convert each row into BGRA8
 		for (uint32_t y = 0; y < height; y++)
 		{
 			uint8_t const* const sourceRow      = source + size_t{ y } * sourceRowBytes;
-			uint8_t* const       destinationRow = outStaged.data() + size_t{ y } * width * 4u;
-
-			if (gdType == GD_TYPE_UNSIGNED_BYTE && gdFormat == GD_FORMAT_RGBA)
-			{
-				memcpy(destinationRow, sourceRow, size_t{ width } * 4u);
-				continue;
-			}
+			uint8_t* const       destinationRow = outStaged + size_t{ y } * rowBytes;
 
 			for (uint32_t x = 0; x < width; x++)
 			{
@@ -868,13 +1049,10 @@ namespace scvk
 					}
 				}
 
-				// Write them red first
-				//
-				// Done here rather than by choosing a BGRA image format, so every
-				// uncompressed texture ends up in one predictable layout.
-				destinationRow[x * 4 + 0] = isReversed ? components[2] : components[0];
+				// Write them blue first
+				destinationRow[x * 4 + 0] = isReversed ? components[0] : components[2];
 				destinationRow[x * 4 + 1] = components[1];
-				destinationRow[x * 4 + 2] = isReversed ? components[0] : components[2];
+				destinationRow[x * 4 + 2] = isReversed ? components[2] : components[0];
 				destinationRow[x * 4 + 3] = components[3];
 			}
 		}
@@ -967,7 +1145,7 @@ namespace scvk
 		// The tick counts are far below the range where a double loses whole ticks.
 		double const memoryMilliseconds = (ticksPerSecond > 0) ? static_cast<double>(textureMemoryTicks) * 1000.0 / static_cast<double>(ticksPerSecond) : 0.0;
 
-		LogDebug("Vulkan: texture blocks %u (%.0f MB in use, %u free ranges, %.0f ms finding room); %u memory allocations of %u allowed.", textureBlocks.size(), static_cast<double>(blockUsedBytes) / megabyte, freeRanges, memoryMilliseconds, liveMemoryAllocations, maximumMemoryAllocations);
+		LogDebug("Vulkan: texture blocks %zu (%.0f MB in use, %zu free ranges, %.0f ms finding room); %u memory allocations of %u allowed.", textureBlocks.size(), static_cast<double>(blockUsedBytes) / megabyte, freeRanges, memoryMilliseconds, liveMemoryAllocations, maximumMemoryAllocations);
 
 		// Warn when the allocations near the device's limit
 		//
@@ -1000,16 +1178,29 @@ namespace scvk
 	{
 		vkEndCommandBuffer(uploadCommandBuffer);
 
+		// Anything staged for textures goes first, as it would ahead of a frame
+		SubmitTextureBatch();
+
 		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
 		submit.commandBufferCount = 1;
 		submit.pCommandBuffers    = &uploadCommandBuffer;
 
 		vkResetFences(device, 1, &uploadFence);
-		SubmitToQueue(submit, uploadFence);
+
+		VkResult result = SubmitToQueue(submit, uploadFence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkQueueSubmit (upload)", result);
+			return;
+		}
 
 		// Waited on rather than pipelined. Only reading the last frame back uses this,
 		// and it needs the pixels at once.
-		WaitForFence(uploadFence, UINT64_MAX);
+		result = WaitForFence(uploadFence, UINT64_MAX);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkWaitForFences (upload)", result);
+		}
 	}
 
 	bool VulkanBackend::BeginTextureBatch(void)
@@ -1017,6 +1208,11 @@ namespace scvk
 		if (isTextureBatchOpen)
 		{
 			return true;
+		}
+
+		if (textureBatchCommandBuffer == VK_NULL_HANDLE)
+		{
+			return false;
 		}
 
 		// Let the previous batch finish, so its command buffer and staging can be reused
@@ -1081,7 +1277,13 @@ namespace scvk
 	{
 		if (isTextureBatchInFlight)
 		{
-			WaitForFence(textureBatchFence, UINT64_MAX);
+			// A lost device never signals; whatever the batch staged is let go regardless
+			VkResult const result = WaitForFence(textureBatchFence, UINT64_MAX);
+			if (result != VK_SUCCESS)
+			{
+				NoteDeviceLoss(result);
+			}
+
 			isTextureBatchInFlight = false;
 		}
 
@@ -1104,10 +1306,8 @@ namespace scvk
 		oversizedUploadBuffers.clear();
 	}
 
-	bool VulkanBackend::StageTextureUpload(std::vector<uint8_t> const& staged, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	bool VulkanBackend::AllocateTextureStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress)
 	{
-		VkDeviceSize const bytes = staged.size();
-
 		// Give an upload too large for the arena a buffer of its own, freed with the batch
 		if (bytes > textureUploadArena.blockSize)
 		{
@@ -1122,11 +1322,11 @@ namespace scvk
 				return false;
 			}
 
-			memcpy(block.mapped, staged.data(), staged.size());
 			oversizedUploadBuffers.push_back(block);
 
-			outBuffer = block.buffer;
-			outOffset = 0;
+			outBuffer  = block.buffer;
+			outOffset  = 0;
+			outAddress = static_cast<uint8_t*>(block.mapped);
 			return true;
 		}
 
@@ -1144,40 +1344,28 @@ namespace scvk
 			return false;
 		}
 
-		uint8_t* address = nullptr;
-		if (!ArenaAllocate(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT, outBuffer, outOffset, address))
+		if (!ArenaAllocate(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT, outBuffer, outOffset, outAddress))
 		{
-			LogWarn("Vulkan: no staging for a texture upload of %llu bytes; skipping it.", bytes);
-			return false;
+			// The batch alone fills every block; send it and start over in an empty arena
+			FinishTextureBatch();
+
+			if (!BeginTextureBatch() || !ArenaAllocate(textureUploadArena, bytes, TEXTURE_UPLOAD_ALIGNMENT, outBuffer, outOffset, outAddress))
+			{
+				LogWarn("Vulkan: no staging for a texture upload of %llu bytes; skipping it.", bytes);
+				return false;
+			}
 		}
 
-		memcpy(address, staged.data(), staged.size());
 		return true;
 	}
 
-	//// Public API
-
-	uint32_t VulkanBackend::CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
+	bool VulkanBackend::CreateTextureObjects(Texture& texture)
 	{
-		if (isDead || device == VK_NULL_HANDLE || width == 0 || height == 0)
-		{
-			return 0;
-		}
-
-		TickAccumulator const timer(textureWorkTicks);
-		PhaseScope const      creating(*this, FRAME_PHASE_TEXTURES);
-
 		// Create the image
-		Texture texture;
-		texture.format = MapInternalFormat(gdInternalFormat, texture.isCompressed);
-		texture.width  = width;
-		texture.height = height;
-		texture.levels = (levels == 0) ? 1 : levels;
-
 		VkImageCreateInfo imageInformation{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		imageInformation.imageType     = VK_IMAGE_TYPE_2D;
 		imageInformation.format        = texture.format;
-		imageInformation.extent        = { width, height, 1 };
+		imageInformation.extent        = { texture.width, texture.height, 1 };
 		imageInformation.mipLevels     = texture.levels;
 		imageInformation.arrayLayers   = 1;
 		imageInformation.samples       = VK_SAMPLE_COUNT_1_BIT;
@@ -1189,8 +1377,9 @@ namespace scvk
 		VkResult result = vkCreateImage(device, &imageInformation, nullptr, &texture.image);
 		if (result != VK_SUCCESS)
 		{
-			LogError("Vulkan: could not create a %ux%u texture (format %d): %s", width, height, texture.format, VkResultName(result));
-			return 0;
+			LogError("Vulkan: could not create a %ux%u texture (format %d): %s", texture.width, texture.height, texture.format, VkResultName(result));
+			texture.image = VK_NULL_HANDLE;
+			return false;
 		}
 
 		// Back it with device-local memory, shared with other textures
@@ -1200,7 +1389,8 @@ namespace scvk
 		if (!AllocateTextureMemory(requirements, texture.memory))
 		{
 			vkDestroyImage(device, texture.image, nullptr);
-			return 0;
+			texture.image = VK_NULL_HANDLE;
+			return false;
 		}
 
 		vkBindImageMemory(device, texture.image, texture.memory.memory, texture.memory.offset);
@@ -1217,14 +1407,24 @@ namespace scvk
 		result = vkCreateImageView(device, &viewInformation, nullptr, &texture.view);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateImageView (texture)", result);
-			return 0;
+			LogError("Vulkan: could not create a texture view: %s", VkResultName(result));
+			vkDestroyImage(device, texture.image, nullptr);
+			ReleaseImageMemory(texture.memory);
+			texture.image = VK_NULL_HANDLE;
+			texture.view  = VK_NULL_HANDLE;
+			return false;
 		}
 
 		// Give it a descriptor set of its own
 		if (!AllocateTextureSet(texture.descriptor, texture.descriptorPoolIndex))
 		{
-			return 0;
+			vkDestroyImageView(device, texture.view, nullptr);
+			vkDestroyImage(device, texture.image, nullptr);
+			ReleaseImageMemory(texture.memory);
+			texture.image      = VK_NULL_HANDLE;
+			texture.view       = VK_NULL_HANDLE;
+			texture.descriptor = VK_NULL_HANDLE;
+			return false;
 		}
 
 		VkDescriptorImageInfo imageBinding{};
@@ -1241,14 +1441,20 @@ namespace scvk
 
 		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-		texture.isLive = true;
+		texture.isLive         = true;
+		texture.isReserved     = false;
+		texture.serial         = nextTextureSerial++;
+		texture.uploadedLevels = 0;
+		texture.uploadCount    = 0;
+		texture.firstByteCount = 0;
+		texture.lastDrawnFrame = UINT64_MAX;
 
 		// Put the image into its sampled layout ahead of the frame's draws
 		//
 		// So a draw that binds it before anything has been uploaded is still valid.
 		if (!BeginTextureBatch())
 		{
-			return 0;
+			return false;
 		}
 
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -1264,22 +1470,242 @@ namespace scvk
 
 		vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-		// Hand out the next slot
 		texturesCreated++;
+		return true;
+	}
+
+	void VulkanBackend::RetireTextureObjects(Texture& texture)
+	{
+		// Retire the objects rather than destroying them here
+		//
+		// The frame in progress may already have recorded commands that sample this
+		// texture, and those have not been submitted yet, so the objects have to outlive
+		// it. Waiting for the device instead would be correct but costs a full stall, and
+		// the game deletes textures hundreds of times a session.
+		if (texture.image != VK_NULL_HANDLE || texture.descriptor != VK_NULL_HANDLE)
+		{
+			RetiredImage retired;
+			retired.image               = texture.image;
+			retired.memory              = texture.memory;
+			retired.view                = texture.view;
+			retired.descriptor          = texture.descriptor;
+			retired.descriptorPoolIndex = texture.descriptorPoolIndex;
+
+			Retire(retired);
+		}
+
+		texture.image      = VK_NULL_HANDLE;
+		texture.memory     = ImageMemory{};
+		texture.view       = VK_NULL_HANDLE;
+		texture.descriptor = VK_NULL_HANDLE;
+		texture.isLive     = false;
+		texture.serial     = 0;
+	}
+
+	//// Public API
+
+	uint32_t VulkanBackend::CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
+	{
+		if (isDead || device == VK_NULL_HANDLE || width == 0 || height == 0)
+		{
+			return 0;
+		}
+
+		TickAccumulator const timer(textureWorkTicks);
+		PhaseScope const      creating(*this, FRAME_PHASE_TEXTURES);
+
+		Texture texture;
+		texture.format         = MapInternalFormat(gdInternalFormat, texture.isCompressed);
+		texture.internalFormat = gdInternalFormat;
+		texture.width          = width;
+		texture.height         = height;
+		texture.levels         = (levels == 0) ? 1 : levels;
+
+		if (!CreateTextureObjects(texture))
+		{
+			RetireTextureObjects(texture);
+			return 0;
+		}
+
+		// Hand out the next slot
 		textures.push_back(texture);
-		return textures.size() - 1;
+		return static_cast<uint32_t>(textures.size() - 1);
+	}
+
+	uint32_t VulkanBackend::ReserveTexture(void)
+	{
+		if (isDead || device == VK_NULL_HANDLE)
+		{
+			return 0;
+		}
+
+		Texture texture;
+		texture.isReserved = true;
+
+		textures.push_back(texture);
+		return static_cast<uint32_t>(textures.size() - 1);
+	}
+
+	bool VulkanBackend::DefineTexture(uint32_t handle, uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
+	{
+		if (isDead || device == VK_NULL_HANDLE || handle == 0 || handle >= textures.size() || width == 0 || height == 0)
+		{
+			return false;
+		}
+
+		Texture& texture = textures[handle];
+		if (!texture.isLive && !texture.isReserved)
+		{
+			return false;
+		}
+
+		bool isCompressed = false;
+		VkFormat const format = MapInternalFormat(gdInternalFormat, isCompressed);
+		uint32_t const levelCount = (levels == 0) ? 1 : levels;
+
+		// Keep an image that already matches, contents and all
+		if (texture.isLive && texture.format == format && texture.width == width && texture.height == height && texture.levels >= levelCount)
+		{
+			return true;
+		}
+
+		TickAccumulator const timer(textureWorkTicks);
+		PhaseScope const      defining(*this, FRAME_PHASE_TEXTURES);
+
+		// Add levels to an image of the same format and size, keeping the ones it has
+		//
+		// TexImage2D names a texture's top level first and its smaller levels after, so
+		// the image has to grow under it. The levels already uploaded are copied across
+		// in the texture batch, ahead of any frame that samples the new image.
+		if (texture.isLive && texture.format == format && texture.width == width && texture.height == height)
+		{
+			Texture grown = texture;
+			grown.levels     = levelCount;
+			grown.image      = VK_NULL_HANDLE;
+			grown.memory     = ImageMemory{};
+			grown.view       = VK_NULL_HANDLE;
+			grown.descriptor = VK_NULL_HANDLE;
+
+			if (!CreateTextureObjects(grown) || !BeginTextureBatch())
+			{
+				RetireTextureObjects(grown);
+				return false;
+			}
+
+			VkImageMemoryBarrier barriers[2]{};
+			for (VkImageMemoryBarrier& barrier : barriers)
+			{
+				barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.levels, 0, 1 };
+			}
+
+			barriers[0].image         = texture.image;
+			barriers[0].oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barriers[0].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			barriers[1].image         = grown.image;
+			barriers[1].oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barriers[1].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+			vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+			std::vector<VkImageCopy> copies(texture.levels);
+			for (uint32_t level = 0; level < texture.levels; level++)
+			{
+				VkImageCopy& copy = copies[level];
+				copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
+				copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
+				copy.extent         = { std::max(width >> level, 1u), std::max(height >> level, 1u), 1 };
+			}
+
+			vkCmdCopyImage(textureBatchCommandBuffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, grown.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(copies.size()), copies.data());
+
+			barriers[0].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barriers[0].newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barriers[1].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barriers[1].newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+			vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+			// The new image takes the name; the old one goes once nothing reads it
+			grown.uploadedLevels = texture.uploadedLevels;
+			grown.uploadCount    = texture.uploadCount;
+			grown.firstByteCount = texture.firstByteCount;
+			memcpy(grown.firstBytes, texture.firstBytes, sizeof(grown.firstBytes));
+
+			RetireTextureObjects(texture);
+			texture = grown;
+			return true;
+		}
+
+		// Replace it otherwise, under the same name
+		if (texture.isLive)
+		{
+			RetireTextureObjects(texture);
+			texturesDestroyed++;
+		}
+
+		texture.format         = format;
+		texture.isCompressed   = isCompressed;
+		texture.internalFormat = gdInternalFormat;
+		texture.width          = width;
+		texture.height         = height;
+		texture.levels         = levelCount;
+
+		if (!CreateTextureObjects(texture))
+		{
+			RetireTextureObjects(texture);
+			texture.isReserved = true;
+			return false;
+		}
+
+		return true;
+	}
+
+	bool VulkanBackend::IsTextureName(uint32_t handle) const
+	{
+		return handle != 0 && handle < textures.size() && (textures[handle].isLive || textures[handle].isReserved);
+	}
+
+	uint32_t VulkanBackend::TextureSerial(uint32_t handle) const
+	{
+		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
+		{
+			return 0;
+		}
+
+		return textures[handle].serial;
 	}
 
 	void VulkanBackend::UploadTextureLevel(uint32_t handle, uint32_t level, int32_t offsetX, int32_t offsetY, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels)
 	{
-		if (isDead || pixels == nullptr || handle == 0 || handle >= textures.size())
+		if (isDead || pixels == nullptr || handle >= textures.size())
 		{
 			return;
 		}
 
 		Texture& texture = textures[handle];
-		if (!texture.isLive || width == 0 || height == 0)
+		if (!texture.isLive || width == 0 || height == 0 || level >= texture.levels)
 		{
+			return;
+		}
+
+		// Keep the copy inside the level
+		uint32_t const levelWidth  = std::max(texture.width >> level, 1u);
+		uint32_t const levelHeight = std::max(texture.height >> level, 1u);
+
+		if (offsetX < 0 || offsetY < 0 || static_cast<uint32_t>(offsetX) + width > levelWidth || static_cast<uint32_t>(offsetY) + height > levelHeight)
+		{
+			LogWarn("Vulkan: texture %u level %u upload %d,%d %ux%u lies outside its %ux%u; skipping.", handle, level, offsetX, offsetY, width, height, levelWidth, levelHeight);
 			return;
 		}
 
@@ -1298,19 +1724,29 @@ namespace scvk
 			}
 		}
 
+		// Stage it straight into the batch's memory, in the image's own layout
+		VkDeviceSize const bytes = StagedBytes(texture, width, height);
+
+		VkBuffer     uploadBuffer  = VK_NULL_HANDLE;
+		VkDeviceSize uploadOffset  = 0;
+		uint8_t*     uploadAddress = nullptr;
+
+		if (!AllocateTextureStaging(bytes, uploadBuffer, uploadOffset, uploadAddress))
+		{
+			return;
+		}
+
+		if (!StageTexels(texture, width, height, gdFormat, gdType, rowLength, pixels, uploadAddress))
+		{
+			return;
+		}
+
 		if (level + 1 > texture.uploadedLevels)
 		{
 			texture.uploadedLevels = level + 1;
 		}
 
 		texture.uploadCount++;
-
-		// Build a tightly packed copy in the image's own format
-		std::vector<uint8_t> staged;
-		if (!StageTexels(texture, width, height, gdFormat, gdType, rowLength, pixels, staged))
-		{
-			return;
-		}
 
 		DumpUploadedTexture(texture, handle, width, height, gdFormat, gdType, rowLength, pixels);
 
@@ -1320,31 +1756,21 @@ namespace scvk
 		// they show.
 		if (level == 0 && offsetX == 0 && offsetY == 0 && texture.width * texture.height <= TINY_TEXTURE_TEXELS)
 		{
-			size_t const keptBytes = (staged.size() < sizeof(texture.firstBytes)) ? staged.size() : sizeof(texture.firstBytes);
-			memcpy(texture.firstBytes, staged.data(), keptBytes);
+			size_t const keptBytes = (bytes < sizeof(texture.firstBytes)) ? static_cast<size_t>(bytes) : sizeof(texture.firstBytes);
+			memcpy(texture.firstBytes, uploadAddress, keptBytes);
 
 			// At most 16, so it fits.
 			texture.firstByteCount = static_cast<uint32_t>(keptBytes);
 		}
 
-		// Stage it for the batch
-		VkBuffer     uploadBuffer = VK_NULL_HANDLE;
-		VkDeviceSize uploadOffset = 0;
-
-		if (!StageTextureUpload(staged, uploadBuffer, uploadOffset))
-		{
-			return;
-		}
-
 		textureUploads++;
-		textureUploadBytes += staged.size();
+		textureUploadBytes += bytes;
 
 		// Copy it into the level, out of and back into the sampled layout
 		//
 		// The barriers reach across submissions to the same queue: the first waits for
 		// earlier frames still sampling the image, the second makes the copy visible to
 		// the frames after.
-
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1419,28 +1845,22 @@ namespace scvk
 
 	void VulkanBackend::DestroyTexture(uint32_t handle)
 	{
-		if (handle == 0 || handle >= textures.size() || !textures[handle].isLive)
+		if (handle == 0 || handle >= textures.size())
 		{
 			return;
 		}
 
-		// Retire the objects rather than destroying them here
-		//
-		// The frame in progress may already have recorded commands that sample this
-		// texture, and those have not been submitted yet, so the objects have to outlive
-		// it. Waiting for the device instead would be correct but costs a full stall, and
-		// the game deletes textures hundreds of times a session.
 		Texture& texture = textures[handle];
+		if (!texture.isLive && !texture.isReserved)
+		{
+			return;
+		}
 
-		RetiredImage retired;
-		retired.image               = texture.image;
-		retired.memory              = texture.memory;
-		retired.view                = texture.view;
-		retired.descriptor          = texture.descriptor;
-		retired.descriptorPoolIndex = texture.descriptorPoolIndex;
-
-		retiredImages.push_back(retired);
-		texturesDestroyed++;
+		if (texture.isLive)
+		{
+			RetireTextureObjects(texture);
+			texturesDestroyed++;
+		}
 
 		// Clear the slot at once, so the handle no longer resolves to anything
 		texture = Texture{};

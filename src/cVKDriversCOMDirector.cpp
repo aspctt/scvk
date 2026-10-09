@@ -22,11 +22,21 @@
 #include "cVKDriver.h"
 #include "FpsLimit.h"
 #include "Logger.h"
+#include "NativeShadowDiagnostics.h"
+#include "NativeShadowExperiment.h"
+#include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
+#include "PrintScreen.h"
 #include "SC4Version.h"
+#include "TerrainShadows.h"
+#include "ThumbnailFocusGuard.h"
 #include "version.h"
 
 #include <cIGZCOM.h>
+#include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
+
+#include <windows.h>
 
 namespace scvk
 {
@@ -37,6 +47,41 @@ namespace scvk
 		// Identifies this plugin to the GZCOM. Must be unique across every installed DLL,
 		// and must not be SCGL's (0xCB6EC543).
 		constexpr uint32_t DIRECTOR_ID = 0x5C4B0001;
+	}
+
+	//// Private Functions
+
+	namespace
+	{
+		// Says whether the game runs on Windows or under Wine, which Proton is built on
+		//
+		// Wine's ntdll exports its version where Windows' has nothing of the kind, so a
+		// log from Linux says so and which Wine it was.
+		void LogPlatform(void)
+		{
+			using WineVersion     = char const* (__cdecl*)(void);
+			using WineHostVersion = void (__cdecl*)(char const** system, char const** release);
+
+			HMODULE const ntdll = GetModuleHandleA("ntdll.dll");
+			WineVersion const wineVersion = (ntdll != nullptr) ? reinterpret_cast<WineVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version"))) : nullptr;
+
+			if (wineVersion == nullptr)
+			{
+				LogInfo("Running on Windows.");
+				return;
+			}
+
+			char const* system  = "an unknown system";
+			char const* release = "";
+			WineHostVersion const hostVersion = reinterpret_cast<WineHostVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_host_version")));
+
+			if (hostVersion != nullptr)
+			{
+				hostVersion(&system, &release);
+			}
+
+			LogInfo("Running under Wine %s on %s %s.", wineVersion(), system, release);
+		}
 	}
 
 	//// Types
@@ -80,11 +125,41 @@ namespace scvk
 			LogOpen();
 			LogInfo("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
+			LogPlatform();
 
-			// Change the game's frame pacing, the only place scvk writes to game memory.
-			// Only the paused padding and the animation clock's floor change without
-			// scvk.ini asking.
+			// Change the game's frame pacing: no padding while paused, an exact animation
+			// clock, and speed caps at the display's refresh rate
 			ApplyFpsLimitSettings();
+
+			// Install the game-side shadow modules SCD3D11 has, each guarded by the exact
+			// bytes it patches: the True3D shadows and the registry, on by default as
+			// -NativeShadowMasks:replace unless -NativeShadowMasks:off or another mode
+			// says otherwise, and the diagnostics only when asked for
+			NativeShadowMasks::Install();
+			NativeShadowRegistry::Install();
+			TerrainShadows::Install();
+			NativeShadowDiagnostics::Install();
+			NativeShadowExperiment::Install();
+
+			// Hear when the game shuts down, to put back every byte patched
+			cIGZFrameWork* const framework = RZGetFrameWork();
+			if (framework != nullptr && framework->GetState() < cIGZFrameWork::kStatePreAppInit)
+			{
+				framework->AddHook(this);
+			}
+
+			return true;
+		}
+
+		bool PreAppShutdown(void) override
+		{
+			NativeShadowExperiment::Uninstall();
+			TerrainShadows::Uninstall();
+			NativeShadowRegistry::Uninstall();
+			NativeShadowMasks::Uninstall();
+			NativeShadowDiagnostics::Uninstall();
+			ThumbnailFocusGuard::Uninstall();
+			PrintScreen::Uninstall();
 			return true;
 		}
 	};

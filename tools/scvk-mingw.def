@@ -1,0 +1,8 @@
+; The exports of scvk.dll for the MinGW build, under the names the Visual Studio build
+; gives them: the GZCOM entry point the game looks up, and the frame callback pair other
+; plugins look up, as SCD3D11 exports its own.
+LIBRARY scvk.dll
+EXPORTS
+	GZDllGetGZCOMDirector
+	SCVKRegisterFrameCallback = SCVKRegisterFrameCallback@8
+	SCVKUnregisterFrameCallback = SCVKUnregisterFrameCallback@8

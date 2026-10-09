@@ -20,16 +20,25 @@
 /*
  * The instance, the device, the swapchain and the frame: everything that exists once per
  * window rather than once per draw, plus the captures, which read the frame back.
+ *
+ * The game draws into a back buffer of scvk's own rather than into the swapchain. It
+ * keeps its contents from one frame to the next, which the game relies on: it redraws
+ * only what changed, and a swapchain image holds whatever frame last used it, two or
+ * three frames ago. Presenting copies the back buffer into the image just acquired, so
+ * the frame's drawing never waits for the swapchain at all, only that last copy does.
  */
 
 //// Dependencies
 
 #include "VulkanBackend.h"
 #include "Logger.h"
+#include "Settings.h"
+#include "Watchdog.h"
 #include "version.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <algorithm>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -39,18 +48,23 @@ namespace scvk
 
 	namespace
 	{
-		// 16 MB. One full-screen 1920x1080 BGRA image is about 8 MB and the startup
-		// screen is under 2 MB, so this covers several uploads in a single frame without
-		// ever reallocating mid-flight.
-		constexpr VkDeviceSize STAGING_BUFFER_SIZE = 16u * 1024u * 1024u;
-
 		constexpr char const* VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
 
 		// Switches on synchronisation validation, which is slow.
 		constexpr char const* SYNC_VALIDATION_MARKER = "scvk-validate-sync";
 
-		// Both waits of a frame are bounded rather than UINT64_MAX. See EnsureFrame.
-		constexpr uint64_t WAIT_TIMEOUT_NANOSECONDS = 1000ull * 1000ull * 1000ull;
+		// Where the compiled pipelines are kept between sessions.
+		constexpr char const* PIPELINE_CACHE_FILE = "scvk-pipelines.bin";
+
+		// The waits that run on the game's main thread, which also pumps its window
+		// messages, are bounded rather than UINT64_MAX. Blocking there indefinitely makes
+		// the whole game unresponsive and unkillable except from Task Manager, so a frame
+		// is dropped instead.
+		constexpr uint64_t WAIT_TIMEOUT_NANOSECONDS = 2000ull * 1000ull * 1000ull;
+
+		// An acquire waits at most this long for a swapchain image before the frame is
+		// drawn without being shown.
+		constexpr uint64_t ACQUIRE_TIMEOUT_NANOSECONDS = 1000ull * 1000ull * 1000ull;
 
 		// A heartbeat line this many frames apart.
 		constexpr uint64_t HEARTBEAT_FRAMES = 300;
@@ -67,8 +81,27 @@ namespace scvk
 
 		// The same validation hazard repeats every frame once synchronisation validation
 		// is on, so each message ID is written a few times and then only counted.
-		constexpr int DEBUG_MESSAGE_IDS     = 64;
+		constexpr int      DEBUG_MESSAGE_IDS     = 64;
 		constexpr uint32_t DEBUG_MESSAGE_REPEATS = 5;
+
+		// The format of the back buffer. The game hands over BGRA8 pixels and Windows
+		// always offers this for a swapchain, so blits and presenting copy with no
+		// conversion.
+		constexpr VkFormat BACK_BUFFER_FORMAT      = VK_FORMAT_B8G8R8A8_UNORM;
+		constexpr VkFormat BACK_BUFFER_SRGB_FORMAT = VK_FORMAT_B8G8R8A8_SRGB;
+
+		// A device-local heap the CPU can write counts as resizable BAR when it is at least
+		// this large. The 256 MB window older systems expose is too small to give the
+		// arenas.
+		constexpr VkDeviceSize RESIZABLE_BAR_MINIMUM = 1024ull * 1024ull * 1024ull;
+
+		// Sets each frame's transient descriptor pool holds: the shadow composites, the
+		// depth handed to ReShade and the like, a few a frame.
+		constexpr uint32_t TRANSIENT_SETS_PER_FRAME = 256;
+
+		// While nothing is presented, a frame is held this long so a minimised game does
+		// not spin a core drawing frames nobody sees.
+		constexpr DWORD PAUSED_FRAME_MILLISECONDS = 10;
 	}
 
 	//// State
@@ -123,6 +156,34 @@ namespace scvk
 
 			std::vector<VkExtensionProperties> extensions(count);
 			if (vkEnumerateInstanceExtensionProperties(layer, &count, extensions.data()) != VK_SUCCESS)
+			{
+				return false;
+			}
+
+			// Look for the wanted one among them
+			for (VkExtensionProperties const& extension : extensions)
+			{
+				if (strcmp(extension.extensionName, wanted) == 0)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/** Whether a physical device offers an extension. */
+		bool HasDeviceExtension(VkPhysicalDevice physicalDevice, char const* wanted)
+		{
+			// List the extensions
+			uint32_t count = 0;
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
+			{
+				return false;
+			}
+
+			std::vector<VkExtensionProperties> extensions(count);
+			if (vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, extensions.data()) != VK_SUCCESS)
 			{
 				return false;
 			}
@@ -238,10 +299,59 @@ namespace scvk
 		{
 			fwrite(&value, sizeof(value), 1, file);
 		}
+
+		/** The name of a present mode, for the log. */
+		char const* PresentModeName(VkPresentModeKHR mode)
+		{
+			switch (mode)
+			{
+			case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "immediate";
+			case VK_PRESENT_MODE_MAILBOX_KHR:      return "mailbox";
+			case VK_PRESENT_MODE_FIFO_KHR:         return "FIFO";
+			case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO relaxed";
+			default:                               return "other";
+			}
+		}
+
+		/** Milliseconds since the system started, the clock the device recovery backs off by. */
+		uint64_t TickMilliseconds(void)
+		{
+			return GetTickCount64();
+		}
+	}
+
+	bool VulkanBackend::NoteDeviceLoss(VkResult result)
+	{
+		if (result != VK_ERROR_DEVICE_LOST)
+		{
+			return false;
+		}
+
+		// Stop recording at once and rebuild at the next frame boundary
+		//
+		// Nothing recorded into a lost device's command buffers will ever run, and every
+		// object of it has to be destroyed and made again. The game carries on meanwhile,
+		// as it would on a DirectX device it has to reset.
+		if (!isDeviceLost)
+		{
+			LogError("Vulkan: the device was lost. scvk will rebuild it at the next frame; textures come back empty until the game uploads them again.");
+			isDeviceLost = true;
+		}
+
+		isFrameActive = false;
+		activePass    = ActivePass::None;
+		commandBuffer = VK_NULL_HANDLE;
+		return true;
 	}
 
 	void VulkanBackend::Fail(char const* what, VkResult result)
 	{
+		if (NoteDeviceLoss(result))
+		{
+			LogError("Vulkan: %s reported the device lost.", what);
+			return;
+		}
+
 		if (isDead)
 		{
 			return;
@@ -271,10 +381,13 @@ namespace scvk
 			return false;
 		}
 
-		// Prefer a discrete GPU
+		// Prefer a discrete GPU, unless asked for the first one listed
 		//
-		// This machine class often has an integrated adapter listed first, and picking it
-		// would work but would be a poor default for a game.
+		// Laptops with two GPUs often list the integrated one first, and picking it would
+		// work but would be a poor default for a game. -GPU:default on the command
+		// line takes the first one instead, which is usually the one Windows picks.
+		bool const shouldPreferDiscrete = GetSettings().shouldPreferHighPerformanceGpu;
+
 		VkPhysicalDevice best = VK_NULL_HANDLE;
 		int bestScore = -1;
 
@@ -297,7 +410,17 @@ namespace scvk
 				score = 1;
 			}
 
-			LogInfo("Vulkan: found device \"%s\" (type %d, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
+			LogInfo("Vulkan: found device \"%s\" (type %d, vendor 0x%04X, device 0x%04X, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, properties.vendorID, properties.deviceID, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
+
+			if (!shouldPreferDiscrete)
+			{
+				if (best == VK_NULL_HANDLE)
+				{
+					best = candidate;
+				}
+
+				continue;
+			}
 
 			if (score > bestScore)
 			{
@@ -308,22 +431,29 @@ namespace scvk
 
 		// Record what was chosen
 		physicalDevice = best;
-
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-		deviceName = properties.deviceName;
+		vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+		deviceName = physicalDeviceProperties.deviceName;
 
 		char version[32];
-		sprintf_s(version, sizeof(version), "%u.%u.%u", VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion));
+		sprintf_s(version, sizeof(version), "%u.%u.%u", VK_VERSION_MAJOR(physicalDeviceProperties.apiVersion), VK_VERSION_MINOR(physicalDeviceProperties.apiVersion), VK_VERSION_PATCH(physicalDeviceProperties.apiVersion));
 		apiVersion = version;
 
-		LogInfo("Vulkan: selected \"%s\".", deviceName.c_str());
+		LogInfo("Vulkan: selected \"%s\" (%s).", deviceName.c_str(), shouldPreferDiscrete ? "high-performance preference" : "first device listed");
 
 		// Record how far textures can go on it
+		maximumMemoryAllocations = physicalDeviceProperties.limits.maxMemoryAllocationCount;
+
+		// See whether the lit variant fits it
 		//
-		// Each texture is an allocation of its own, so a large texBindMaxFree runs into
-		// the allocation limit or the memory itself, whichever comes first.
-		maximumMemoryAllocations = properties.limits.maxMemoryAllocationCount;
+		// Its vertex has 29 attributes and its vertex stage 22 outputs, above the 16 Vulkan
+		// guarantees and below what every desktop driver offers. Without them the lighting
+		// extension's lights stay per vertex.
+		VkPhysicalDeviceLimits const& limits = physicalDeviceProperties.limits;
+		isPerPixelLightingSupported = limits.maxVertexInputAttributes >= 29 && limits.maxVertexOutputComponents >= 88 && limits.maxFragmentInputComponents >= 88 && limits.maxVertexInputBindingStride >= sizeof(LitVertex) && limits.maxVertexInputAttributeOffset >= offsetof(LitVertex, lightColour[LIT_LIGHT_COUNT - 1]);
+		if (!isPerPixelLightingSupported)
+		{
+			LogInfo("Vulkan: the device takes %u vertex attributes and %u vertex outputs; the lighting extension's lights are worked out per vertex.", limits.maxVertexInputAttributes, limits.maxVertexOutputComponents);
+		}
 
 		VkPhysicalDeviceMemoryProperties memory{};
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
@@ -338,7 +468,35 @@ namespace scvk
 			}
 		}
 
-		LogInfo("Vulkan: %llu MB of device-local memory, at most %u memory allocations.", largestLocalHeap / (1024u * 1024u), maximumMemoryAllocations);
+		// Choose where the per-frame arenas live
+		//
+		// Memory the CPU writes and the GPU reads in place. On the device, through a
+		// resizable BAR or on an integrated GPU, the GPU reads every vertex at its own
+		// speed; otherwise it reads them across the bus, which is what the plain
+		// host-visible type gives.
+		VkMemoryPropertyFlags const hostFlags   = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		VkMemoryPropertyFlags const deviceFlags = hostFlags | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+		arenaMemoryType          = UINT32_MAX;
+		isArenaMemoryDeviceLocal = false;
+
+		for (uint32_t i = 0; i < memory.memoryTypeCount; i++)
+		{
+			VkMemoryType const& type = memory.memoryTypes[i];
+			if ((type.propertyFlags & deviceFlags) == deviceFlags && memory.memoryHeaps[type.heapIndex].size >= RESIZABLE_BAR_MINIMUM)
+			{
+				arenaMemoryType          = i;
+				isArenaMemoryDeviceLocal = true;
+				break;
+			}
+		}
+
+		if (arenaMemoryType == UINT32_MAX)
+		{
+			FindMemoryType(UINT32_MAX, hostFlags, arenaMemoryType);
+		}
+
+		LogInfo("Vulkan: %llu MB of device-local memory, at most %u memory allocations; per-frame geometry in %s memory.", largestLocalHeap / (1024u * 1024u), maximumMemoryAllocations, isArenaMemoryDeviceLocal ? "device-local" : "system");
 		return true;
 	}
 
@@ -378,26 +536,44 @@ namespace scvk
 			return false;
 		}
 
-		// Create the device with the swapchain extension
+		// Create the device with the swapchain extension, and the fullscreen policy one
+		// when the instance and the device both have what it needs
 		float priority = 1.0f;
 		VkDeviceQueueCreateInfo queueInformation{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
 		queueInformation.queueFamilyIndex = queueFamily;
 		queueInformation.queueCount       = 1;
 		queueInformation.pQueuePriorities = &priority;
 
-		char const* extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+		std::vector<char const*> extensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+		hasFullscreenPolicyControl = canAskFullscreenPolicy && HasDeviceExtension(physicalDevice, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+		if (hasFullscreenPolicyControl)
+		{
+			extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+		}
+
+		// Wine and Proton do not offer the extension; there the window goes through the
+		// Linux compositor, or straight to the display, as the Vulkan driver decides.
+		LogInfo("Vulkan: %s", hasFullscreenPolicyControl ? "the driver will not take exclusive control of a fullscreen window." : "VK_EXT_full_screen_exclusive is not offered; the driver presents a fullscreen window as it sees fit.");
 
 		VkDeviceCreateInfo deviceInformation{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 		deviceInformation.queueCreateInfoCount    = 1;
 		deviceInformation.pQueueCreateInfos       = &queueInformation;
-		deviceInformation.enabledExtensionCount   = _countof(extensions);
-		deviceInformation.ppEnabledExtensionNames = extensions;
+		deviceInformation.enabledExtensionCount   = static_cast<uint32_t>(extensions.size());
+		deviceInformation.ppEnabledExtensionNames = extensions.data();
 		deviceInformation.pEnabledFeatures        = nullptr;
 
 		VkResult const result = vkCreateDevice(physicalDevice, &deviceInformation, nullptr, &device);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateDevice", result);
+			// A device that cannot be made is fatal even when it reports itself lost.
+			LogError("Vulkan: vkCreateDevice failed with %s.", VkResultName(result));
+			device = VK_NULL_HANDLE;
+			if (!isRecoveringDevice)
+			{
+				isDead = true;
+			}
+
 			return false;
 		}
 
@@ -409,134 +585,245 @@ namespace scvk
 		}
 
 		vkGetDeviceQueue(device, queueFamily, 0, &queue);
+		LoadPipelineCache();
 		return true;
+	}
+
+	void VulkanBackend::LoadPipelineCache(void)
+	{
+		if (pipelineCache != VK_NULL_HANDLE)
+		{
+			return;
+		}
+
+		// Read the file, when it was written for this very device and driver
+		//
+		// Vulkan checks the header itself and ignores data it cannot use, but some
+		// drivers have crashed on caches from another version, so the header is compared
+		// here first and a mismatch starts empty.
+		std::vector<uint8_t> data;
+		char path[MAX_PATH];
+
+		if (LogFilePath(PIPELINE_CACHE_FILE, path, sizeof(path)))
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, path, "rb") == 0 && file != nullptr)
+			{
+				fseek(file, 0, SEEK_END);
+				long const size = ftell(file);
+				fseek(file, 0, SEEK_SET);
+
+				if (size > 0 && size < 64L * 1024L * 1024L)
+				{
+					data.resize(static_cast<size_t>(size));
+					if (fread(data.data(), 1, data.size(), file) != data.size())
+					{
+						data.clear();
+					}
+				}
+
+				fclose(file);
+			}
+		}
+
+		uint32_t const headerBytes = 16u + VK_UUID_SIZE;
+		bool isUsable = data.size() >= headerBytes;
+
+		if (isUsable)
+		{
+			uint32_t header[4];
+			memcpy(header, data.data(), sizeof(header));
+
+			isUsable = header[0] >= headerBytes && header[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE && header[2] == physicalDeviceProperties.vendorID && header[3] == physicalDeviceProperties.deviceID && memcmp(data.data() + 16, physicalDeviceProperties.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+		}
+
+		VkPipelineCacheCreateInfo information{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+		information.initialDataSize = isUsable ? data.size() : 0;
+		information.pInitialData    = isUsable ? data.data() : nullptr;
+
+		if (vkCreatePipelineCache(device, &information, nullptr, &pipelineCache) != VK_SUCCESS)
+		{
+			pipelineCache = VK_NULL_HANDLE;
+			return;
+		}
+
+		LogInfo("Vulkan: pipeline cache %s.", isUsable ? "loaded from the last session" : "started empty");
+	}
+
+	void VulkanBackend::SavePipelineCache(void)
+	{
+		if (pipelineCache == VK_NULL_HANDLE || device == VK_NULL_HANDLE || unsavedPipelines == 0)
+		{
+			return;
+		}
+
+		size_t size = 0;
+		if (vkGetPipelineCacheData(device, pipelineCache, &size, nullptr) != VK_SUCCESS || size == 0)
+		{
+			return;
+		}
+
+		std::vector<uint8_t> data(size);
+		if (vkGetPipelineCacheData(device, pipelineCache, &size, data.data()) != VK_SUCCESS)
+		{
+			return;
+		}
+
+		char path[MAX_PATH];
+		if (!LogFilePath(PIPELINE_CACHE_FILE, path, sizeof(path)))
+		{
+			return;
+		}
+
+		FILE* file = nullptr;
+		if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+		{
+			return;
+		}
+
+		fwrite(data.data(), 1, size, file);
+		fclose(file);
+		unsavedPipelines = 0;
 	}
 
 	bool VulkanBackend::CreateFrameResources(void)
 	{
-		// Create the command pool and the frame's command buffer
-		VkCommandPoolCreateInfo poolInformation{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-		poolInformation.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-		poolInformation.queueFamilyIndex = queueFamily;
+		// Each frame in flight gets its own command pool, reset as a whole once the GPU has
+		// finished the frame, its fence, the semaphore its swapchain image arrives on, and
+		// a pool for descriptor sets it uses once
+		VkDescriptorPoolSize const transientSizes[] = {
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, TRANSIENT_SETS_PER_FRAME },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TRANSIENT_SETS_PER_FRAME * 4u },
+		};
 
-		VkResult result = vkCreateCommandPool(device, &poolInformation, nullptr, &commandPool);
+		for (FrameSlot& slot : frameSlots)
+		{
+			VkCommandPoolCreateInfo poolInformation{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+			poolInformation.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+			poolInformation.queueFamilyIndex = queueFamily;
+
+			VkResult result = vkCreateCommandPool(device, &poolInformation, nullptr, &slot.commandPool);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkCreateCommandPool", result);
+				return false;
+			}
+
+			VkFenceCreateInfo fenceInformation{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+			VkSemaphoreCreateInfo semaphoreInformation{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+
+			if (vkCreateFence(device, &fenceInformation, nullptr, &slot.fence) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreInformation, nullptr, &slot.imageAvailable) != VK_SUCCESS)
+			{
+				Fail("vkCreateFence", VK_ERROR_INITIALIZATION_FAILED);
+				return false;
+			}
+
+			VkDescriptorPoolCreateInfo descriptorInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+			descriptorInformation.maxSets       = TRANSIENT_SETS_PER_FRAME;
+			descriptorInformation.poolSizeCount = _countof(transientSizes);
+			descriptorInformation.pPoolSizes    = transientSizes;
+
+			result = vkCreateDescriptorPool(device, &descriptorInformation, nullptr, &slot.transientPool);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkCreateDescriptorPool (transient)", result);
+				return false;
+			}
+
+			slot.commandBuffers.clear();
+			slot.usedCommandBuffers = 0;
+			slot.serial             = 0;
+			slot.isFencePending     = false;
+		}
+
+		// And one pool for the commands run outside the frames
+		VkCommandPoolCreateInfo utilityInformation{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+		utilityInformation.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		utilityInformation.queueFamilyIndex = queueFamily;
+
+		VkResult const result = vkCreateCommandPool(device, &utilityInformation, nullptr, &utilityCommandPool);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateCommandPool", result);
+			Fail("vkCreateCommandPool (utility)", result);
 			return false;
 		}
 
-		VkCommandBufferAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-		allocationInformation.commandPool        = commandPool;
-		allocationInformation.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocationInformation.commandBufferCount = 1;
-
-		result = vkAllocateCommandBuffers(device, &allocationInformation, &commandBuffer);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkAllocateCommandBuffers", result);
-			return false;
-		}
-
-		// Create the semaphores that order acquire, submit and present
-		VkSemaphoreCreateInfo semaphoreInformation{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-		if (vkCreateSemaphore(device, &semaphoreInformation, nullptr, &imageAvailableSemaphore) != VK_SUCCESS || vkCreateSemaphore(device, &semaphoreInformation, nullptr, &renderFinishedSemaphore) != VK_SUCCESS)
-		{
-			Fail("vkCreateSemaphore", VK_ERROR_INITIALIZATION_FAILED);
-			return false;
-		}
-
-		// Create the frame fence signalled
-		//
-		// So the first frame does not wait on a submit that never happened.
-		VkFenceCreateInfo fenceInformation{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-		fenceInformation.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-		result = vkCreateFence(device, &fenceInformation, nullptr, &frameFence);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkCreateFence", result);
-			return false;
-		}
-
+		currentSlot     = 0;
+		completedSerial = frameSerial - 1;
 		return true;
 	}
 
-	bool VulkanBackend::CreateStagingBuffer(VkDeviceSize size)
+	void VulkanBackend::DestroyFrameResources(void)
 	{
-		// Create the buffer
-		VkBufferCreateInfo bufferInformation{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		bufferInformation.size        = size;
-		bufferInformation.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-		bufferInformation.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-		VkResult result = vkCreateBuffer(device, &bufferInformation, nullptr, &stagingBuffer);
-		if (result != VK_SUCCESS)
+		for (FrameSlot& slot : frameSlots)
 		{
-			Fail("vkCreateBuffer", result);
-			return false;
+			FlushRetired(slot);
+
+			if (slot.transientPool != VK_NULL_HANDLE)  { vkDestroyDescriptorPool(device, slot.transientPool, nullptr); slot.transientPool = VK_NULL_HANDLE; }
+			if (slot.fence != VK_NULL_HANDLE)          { vkDestroyFence(device, slot.fence, nullptr); slot.fence = VK_NULL_HANDLE; }
+			if (slot.imageAvailable != VK_NULL_HANDLE) { vkDestroySemaphore(device, slot.imageAvailable, nullptr); slot.imageAvailable = VK_NULL_HANDLE; }
+			if (slot.commandPool != VK_NULL_HANDLE)    { vkDestroyCommandPool(device, slot.commandPool, nullptr); slot.commandPool = VK_NULL_HANDLE; }
+
+			slot.commandBuffers.clear();
+			slot.usedCommandBuffers = 0;
+			slot.isFencePending     = false;
+			slot.serial             = 0;
 		}
 
-		// Back it with host-visible coherent memory
-		VkMemoryRequirements requirements{};
-		vkGetBufferMemoryRequirements(device, stagingBuffer, &requirements);
-
-		uint32_t typeIndex = 0;
-		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
+		if (utilityCommandPool != VK_NULL_HANDLE)
 		{
-			LogError("Vulkan: no host-visible coherent memory type available for staging.");
-			isDead = true;
-			return false;
+			vkDestroyCommandPool(device, utilityCommandPool, nullptr);
+			utilityCommandPool = VK_NULL_HANDLE;
 		}
 
-		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-		allocationInformation.allocationSize  = requirements.size;
-		allocationInformation.memoryTypeIndex = typeIndex;
-
-		result = AllocateDeviceMemory(allocationInformation, stagingMemory);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkAllocateMemory", result);
-			return false;
-		}
-
-		result = vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkBindBufferMemory", result);
-			return false;
-		}
-
-		// Map it once and leave it mapped
-		//
-		// Coherent memory needs no flushing, and mapping per upload would be pure
-		// overhead on a path that runs every frame.
-		result = vkMapMemory(device, stagingMemory, 0, requirements.size, 0, &stagingMapped);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkMapMemory", result);
-			return false;
-		}
-
-		stagingSize = requirements.size;
-		stagingUsed = 0;
-		return true;
+		commandBuffer             = VK_NULL_HANDLE;
+		uploadCommandBuffer       = VK_NULL_HANDLE;
+		textureBatchCommandBuffer = VK_NULL_HANDLE;
 	}
 
-	bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height)
+	void VulkanBackend::ChoosePresentMode(void)
+	{
+		presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+		// FIFO is vsync, the only mode the spec guarantees, and what the game expects
+		if (GetSettings().isVSyncEnabled)
+		{
+			return;
+		}
+
+		// Without vsync, mailbox shows the newest frame without tearing; immediate is the
+		// fallback where that is all the driver offers
+		uint32_t count = 0;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, nullptr);
+
+		std::vector<VkPresentModeKHR> modes(count);
+		if (count > 0)
+		{
+			vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, modes.data());
+		}
+
+		bool const hasMailbox   = std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end();
+		bool const hasImmediate = std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end();
+
+		presentMode = hasMailbox ? VK_PRESENT_MODE_MAILBOX_KHR : (hasImmediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR);
+	}
+
+	bool VulkanBackend::CreateSwapchain(void)
 	{
 		// Check the surface allows transfers into its images
 		//
-		// TRANSFER_DST is what the clears and pixel copies need. COLOR_ATTACHMENT is what
-		// the draws need, and overlay layers (Steam, GPU vendor overlays, and in testing
-		// the Rockstar Social Club layer) wrap the swapchain in their own render pass and
-		// need it too. The spec guarantees COLOR_ATTACHMENT is in supportedUsageFlags for
-		// any surface, so only TRANSFER_DST is worth testing.
+		// TRANSFER_DST is what presenting needs, since it copies the back buffer in.
+		// COLOR_ATTACHMENT is guaranteed and overlay layers (Steam, GPU vendor overlays,
+		// ReShade) draw into the images with it.
 		VkSurfaceCapabilitiesKHR capabilities{};
 		VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", result);
+			if (!NoteDeviceLoss(result))
+			{
+				LogWarn("Vulkan: could not read the surface's capabilities (%s).", VkResultName(result));
+			}
+
 			return false;
 		}
 
@@ -547,10 +834,7 @@ namespace scvk
 			return false;
 		}
 
-		// Choose B8G8R8A8_UNORM
-		//
-		// The game hands us BGRA8 pixels, so matching it means the blits are a straight
-		// copy with no conversion and no shader.
+		// Choose B8G8R8A8_UNORM, which the back buffer copies into unchanged
 		uint32_t formatCount = 0;
 		vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
 		if (formatCount == 0)
@@ -566,42 +850,52 @@ namespace scvk
 		VkSurfaceFormatKHR chosen = formats[0];
 		for (VkSurfaceFormatKHR const& candidate : formats)
 		{
-			if (candidate.format == VK_FORMAT_B8G8R8A8_UNORM && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			if (candidate.format == BACK_BUFFER_FORMAT && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
 			{
 				chosen = candidate;
 				break;
 			}
 		}
 
-		if (chosen.format != VK_FORMAT_B8G8R8A8_UNORM)
+		if (chosen.format != BACK_BUFFER_FORMAT)
 		{
-			LogWarn("Vulkan: B8G8R8A8_UNORM is unavailable; using format %d instead. Blits will have the wrong channel order until a conversion step exists.", chosen.format);
+			LogWarn("Vulkan: B8G8R8A8_UNORM is unavailable for the window; presenting through format %d, converted as it is copied.", chosen.format);
 		}
 
-		// Size it to the surface, or to the window when the surface leaves it open
+		// Size it to the window, which may differ from the render size
 		VkExtent2D extent = capabilities.currentExtent;
 		if (extent.width == UINT32_MAX)
 		{
-			extent.width  = width;
-			extent.height = height;
+			extent.width  = renderWidth;
+			extent.height = renderHeight;
 		}
 
 		if (extent.width == 0 || extent.height == 0)
 		{
-			LogDebug("Vulkan: the window has no area yet; deferring swapchain creation.");
+			LogDebug("Vulkan: the window has no area; presenting waits until it has.");
 			return false;
 		}
 
-		uint32_t imageCount = capabilities.minImageCount + 1;
+		// Take one image more than the minimum for the flip model, or the minimum for the
+		// legacy one
+		//
+		// As SCD3D11 chooses between DXGI's swap effects: a window or borderless
+		// fullscreen, which the desktop compositor shows, flips between its images, with
+		// one more than the minimum so the next frame need not wait for the compositor to
+		// release one. Exclusive fullscreen keeps the legacy model, with as few images as
+		// the surface allows, as does any window under -FlipModel:off. The game draws into
+		// the back buffer either way, so no swapchain image ever has to keep its contents.
+		isFlipModel = GetSettings().isFlipModelPreferred && !isExclusiveFullscreen;
+
+		uint32_t imageCount = capabilities.minImageCount + (isFlipModel ? 1u : 0u);
 		if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
 		{
 			imageCount = capabilities.maxImageCount;
 		}
 
+		ChoosePresentMode();
+
 		// Create it
-		//
-		// FIFO is the only mode the spec guarantees, and it is vsync, which is what this
-		// game expects anyway.
 		VkSwapchainCreateInfoKHR information{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 		information.surface          = surface;
 		information.minImageCount    = imageCount;
@@ -609,61 +903,98 @@ namespace scvk
 		information.imageColorSpace  = chosen.colorSpace;
 		information.imageExtent      = extent;
 		information.imageArrayLayers = 1;
-		information.imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		information.imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		information.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		information.preTransform     = capabilities.currentTransform;
 		information.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-		information.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+		information.presentMode      = presentMode;
 		information.clipped          = VK_TRUE;
 		information.oldSwapchain     = VK_NULL_HANDLE;
+
+		// Keep the driver from taking exclusive control of the screen
+		//
+		// Left to decide, a driver may present a window that covers the monitor by taking
+		// the display for itself and bypassing the desktop compositor. For an AMD player in
+		// exclusive fullscreen, PrintScreen copied the desktop instead of the game, which is
+		// what bypassing the compositor looks like. DXVK disallows it by default too, since
+		// it blocks Alt+Tab and windows drawn over the game.
+		VkSurfaceFullScreenExclusiveInfoEXT fullscreenPolicy{ VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
+		fullscreenPolicy.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+
+		if (hasFullscreenPolicyControl)
+		{
+			information.pNext = &fullscreenPolicy;
+		}
 
 		result = vkCreateSwapchainKHR(device, &information, nullptr, &swapchain);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateSwapchainKHR", result);
+			swapchain = VK_NULL_HANDLE;
+			if (!NoteDeviceLoss(result))
+			{
+				LogWarn("Vulkan: vkCreateSwapchainKHR failed with %s; trying again next frame.", VkResultName(result));
+			}
+
 			return false;
 		}
 
 		swapchainFormat = chosen.format;
 		swapchainExtent = extent;
 
-		// Fetch its images
+		// Fetch its images, with a semaphore each for presenting them
 		uint32_t actualCount = 0;
 		vkGetSwapchainImagesKHR(device, swapchain, &actualCount, nullptr);
 		swapchainImages.resize(actualCount);
 		vkGetSwapchainImagesKHR(device, swapchain, &actualCount, swapchainImages.data());
 
-		LogInfo("Vulkan: swapchain ready, %ux%u, %u images, format %d.", extent.width, extent.height, actualCount, chosen.format);
-
-		// Create what depends on the format, the images and the extent
-		//
-		// The render pass depends on the swapchain format, and the framebuffers on the
-		// images and extent, so both belong here rather than in one-time setup. The copy
-		// of the last frame is optional, so its failure does not fail the swapchain.
-		if (!CreateDepthResources() || !CreateRenderPass() || !CreateFramebuffers())
+		renderFinishedSemaphores.assign(actualCount, VK_NULL_HANDLE);
+		for (VkSemaphore& semaphore : renderFinishedSemaphores)
 		{
-			return false;
+			VkSemaphoreCreateInfo semaphoreInformation{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+			if (vkCreateSemaphore(device, &semaphoreInformation, nullptr, &semaphore) != VK_SUCCESS)
+			{
+				semaphore = VK_NULL_HANDLE;
+				DestroySwapchain();
+				LogWarn("Vulkan: could not create the swapchain's semaphores.");
+				return false;
+			}
 		}
 
-		CreateLastFrame();
+		LogInfo("Vulkan: swapchain ready, %ux%u, %u images (%s), format %d, %s presentation; drawing at %ux%u.", extent.width, extent.height, actualCount, isFlipModel ? "flip model" : "legacy", chosen.format, PresentModeName(presentMode), renderWidth, renderHeight);
 		return true;
 	}
 
-	bool VulkanBackend::CreateRenderPass(void)
+	bool VulkanBackend::CreateRenderPasses(void)
 	{
 		if (renderPass != VK_NULL_HANDLE)
 		{
 			return true;
 		}
 
+		// Order each pass after the passes and copies before it, and what follows after it
+		//
+		// The game opens and closes passes many times a frame as draws, clears and copies
+		// interleave, and a pass that loads an attachment has to see what the last one
+		// stored.
+		VkSubpassDependency dependencies[2]{};
+		dependencies[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass    = 0;
+		dependencies[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | DEPTH_STAGES | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dependencies[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | DEPTH_STAGES | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+
+		dependencies[1]               = dependencies[0];
+		dependencies[1].srcSubpass    = 0;
+		dependencies[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+
 		// Describe the colour attachment
 		//
-		// LOAD rather than CLEAR. The game issues its own Clear, which is a transfer
-		// operation outside the pass, and a pass may be opened and closed several times
-		// in one frame as draws and blits interleave. Clearing on load would erase
-		// earlier work each time.
+		// LOAD rather than CLEAR. The game issues its own Clear, and a pass may be opened
+		// and closed several times in one frame as draws and copies interleave. Clearing
+		// on load would erase earlier work each time.
 		VkAttachmentDescription colour{};
-		colour.format         = swapchainFormat;
+		colour.format         = backBuffer.format;
 		colour.samples        = VK_SAMPLE_COUNT_1_BIT;
 		colour.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
 		colour.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
@@ -672,29 +1003,22 @@ namespace scvk
 		colour.initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		colour.finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-		VkAttachmentReference colourReference{};
-		colourReference.attachment = 0;
-		colourReference.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		VkAttachmentReference colourReference{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
 
-		// Describe the depth attachment
-		//
-		// It loads and stores like the colour attachment, because the game clears it
-		// explicitly and may open and close several passes per frame.
+		// Describe the depth attachment, stencil included
 		VkAttachmentDescription depth{};
-		depth.format         = depthFormat;
+		depth.format         = depthBuffer.format;
 		depth.samples        = VK_SAMPLE_COUNT_1_BIT;
 		depth.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
 		depth.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-		depth.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth.stencilLoadOp  = hasStencil ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depth.stencilStoreOp = hasStencil ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-		VkAttachmentReference depthReference{};
-		depthReference.attachment = 1;
-		depthReference.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		VkAttachmentReference depthReference{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
-		// Create the single subpass pass
+		// Create the main pass, colour and depth
 		VkSubpassDescription subpass{};
 		subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
 		subpass.colorAttachmentCount    = 1;
@@ -708,85 +1032,120 @@ namespace scvk
 		information.pAttachments    = attachments;
 		information.subpassCount    = 1;
 		information.pSubpasses      = &subpass;
+		information.dependencyCount = _countof(dependencies);
+		information.pDependencies   = dependencies;
 
-		VkResult const result = vkCreateRenderPass(device, &information, nullptr, &renderPass);
+		VkResult result = vkCreateRenderPass(device, &information, nullptr, &renderPass);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkCreateRenderPass", result);
 			return false;
 		}
 
-		return true;
-	}
+		// Create the colour-only pass, for the passes that sample the depth buffer
+		VkSubpassDescription colourOnlySubpass{};
+		colourOnlySubpass.pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		colourOnlySubpass.colorAttachmentCount = 1;
+		colourOnlySubpass.pColorAttachments    = &colourReference;
 
-	bool VulkanBackend::CreateFramebuffers(void)
-	{
-		swapchainImageViews.resize(swapchainImages.size());
-		framebuffers.resize(swapchainImages.size());
+		information.attachmentCount = 1;
+		information.pAttachments    = &colour;
+		information.pSubpasses      = &colourOnlySubpass;
 
-		for (size_t i = 0; i < swapchainImages.size(); i++)
+		result = vkCreateRenderPass(device, &information, nullptr, &colourOnlyPass);
+		if (result != VK_SUCCESS)
 		{
-			// Create a view of the image
-			VkImageViewCreateInfo viewInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-			viewInformation.image    = swapchainImages[i];
-			viewInformation.viewType = VK_IMAGE_VIEW_TYPE_2D;
-			viewInformation.format   = swapchainFormat;
-			viewInformation.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-			viewInformation.subresourceRange.baseMipLevel   = 0;
-			viewInformation.subresourceRange.levelCount     = 1;
-			viewInformation.subresourceRange.baseArrayLayer = 0;
-			viewInformation.subresourceRange.layerCount     = 1;
-
-			VkResult result = vkCreateImageView(device, &viewInformation, nullptr, &swapchainImageViews[i]);
-			if (result != VK_SUCCESS)
-			{
-				Fail("vkCreateImageView", result);
-				return false;
-			}
-
-			// Pair it with the depth view in a framebuffer
-			VkImageView attachments[] = { swapchainImageViews[i], depthView };
-
-			VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-			framebufferInformation.renderPass      = renderPass;
-			framebufferInformation.attachmentCount = _countof(attachments);
-			framebufferInformation.pAttachments    = attachments;
-			framebufferInformation.width           = swapchainExtent.width;
-			framebufferInformation.height          = swapchainExtent.height;
-			framebufferInformation.layers          = 1;
-
-			result = vkCreateFramebuffer(device, &framebufferInformation, nullptr, &framebuffers[i]);
-			if (result != VK_SUCCESS)
-			{
-				Fail("vkCreateFramebuffer", result);
-				return false;
-			}
+			Fail("vkCreateRenderPass (colour only)", result);
+			return false;
 		}
 
 		return true;
 	}
 
-	void VulkanBackend::DestroyFramebuffers(void)
+	bool VulkanBackend::CreateRenderTargets(void)
 	{
-		for (VkFramebuffer framebuffer : framebuffers)
+		if (backBuffer.image != VK_NULL_HANDLE)
 		{
-			if (framebuffer != VK_NULL_HANDLE)
-			{
-				vkDestroyFramebuffer(device, framebuffer, nullptr);
-			}
+			return true;
 		}
 
-		framebuffers.clear();
-
-		for (VkImageView view : swapchainImageViews)
+		// Create the back buffer
+		//
+		// Mutable, so ReShade can have an sRGB view of it, and sampled and copied for the
+		// passes and the captures that read it.
+		VkImageUsageFlags const colourUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (!CreateRenderImage(BACK_BUFFER_FORMAT, renderWidth, renderHeight, colourUsage, VK_IMAGE_ASPECT_COLOR_BIT, BACK_BUFFER_SRGB_FORMAT, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, backBuffer))
 		{
-			if (view != VK_NULL_HANDLE)
-			{
-				vkDestroyImageView(device, view, nullptr);
-			}
+			LogError("Vulkan: could not create the %ux%u back buffer.", renderWidth, renderHeight);
+			return false;
 		}
 
-		swapchainImageViews.clear();
+		// Create the depth buffer, sampled where the format allows
+		if (!ChooseDepthFormat())
+		{
+			return false;
+		}
+
+		VkImageUsageFlags depthUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		if (isDepthSampleable)
+		{
+			depthUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+		}
+
+		if (!CreateRenderImage(depthBuffer.format, renderWidth, renderHeight, depthUsage, DepthAspects(), isDepthSampleable ? depthBuffer.format : VK_FORMAT_UNDEFINED, 0, depthBuffer))
+		{
+			LogError("Vulkan: could not create the depth buffer.");
+			return false;
+		}
+
+		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s%s.", renderWidth, renderHeight, depthBuffer.format, hasStencil ? " with stencil" : "", isDepthSampleable ? ", sampleable" : "");
+
+		// Create the passes and their framebuffers
+		if (!CreateRenderPasses())
+		{
+			return false;
+		}
+
+		VkImageView const attachments[] = { backBuffer.view, depthBuffer.view };
+
+		VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+		framebufferInformation.renderPass      = renderPass;
+		framebufferInformation.attachmentCount = _countof(attachments);
+		framebufferInformation.pAttachments    = attachments;
+		framebufferInformation.width           = renderWidth;
+		framebufferInformation.height          = renderHeight;
+		framebufferInformation.layers          = 1;
+
+		VkResult result = vkCreateFramebuffer(device, &framebufferInformation, nullptr, &framebuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateFramebuffer", result);
+			return false;
+		}
+
+		framebufferInformation.renderPass      = colourOnlyPass;
+		framebufferInformation.attachmentCount = 1;
+
+		result = vkCreateFramebuffer(device, &framebufferInformation, nullptr, &colourOnlyFramebuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkCreateFramebuffer (colour only)", result);
+			return false;
+		}
+
+		return true;
+	}
+
+	void VulkanBackend::DestroyRenderTargets(void)
+	{
+		if (framebuffer != VK_NULL_HANDLE)           { vkDestroyFramebuffer(device, framebuffer, nullptr); framebuffer = VK_NULL_HANDLE; }
+		if (colourOnlyFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, colourOnlyFramebuffer, nullptr); colourOnlyFramebuffer = VK_NULL_HANDLE; }
+		if (renderPass != VK_NULL_HANDLE)            { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
+		if (colourOnlyPass != VK_NULL_HANDLE)        { vkDestroyRenderPass(device, colourOnlyPass, nullptr); colourOnlyPass = VK_NULL_HANDLE; }
+
+		DestroyRenderImage(backBuffer);
+		DestroyRenderImage(depthBuffer);
+		activePass = ActivePass::None;
 	}
 
 	void VulkanBackend::DestroySwapchain(void)
@@ -796,18 +1155,13 @@ namespace scvk
 			return;
 		}
 
-		// Wait for the GPU, then destroy what is sized to the swapchain
+		// Wait for the GPU, then destroy the swapchain alone
 		//
-		// The buffer regions stay. They are images of their own, and every copy to or
-		// from one is clamped to both sizes. The game never makes new ones when its old
-		// handles stop working: destroying them on a rebuild left it restoring its saved
-		// scene from nothing, so moving clouds smeared across the screen after every
-		// switch away from fullscreen.
+		// The back buffer, the depth buffer and the buffer regions belong to the render
+		// size, not to the window, so they all stay. The game never makes new regions
+		// when its old handles stop working, and it relies on the back buffer keeping
+		// what it drew.
 		vkDeviceWaitIdle(device);
-
-		DestroyFramebuffers();
-		DestroyDepthResources();
-		DestroyLastFrame();
 
 		if (swapchain != VK_NULL_HANDLE)
 		{
@@ -815,16 +1169,23 @@ namespace scvk
 			swapchain = VK_NULL_HANDLE;
 		}
 
-		// Forget the frame in progress
+		// The semaphores presenting waited on go with it, so a new swapchain starts with
+		// none still pending
+		for (VkSemaphore semaphore : renderFinishedSemaphores)
+		{
+			if (semaphore != VK_NULL_HANDLE)
+			{
+				vkDestroySemaphore(device, semaphore, nullptr);
+			}
+		}
+
+		renderFinishedSemaphores.clear();
 		swapchainImages.clear();
-		isFrameActive      = false;
-		isRenderPassActive = false;
-		currentLayout      = VK_IMAGE_LAYOUT_UNDEFINED;
 	}
 
 	bool VulkanBackend::RestoreSwapchain(void)
 	{
-		if (isDead || device == VK_NULL_HANDLE || surface == VK_NULL_HANDLE)
+		if (isDead || isDeviceLost || device == VK_NULL_HANDLE || surface == VK_NULL_HANDLE)
 		{
 			return false;
 		}
@@ -832,32 +1193,56 @@ namespace scvk
 		// Wait while the window has no area
 		//
 		// A minimised window reports a zero extent, and no swapchain can be made for it.
-		// Presenting to one loses the swapchain, which used to stop the game drawing for
-		// good. This runs every frame until the window is back, so it checks quietly.
+		// This runs every frame until the window is back, so it checks quietly.
 		VkSurfaceCapabilitiesKHR capabilities{};
 		VkResult const result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
 
 		if (result != VK_SUCCESS || capabilities.currentExtent.width == 0 || capabilities.currentExtent.height == 0)
 		{
+			NoteDeviceLoss(result);
 			return false;
 		}
 
 		LogDebug("Vulkan: the window has area again; rebuilding the swapchain.");
-		return CreateSwapchain(swapchainExtent.width, swapchainExtent.height);
+		return CreateSwapchain();
 	}
 
 	void VulkanBackend::DestroyDevice(void)
 	{
 		if (device != VK_NULL_HANDLE)
 		{
-			// Destroy what renders, then everything retired, then the textures and their
-			// descriptors
+			// Let the GPU finish, then tell whoever holds objects of this device to let
+			// them go while it still exists
 			vkDeviceWaitIdle(device);
 
+			if (beforeDeviceDestroyHook != nullptr)
+			{
+				beforeDeviceDestroyHook(beforeDeviceDestroyHookContext);
+			}
+
+			// Destroy what renders, then everything retired, then the textures and their
+			// descriptors
+			SavePipelineCache();
+
+			isFrameActive = false;
+			activePass    = ActivePass::None;
+			commandBuffer = VK_NULL_HANDLE;
+
 			DestroySwapchain();
+
 			DestroyAllBufferRegions();
+			DestroyEffectResources();
+			DestroyRenderTargets();
 			DestroyPipelines();
-			FlushRetiredImages();
+
+			frameSlots[0].retiredImages.insert(frameSlots[0].retiredImages.end(), pendingRetiredImages.begin(), pendingRetiredImages.end());
+			pendingRetiredImages.clear();
+
+			for (FrameSlot& slot : frameSlots)
+			{
+				FlushRetired(slot);
+			}
+
 			DestroyTextures();
 
 			if (uploadFence != VK_NULL_HANDLE)       { vkDestroyFence(device, uploadFence, nullptr); uploadFence = VK_NULL_HANDLE; }
@@ -870,23 +1255,35 @@ namespace scvk
 
 			samplers.clear();
 
+			if (pointClampSampler != VK_NULL_HANDLE)  { vkDestroySampler(device, pointClampSampler, nullptr); pointClampSampler = VK_NULL_HANDLE; }
+			if (linearClampSampler != VK_NULL_HANDLE) { vkDestroySampler(device, linearClampSampler, nullptr); linearClampSampler = VK_NULL_HANDLE; }
+			if (linearWrapSampler != VK_NULL_HANDLE)  { vkDestroySampler(device, linearWrapSampler, nullptr); linearWrapSampler = VK_NULL_HANDLE; }
+			pointClampSet  = VK_NULL_HANDLE;
+			linearClampSet = VK_NULL_HANDLE;
+			linearWrapSet  = VK_NULL_HANDLE;
+
 			if (samplerSetLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, samplerSetLayout, nullptr); samplerSetLayout = VK_NULL_HANDLE; }
 			if (descriptorPool != VK_NULL_HANDLE)   { vkDestroyDescriptorPool(device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
 			if (imageSetLayout != VK_NULL_HANDLE)   { vkDestroyDescriptorSetLayout(device, imageSetLayout, nullptr); imageSetLayout = VK_NULL_HANDLE; }
 
-			// Destroy the shaders, the pass and the layout
+			// Destroy the shaders and the layout
 			for (VkShaderModule& module : vertexModules)
 			{
 				if (module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, module, nullptr); module = VK_NULL_HANDLE; }
 			}
 
-			if (renderPass != VK_NULL_HANDLE)     { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
+			for (VkShaderModule& module : fragmentModules)
+			{
+				if (module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, module, nullptr); module = VK_NULL_HANDLE; }
+			}
+
 			if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
-			if (fragmentModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, fragmentModule, nullptr); fragmentModule = VK_NULL_HANDLE; }
 
 			// Destroy the buffers
 			DestroyArena(vertexArena);
 			DestroyArena(indexArena);
+			DestroyArena(stagingArena);
+			DestroyArena(uniformArena);
 			drawRecordBuffer = VK_NULL_HANDLE;
 
 			FreeDeviceMemory(quadIndexMemory);
@@ -894,22 +1291,15 @@ namespace scvk
 
 			DestroyReadbackBuffer();
 
-			if (stagingMapped != nullptr)          { vkUnmapMemory(device, stagingMemory); stagingMapped = nullptr; }
-			FreeDeviceMemory(stagingMemory);
-			if (stagingBuffer != VK_NULL_HANDLE)   { vkDestroyBuffer(device, stagingBuffer, nullptr); stagingBuffer = VK_NULL_HANDLE; }
+			// Destroy the frames, the cache, then the device
+			DestroyFrameResources();
 
-			// Destroy the frame's synchronisation and commands, then the device
-			if (frameFence != VK_NULL_HANDLE)              { vkDestroyFence(device, frameFence, nullptr); frameFence = VK_NULL_HANDLE; }
-			if (imageAvailableSemaphore != VK_NULL_HANDLE) { vkDestroySemaphore(device, imageAvailableSemaphore, nullptr); imageAvailableSemaphore = VK_NULL_HANDLE; }
-			if (renderFinishedSemaphore != VK_NULL_HANDLE) { vkDestroySemaphore(device, renderFinishedSemaphore, nullptr); renderFinishedSemaphore = VK_NULL_HANDLE; }
-			if (commandPool != VK_NULL_HANDLE)             { vkDestroyCommandPool(device, commandPool, nullptr); commandPool = VK_NULL_HANDLE; }
-
-			commandBuffer       = VK_NULL_HANDLE;
-			uploadCommandBuffer = VK_NULL_HANDLE;
+			if (pipelineCache != VK_NULL_HANDLE) { vkDestroyPipelineCache(device, pipelineCache, nullptr); pipelineCache = VK_NULL_HANDLE; }
 
 			vkDestroyDevice(device, nullptr);
 			device = VK_NULL_HANDLE;
 			queue  = VK_NULL_HANDLE;
+			liveMemoryAllocations = 0;
 		}
 
 		// Destroy the window's surface
@@ -918,6 +1308,140 @@ namespace scvk
 			vkDestroySurfaceKHR(instance, surface, nullptr);
 			surface = VK_NULL_HANDLE;
 		}
+
+		bound = BindingCache{};
+	}
+
+	bool VulkanBackend::RecoverDevice(void)
+	{
+		LogInfo("Vulkan: rebuilding the device (attempt %u).", deviceRecoveryFailures + 1);
+
+		// Keep what the textures and regions were, by handle
+		//
+		// The game holds on to its texture names and region handles, and never asks for
+		// new ones after a reset. They come back with their sizes and formats but empty,
+		// until the game uploads them again, as SCD3D11 does after losing its device.
+		std::vector<Texture> previousTextures = textures;
+		std::vector<BufferRegion> previousRegions = bufferRegions;
+		uint32_t const previousTexture  = currentTexture;
+		uint32_t const previousTexture1 = currentTexture1;
+
+		// Destroy everything, then make it again
+		DestroyDevice();
+
+		if (!CreateSurfaceAndDevice(windowHandle, renderWidth, renderHeight))
+		{
+			// Keep the descriptions for the next attempt
+			textures      = previousTextures;
+			bufferRegions = previousRegions;
+			for (Texture& texture : textures)
+			{
+				texture.image      = VK_NULL_HANDLE;
+				texture.view       = VK_NULL_HANDLE;
+				texture.descriptor = VK_NULL_HANDLE;
+				texture.memory     = ImageMemory{};
+			}
+
+			for (BufferRegion& region : bufferRegions)
+			{
+				region.image  = VK_NULL_HANDLE;
+				region.memory = VK_NULL_HANDLE;
+			}
+
+			return false;
+		}
+
+		// Rebuild the textures under their old handles
+		uint32_t rebuilt = 0;
+		textures.resize(std::max(textures.size(), previousTextures.size()));
+
+		for (size_t handle = 1; handle < previousTextures.size(); handle++)
+		{
+			Texture& texture = textures[handle];
+			texture = Texture{};
+
+			Texture const& previous = previousTextures[handle];
+			if (previous.isReserved)
+			{
+				texture.isReserved = true;
+				continue;
+			}
+
+			if (!previous.isLive)
+			{
+				continue;
+			}
+
+			texture.format         = previous.format;
+			texture.width          = previous.width;
+			texture.height         = previous.height;
+			texture.levels         = previous.levels;
+			texture.isCompressed   = previous.isCompressed;
+			texture.internalFormat = previous.internalFormat;
+
+			if (CreateTextureObjects(texture))
+			{
+				rebuilt++;
+			}
+		}
+
+		// Rebuild the regions under their old handles
+		bufferRegions.resize(previousRegions.size());
+		for (size_t index = 0; index < previousRegions.size(); index++)
+		{
+			bufferRegions[index] = BufferRegion{};
+			if (previousRegions[index].isLive)
+			{
+				AllocateRegionImage(previousRegions[index].isDepth, bufferRegions[index]);
+			}
+		}
+
+		SetTexture(previousTexture);
+		SetTexture1(previousTexture1);
+		LogInfo("Vulkan: the device is back; %u textures and %zu regions recreated empty.", rebuilt, bufferRegions.size());
+		return true;
+	}
+
+	bool VulkanBackend::TryRecoverDevice(void)
+	{
+		if (!isDeviceLost)
+		{
+			return !isDead;
+		}
+
+		if (isDead || isRecoveringDevice)
+		{
+			return false;
+		}
+
+		// Back off between attempts, from half a second to eight
+		uint64_t const now = TickMilliseconds();
+		if (now < nextDeviceRecoveryTick)
+		{
+			return false;
+		}
+
+		isRecoveringDevice = true;
+		bool const isRecovered = RecoverDevice();
+		isRecoveringDevice = false;
+
+		if (isRecovered)
+		{
+			isDeviceLost           = false;
+			deviceRecoveryFailures = 0;
+			nextDeviceRecoveryTick = 0;
+			return true;
+		}
+
+		if (deviceRecoveryFailures < 5)
+		{
+			deviceRecoveryFailures++;
+		}
+
+		uint64_t const delay = 250ull << deviceRecoveryFailures;
+		nextDeviceRecoveryTick = now + delay;
+		LogWarn("Vulkan: rebuilding the device failed; trying again in %llu ms.", delay);
+		return false;
 	}
 
 	bool VulkanBackend::FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, uint32_t& outIndex) const
@@ -927,8 +1451,8 @@ namespace scvk
 
 		for (uint32_t i = 0; i < memory.memoryTypeCount; i++)
 		{
-			bool const isTypeAllowed  = (typeBits & (1u << i)) != 0;
-			bool const hasProperties  = (memory.memoryTypes[i].propertyFlags & properties) == properties;
+			bool const isTypeAllowed = (typeBits & (1u << i)) != 0;
+			bool const hasProperties = (memory.memoryTypes[i].propertyFlags & properties) == properties;
 
 			if (isTypeAllowed && hasProperties)
 			{
@@ -946,6 +1470,11 @@ namespace scvk
 		if (result == VK_SUCCESS)
 		{
 			liveMemoryAllocations++;
+		}
+		else
+		{
+			outMemory = VK_NULL_HANDLE;
+			NoteDeviceLoss(result);
 		}
 
 		return result;
@@ -965,6 +1494,10 @@ namespace scvk
 
 	bool VulkanBackend::CreateHostBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& outBuffer, VkDeviceMemory& outMemory, void*& outMapped)
 	{
+		outBuffer = VK_NULL_HANDLE;
+		outMemory = VK_NULL_HANDLE;
+		outMapped = nullptr;
+
 		// Create the buffer
 		VkBufferCreateInfo bufferInformation{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 		bufferInformation.size        = size;
@@ -974,20 +1507,30 @@ namespace scvk
 		VkResult result = vkCreateBuffer(device, &bufferInformation, nullptr, &outBuffer);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkCreateBuffer", result);
+			outBuffer = VK_NULL_HANDLE;
+			NoteDeviceLoss(result);
+			LogWarn("Vulkan: could not create a %llu byte buffer (%s).", size, VkResultName(result));
 			return false;
 		}
 
-		// Back it with host-visible coherent memory
+		// Back it with memory the CPU writes, on the device when that is fast
+		//
+		// Running short is not fatal: the caller drops what it was going to put there, and
+		// the frame carries on.
 		VkMemoryRequirements requirements{};
 		vkGetBufferMemoryRequirements(device, outBuffer, &requirements);
 
-		uint32_t typeIndex = 0;
-		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
+		uint32_t typeIndex = arenaMemoryType;
+		if (typeIndex == UINT32_MAX || (requirements.memoryTypeBits & (1u << typeIndex)) == 0)
 		{
-			LogError("Vulkan: no host-visible coherent memory type available.");
-			isDead = true;
-			return false;
+			if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
+			{
+				LogError("Vulkan: no host-visible coherent memory type available.");
+				vkDestroyBuffer(device, outBuffer, nullptr);
+				outBuffer = VK_NULL_HANDLE;
+				isDead = true;
+				return false;
+			}
 		}
 
 		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -995,45 +1538,347 @@ namespace scvk
 		allocationInformation.memoryTypeIndex = typeIndex;
 
 		result = AllocateDeviceMemory(allocationInformation, outMemory);
+
+		// A device-local type can run out where system memory does not
+		if (result != VK_SUCCESS && typeIndex == arenaMemoryType && isArenaMemoryDeviceLocal && !isDeviceLost)
+		{
+			uint32_t systemType = 0;
+			if (FindMemoryType(requirements.memoryTypeBits & ~(1u << typeIndex), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, systemType))
+			{
+				allocationInformation.memoryTypeIndex = systemType;
+				result = AllocateDeviceMemory(allocationInformation, outMemory);
+			}
+		}
+
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkAllocateMemory", result);
+			LogWarn("Vulkan: could not allocate %llu bytes of host-visible memory (%s).", requirements.size, VkResultName(result));
+			vkDestroyBuffer(device, outBuffer, nullptr);
+			outBuffer = VK_NULL_HANDLE;
 			return false;
 		}
 
 		result = vkBindBufferMemory(device, outBuffer, outMemory, 0);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkBindBufferMemory", result);
-			return false;
-		}
 
 		// Map it for its whole life
-		result = vkMapMemory(device, outMemory, 0, requirements.size, 0, &outMapped);
+		if (result == VK_SUCCESS)
+		{
+			result = vkMapMemory(device, outMemory, 0, requirements.size, 0, &outMapped);
+		}
+
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkMapMemory", result);
+			LogWarn("Vulkan: could not map a %llu byte buffer (%s).", size, VkResultName(result));
+			NoteDeviceLoss(result);
+			FreeDeviceMemory(outMemory);
+			vkDestroyBuffer(device, outBuffer, nullptr);
+			outBuffer = VK_NULL_HANDLE;
+			outMapped = nullptr;
 			return false;
 		}
 
 		return true;
 	}
 
-	int32_t VulkanBackend::SwapchainWidth(void) const
+	bool VulkanBackend::CreateRenderImage(VkFormat format, uint32_t width, uint32_t height, VkImageUsageFlags usage, VkImageAspectFlags viewAspect, VkFormat secondViewFormat, VkImageCreateFlags flags, RenderImage& outImage)
 	{
-		// Window sizes are far below INT32_MAX, so the conversion loses nothing.
-		return static_cast<int32_t>(swapchainExtent.width);
+		RenderImage image;
+		image.format = format;
+		image.width  = width;
+		image.height = height;
+
+		// Create the image
+		VkImageCreateInfo imageInformation{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+		imageInformation.flags         = flags;
+		imageInformation.imageType     = VK_IMAGE_TYPE_2D;
+		imageInformation.format        = format;
+		imageInformation.extent        = { width, height, 1 };
+		imageInformation.mipLevels     = 1;
+		imageInformation.arrayLayers   = 1;
+		imageInformation.samples       = VK_SAMPLE_COUNT_1_BIT;
+		imageInformation.tiling        = VK_IMAGE_TILING_OPTIMAL;
+		imageInformation.usage         = usage;
+		imageInformation.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+		imageInformation.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VkResult result = vkCreateImage(device, &imageInformation, nullptr, &image.image);
+		if (result != VK_SUCCESS)
+		{
+			NoteDeviceLoss(result);
+			return false;
+		}
+
+		// Back it with device-local memory of its own
+		VkMemoryRequirements requirements{};
+		vkGetImageMemoryRequirements(device, image.image, &requirements);
+
+		uint32_t typeIndex = 0;
+		if (!FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, typeIndex))
+		{
+			vkDestroyImage(device, image.image, nullptr);
+			return false;
+		}
+
+		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocationInformation.allocationSize  = requirements.size;
+		allocationInformation.memoryTypeIndex = typeIndex;
+
+		result = AllocateDeviceMemory(allocationInformation, image.memory);
+		if (result == VK_SUCCESS)
+		{
+			result = vkBindImageMemory(device, image.image, image.memory, 0);
+		}
+
+		// Create its views: the one rendering uses, and the second one when asked for,
+		// another format of a colour image or the depth alone of a depth image
+		VkImageViewCreateInfo viewInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+		viewInformation.image    = image.image;
+		viewInformation.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInformation.format   = format;
+		viewInformation.subresourceRange.aspectMask = viewAspect;
+		viewInformation.subresourceRange.levelCount = 1;
+		viewInformation.subresourceRange.layerCount = 1;
+
+		if (result == VK_SUCCESS)
+		{
+			result = vkCreateImageView(device, &viewInformation, nullptr, &image.view);
+		}
+
+		if (result == VK_SUCCESS && secondViewFormat != VK_FORMAT_UNDEFINED)
+		{
+			bool const isDepthImage = (viewAspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
+			viewInformation.format = secondViewFormat;
+			viewInformation.subresourceRange.aspectMask = isDepthImage ? VkImageAspectFlags{ VK_IMAGE_ASPECT_DEPTH_BIT } : viewAspect;
+
+			// The second view is a convenience; the image works without it
+			if (vkCreateImageView(device, &viewInformation, nullptr, &image.secondView) != VK_SUCCESS)
+			{
+				image.secondView = VK_NULL_HANDLE;
+			}
+		}
+
+		if (result != VK_SUCCESS)
+		{
+			NoteDeviceLoss(result);
+			DestroyRenderImage(image);
+			return false;
+		}
+
+		outImage = image;
+		return true;
 	}
 
-	int32_t VulkanBackend::SwapchainHeight(void) const
+	void VulkanBackend::DestroyRenderImage(RenderImage& image)
 	{
-		// Window sizes are far below INT32_MAX, so the conversion loses nothing.
-		return static_cast<int32_t>(swapchainExtent.height);
+		if (device != VK_NULL_HANDLE)
+		{
+			if (image.secondView != VK_NULL_HANDLE) { vkDestroyImageView(device, image.secondView, nullptr); }
+			if (image.view != VK_NULL_HANDLE)       { vkDestroyImageView(device, image.view, nullptr); }
+			if (image.image != VK_NULL_HANDLE)      { vkDestroyImage(device, image.image, nullptr); }
+			FreeDeviceMemory(image.memory);
+		}
+
+		image = RenderImage{};
+	}
+
+	void VulkanBackend::RetireRenderImage(RenderImage& image)
+	{
+		if (image.image == VK_NULL_HANDLE)
+		{
+			image = RenderImage{};
+			return;
+		}
+
+		// Destroyed once the GPU has finished the frame being recorded, and with it
+		// everything before it
+		RetiredImage retired;
+		retired.image         = image.image;
+		retired.memory.memory = image.memory;
+		retired.view          = image.view;
+		retired.secondView    = image.secondView;
+
+		Retire(retired);
+		image = RenderImage{};
+	}
+
+	void VulkanBackend::Retire(RetiredImage const& retired)
+	{
+		if (isFrameActive)
+		{
+			frameSlots[currentSlot].retiredImages.push_back(retired);
+		}
+		else
+		{
+			pendingRetiredImages.push_back(retired);
+		}
+	}
+
+	int32_t VulkanBackend::RenderWidth(void) const
+	{
+		// Render sizes are far below INT32_MAX, so the conversion loses nothing.
+		return static_cast<int32_t>(renderWidth);
+	}
+
+	int32_t VulkanBackend::RenderHeight(void) const
+	{
+		// Render sizes are far below INT32_MAX, so the conversion loses nothing.
+		return static_cast<int32_t>(renderHeight);
+	}
+
+	bool VulkanBackend::WaitForFrame(uint64_t serial)
+	{
+		if (serial == 0 || serial <= completedSerial)
+		{
+			return true;
+		}
+
+		// Find the slot that holds that frame's fence
+		//
+		// A slot reused since then means the frame was waited for before the reuse.
+		FrameSlot* found = nullptr;
+		for (FrameSlot& candidate : frameSlots)
+		{
+			if (candidate.serial == serial && candidate.isFencePending)
+			{
+				found = &candidate;
+			}
+		}
+
+		if (found == nullptr)
+		{
+			completedSerial = std::max(completedSerial, serial);
+			return true;
+		}
+
+		FrameSlot& slot = *found;
+
+		VkResult const result = WaitForFence(slot.fence, WAIT_TIMEOUT_NANOSECONDS);
+		if (result == VK_TIMEOUT)
+		{
+			LogWarn("Vulkan: timed out waiting for frame %llu; skipping work that needed it.", serial);
+			return false;
+		}
+
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkWaitForFences", result);
+			return false;
+		}
+
+		// A fence signals once everything submitted before it has finished too
+		slot.isFencePending = false;
+		completedSerial     = std::max(completedSerial, serial);
+		return true;
+	}
+
+	bool VulkanBackend::BeginCommandBuffer(void)
+	{
+		FrameSlot& slot = frameSlots[currentSlot];
+
+		// Take the next of the slot's command buffers, allocating one when they are all used
+		if (slot.usedCommandBuffers == slot.commandBuffers.size())
+		{
+			VkCommandBufferAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+			allocationInformation.commandPool        = slot.commandPool;
+			allocationInformation.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			allocationInformation.commandBufferCount = 1;
+
+			VkCommandBuffer allocated = VK_NULL_HANDLE;
+			VkResult const result = vkAllocateCommandBuffers(device, &allocationInformation, &allocated);
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkAllocateCommandBuffers", result);
+				return false;
+			}
+
+			slot.commandBuffers.push_back(allocated);
+		}
+
+		commandBuffer = slot.commandBuffers[slot.usedCommandBuffers++];
+
+		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		VkResult const result = vkBeginCommandBuffer(commandBuffer, &beginInformation);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkBeginCommandBuffer", result);
+			commandBuffer = VK_NULL_HANDLE;
+			return false;
+		}
+
+		// A new command buffer has nothing bound
+		InvalidateBindings();
+		activePass = ActivePass::None;
+
+		// Wait for what someone else drew into the back buffer meanwhile
+		WaitForExternalWork();
+		return true;
+	}
+
+	bool VulkanBackend::SubmitCommandBuffer(VkSemaphore waitSemaphore, VkPipelineStageFlags waitStages, VkSemaphore signalSemaphore, bool shouldSignalFence)
+	{
+		if (commandBuffer == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		EndRenderPassIfActive();
+
+		VkResult result = vkEndCommandBuffer(commandBuffer);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkEndCommandBuffer", result);
+			commandBuffer = VK_NULL_HANDLE;
+			return false;
+		}
+
+		// The submit points at a copy of the handle: the member is cleared below, before
+		// the submit reads it
+		VkCommandBuffer const submitted = commandBuffer;
+
+		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+		submit.waitSemaphoreCount   = (waitSemaphore != VK_NULL_HANDLE) ? 1u : 0u;
+		submit.pWaitSemaphores      = &waitSemaphore;
+		submit.pWaitDstStageMask    = &waitStages;
+		submit.commandBufferCount   = 1;
+		submit.pCommandBuffers      = &submitted;
+		submit.signalSemaphoreCount = (signalSemaphore != VK_NULL_HANDLE) ? 1u : 0u;
+		submit.pSignalSemaphores    = &signalSemaphore;
+
+		// Send the texture uploads ahead of the draws that sample them
+		SubmitTextureBatch();
+
+		FrameSlot& slot = frameSlots[currentSlot];
+		VkFence fence = VK_NULL_HANDLE;
+
+		if (shouldSignalFence)
+		{
+			vkResetFences(device, 1, &slot.fence);
+			fence = slot.fence;
+		}
+
+		commandBuffer = VK_NULL_HANDLE;
+
+		result = SubmitToQueue(submit, fence);
+		if (result != VK_SUCCESS)
+		{
+			Fail("vkQueueSubmit", result);
+			return false;
+		}
+
+		if (shouldSignalFence)
+		{
+			slot.isFencePending = true;
+			slot.serial         = frameSerial;
+		}
+
+		return true;
 	}
 
 	bool VulkanBackend::EnsureFrame(void)
 	{
-		if (isDead || !IsReady())
+		if (isDead || isDeviceLost || !IsReady())
 		{
 			return false;
 		}
@@ -1045,157 +1890,106 @@ namespace scvk
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
-		// Wait for the previous frame
+		// Wait for the frame that last used this slot
 		//
-		// One frame in flight. The CPU waits for the previous submit before starting the
-		// next, which costs throughput but removes every question about which resources
-		// are still being read by the GPU.
-		//
-		// Both waits are bounded rather than UINT64_MAX. These run on the game's main
-		// thread, which is also the thread that pumps its window messages, so blocking
-		// here indefinitely makes the whole game unresponsive and unkillable except from
-		// Task Manager. A minimised or occluded window can legitimately stall an acquire
-		// under FIFO, so this is a reachable state, not a theoretical one. Dropping a
-		// frame is always better than wedging the process.
-		VkResult result = WaitForFence(frameFence, WAIT_TIMEOUT_NANOSECONDS);
-		if (result == VK_TIMEOUT)
+		// Two frames in flight: this one is recorded while the GPU still draws the one
+		// before it, and only the one before that has to be finished.
+		FrameSlot& slot = frameSlots[currentSlot];
+		if (!WaitForFrame(slot.serial))
 		{
-			LogWarn("Vulkan: timed out waiting for the previous frame; skipping this one.");
 			return false;
 		}
 
-		// Acquire the next image
-		result = AcquireNextImage();
+		// Release what it retired and reset what it recorded
+		FlushRetired(slot);
+		slot.retiredImages.insert(slot.retiredImages.end(), pendingRetiredImages.begin(), pendingRetiredImages.end());
+		pendingRetiredImages.clear();
+		vkResetCommandPool(device, slot.commandPool, 0);
+		vkResetDescriptorPool(device, slot.transientPool, 0);
+		slot.usedCommandBuffers = 0;
+		slot.transientSets      = 0;
+		slot.serial             = frameSerial;
+		slot.isFencePending     = false;
 
-		if (result == VK_TIMEOUT || result == VK_NOT_READY)
+		isFrameActive = true;
+		if (!BeginCommandBuffer())
 		{
-			// Normal when the window is minimised or hidden. Not an error, and not worth
-			// a log line every frame.
+			isFrameActive = false;
 			return false;
 		}
 
-		if (result == VK_ERROR_OUT_OF_DATE_KHR)
-		{
-			LogDebug("Vulkan: swapchain out of date; rebuilding.");
-			DestroySwapchain();
-			CreateSwapchain(swapchainExtent.width, swapchainExtent.height);
-			return false;
-		}
-
-		if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-		{
-			Fail("vkAcquireNextImageKHR", result);
-			return false;
-		}
-
-		// Begin recording
-		//
-		// The fence is deliberately not reset here. It is reset immediately before the
-		// submit that signals it, so that failing out of this function cannot leave it
-		// unsignalled forever, which would make every later frame time out.
-		vkResetCommandBuffer(commandBuffer, 0);
-
-		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-		result = vkBeginCommandBuffer(commandBuffer, &beginInformation);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkBeginCommandBuffer", result);
-			return false;
-		}
-
-		// Release what the previous frame was using
-		//
-		// Safe here: the fence wait above means the previous submit is done.
-		FlushRetiredImages();
-
-		isFrameActive         = true;
-		hasSubmittedImageWait = false;
-		stagingUsed           = 0;
-		ArenaRewind(vertexArena);
-		ArenaRewind(indexArena);
 		frameVertexBytes = 0;
 
-		// The draw record's copy lived in the arena just rewound
+		// The draw record's copy belongs to an earlier frame's ring position
 		drawRecordBuffer = VK_NULL_HANDLE;
 
-		// Start from UNDEFINED
+		// Give a fresh back buffer and depth buffer defined contents
 		//
-		// Every pixel that matters is overwritten, and discarding the previous contents
-		// is cheaper than preserving them.
-		currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		// Black and far, which is what the game sees before it draws anything. From then
+		// on the back buffer keeps whatever the last frame left in it.
+		if (backBuffer.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+			VkClearColorValue const black{ { 0.0f, 0.0f, 0.0f, 1.0f } };
+			VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			vkCmdClearColorImage(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+		}
+
+		if (depthBuffer.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			TransitionDepth(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+			VkClearDepthStencilValue const farthest{ 1.0f, 0 };
+			VkImageSubresourceRange range{ DepthAspects(), 0, 1, 0, 1 };
+			vkCmdClearDepthStencilImage(commandBuffer, depthBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farthest, 1, &range);
+		}
 
 		return true;
 	}
 
 	bool VulkanBackend::SubmitFrameSoFar(void)
 	{
-		if (!isFrameActive)
+		if (!isFrameActive || commandBuffer == VK_NULL_HANDLE)
 		{
 			return false;
 		}
 
-		// Submit what has been recorded
+		// Submit what has been recorded and wait for it
 		//
-		// Only the first submit of a frame waits for its swapchain image. That wait
-		// consumes the semaphore, so a second one would never be satisfied. Nothing is
-		// signalled for presenting either: the rest of the frame does that when it ends.
-		EndRenderPassIfActive();
-
-		VkResult result = vkEndCommandBuffer(commandBuffer);
-		if (result != VK_SUCCESS)
+		// The frame's fence covers this part; the rest of the frame resets and signals it
+		// again when it ends. Nothing waits for a swapchain image, since only presenting
+		// touches one.
+		if (!SubmitCommandBuffer(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, true))
 		{
-			Fail("vkEndCommandBuffer", result);
 			isFrameActive = false;
 			return false;
 		}
 
-		VkPipelineStageFlags waitStages = ACQUIRE_STAGES;
+		partialSubmits++;
 
-		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-		submit.waitSemaphoreCount = hasSubmittedImageWait ? 0u : 1u;
-		submit.pWaitSemaphores    = &imageAvailableSemaphore;
-		submit.pWaitDstStageMask  = &waitStages;
-		submit.commandBufferCount = 1;
-		submit.pCommandBuffers    = &commandBuffer;
-
-		// Send the texture uploads ahead of the draws that sample them
-		SubmitTextureBatch();
-
-		vkResetFences(device, 1, &frameFence);
-
-		result = SubmitToQueue(submit, frameFence);
+		FrameSlot& slot = frameSlots[currentSlot];
+		VkResult const result = WaitForFence(slot.fence, UINT64_MAX);
 		if (result != VK_SUCCESS)
 		{
-			Fail("vkQueueSubmit", result);
+			Fail("vkWaitForFences", result);
 			isFrameActive = false;
 			return false;
 		}
 
-		hasSubmittedImageWait = true;
+		slot.isFencePending = false;
 
-		// Wait for it
-		//
-		// Unbounded, as for a capture. The image was acquired before any of this was
-		// recorded, so the work only waits on the GPU, and a readback is deliberate and
-		// rare.
-		WaitForFence(frameFence, UINT64_MAX);
+		// Everything submitted so far has finished, so every arena block is free again
+		completedSerial = std::max(completedSerial, frameSerial - 1);
+		ArenaRewind(vertexArena);
+		ArenaRewind(indexArena);
+		ArenaRewind(stagingArena);
+		ArenaRewind(uniformArena);
+		drawRecordBuffer = VK_NULL_HANDLE;
 
-		// Carry on recording the same frame
-		//
-		// Nothing needs binding again: every draw binds its own pipeline, constants,
-		// textures, vertices and indices, and opening the render pass applies the viewport.
-		vkResetCommandBuffer(commandBuffer, 0);
-
-		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-		result = vkBeginCommandBuffer(commandBuffer, &beginInformation);
-		if (result != VK_SUCCESS)
+		// Carry on recording the same frame in the next command buffer
+		if (!BeginCommandBuffer())
 		{
-			Fail("vkBeginCommandBuffer", result);
 			isFrameActive = false;
 			return false;
 		}
@@ -1215,27 +2009,16 @@ namespace scvk
 		return vkWaitForFences(device, 1, &fence, VK_TRUE, timeoutNanoseconds);
 	}
 
-	VkResult VulkanBackend::AcquireNextImage(void)
-	{
-		PhaseScope const acquiring(*this, FRAME_PHASE_SWAPCHAIN);
-		return vkAcquireNextImageKHR(device, swapchain, WAIT_TIMEOUT_NANOSECONDS, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-	}
-
-	VkResult VulkanBackend::PresentImage(void)
-	{
-		VkPresentInfoKHR present{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-		present.waitSemaphoreCount = 1;
-		present.pWaitSemaphores    = &renderFinishedSemaphore;
-		present.swapchainCount     = 1;
-		present.pSwapchains        = &swapchain;
-		present.pImageIndices      = &imageIndex;
-
-		PhaseScope const presenting(*this, FRAME_PHASE_SWAPCHAIN);
-		return vkQueuePresentKHR(queue, &present);
-	}
-
 	VulkanBackend::FramePhase VulkanBackend::EnterPhase(FramePhase phase)
 	{
+		// Only follow the phases, without the clock, when nothing reports their times
+		if (!isPhaseTimingEnabled)
+		{
+			FramePhase const interruptedPhase = activePhase;
+			activePhase = phase;
+			return interruptedPhase;
+		}
+
 		LARGE_INTEGER now{};
 		QueryPerformanceCounter(&now);
 
@@ -1271,6 +2054,21 @@ namespace scvk
 			outStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 			break;
 
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+			outAccess = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			outStages = DEPTH_STAGES;
+			break;
+
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+			outAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+			outStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | DEPTH_STAGES;
+			break;
+
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+			outAccess = VK_ACCESS_SHADER_READ_BIT;
+			outStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			break;
+
 		case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
 			outAccess = 0;
 			outStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
@@ -1284,77 +2082,110 @@ namespace scvk
 		}
 	}
 
-	void VulkanBackend::TransitionTo(VkImageLayout newLayout)
+	void VulkanBackend::TransitionImage(RenderImage& image, VkImageLayout newLayout, VkImageAspectFlags aspect)
 	{
-		// Staying in the transfer destination layout still needs a barrier: two transfers
-		// writing the same image are not ordered against each other without one, and the
-		// game copies then clears, or copies twice, into the same place.
-		if (currentLayout == newLayout && newLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+		// Staying in a layout that writes still needs a barrier: two transfers writing the
+		// same image are not ordered against each other without one, and the game copies
+		// then copies again into the same place.
+		bool const isWriteAfterWrite = newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		if (image.layout == newLayout && !isWriteAfterWrite)
 		{
 			return;
 		}
 
-		// Work out the two sides of the dependency
+		if (image.image == VK_NULL_HANDLE || commandBuffer == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
 		VkAccessFlags        sourceAccess      = 0;
 		VkAccessFlags        destinationAccess = 0;
 		VkPipelineStageFlags sourceStages      = 0;
 		VkPipelineStageFlags destinationStages = 0;
 
-		LayoutAccess(currentLayout, sourceAccess, sourceStages);
+		LayoutAccess(image.layout, sourceAccess, sourceStages);
 		LayoutAccess(newLayout, destinationAccess, destinationStages);
 
-		// Start the frame's first barrier where the submit waits for the image
-		//
-		// Otherwise its layout transition can run while the presentation engine is still
-		// reading the previous frame from it.
-		if (currentLayout == VK_IMAGE_LAYOUT_UNDEFINED)
-		{
-			sourceStages = ACQUIRE_STAGES;
-		}
-
-		// Record the barrier
 		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 		barrier.srcAccessMask       = sourceAccess;
 		barrier.dstAccessMask       = destinationAccess;
-		barrier.oldLayout           = currentLayout;
+		barrier.oldLayout           = image.layout;
 		barrier.newLayout           = newLayout;
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image               = swapchainImages[imageIndex];
-		barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseMipLevel   = 0;
-		barrier.subresourceRange.levelCount     = 1;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount     = 1;
+		barrier.image               = image.image;
+		barrier.subresourceRange    = { aspect, 0, 1, 0, 1 };
 
 		vkCmdPipelineBarrier(commandBuffer, sourceStages, destinationStages, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-		currentLayout = newLayout;
+		image.layout = newLayout;
 	}
 
-	void VulkanBackend::BeginRenderPassIfNeeded(void)
+	void VulkanBackend::TransitionTo(VkImageLayout newLayout)
 	{
-		if (isRenderPassActive)
+		// The layout of the back buffer changes only outside a render pass
+		if (backBuffer.layout != newLayout && activePass != ActivePass::None)
+		{
+			EndRenderPassIfActive();
+		}
+
+		TransitionImage(backBuffer, newLayout, VK_IMAGE_ASPECT_COLOR_BIT);
+	}
+
+	void VulkanBackend::TransitionDepth(VkImageLayout newLayout)
+	{
+		if (depthBuffer.layout != newLayout && activePass != ActivePass::None)
+		{
+			EndRenderPassIfActive();
+		}
+
+		TransitionImage(depthBuffer, newLayout, DepthAspects());
+	}
+
+	VkImageAspectFlags VulkanBackend::DepthAspects(void) const
+	{
+		return VK_IMAGE_ASPECT_DEPTH_BIT | (hasStencil ? VkImageAspectFlags{ VK_IMAGE_ASPECT_STENCIL_BIT } : VkImageAspectFlags{ 0 });
+	}
+
+	void VulkanBackend::WaitForExternalWork(void)
+	{
+		if (!isExternalWorkPending || commandBuffer == VK_NULL_HANDLE)
 		{
 			return;
 		}
 
-		// Move the colour image into the attachment layout
+		// Order everything after what was submitted from outside
 		//
-		// Drawing needs the colour attachment layout; clears and blits need the transfer
-		// layout. The game interleaves them freely, so the transition is driven by what
-		// is about to happen rather than fixed once per frame.
-		TransitionTo(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		// ReShade's effects and a frame callback draw into the back buffer with commands
+		// of their own, and the next pass only loads what they stored once it waits.
+		VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+		barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
-		// Move a fresh depth image into its attachment layout
-		//
-		// A freshly created depth image is UNDEFINED, and the render pass declares its
-		// attachment layout as the initial one. Moving it here covers the case where the
-		// game opens a pass before it has asked for any depth clear.
-		if (isDepthLayoutPending && depthImage != VK_NULL_HANDLE)
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+		isExternalWorkPending = false;
+	}
+
+	void VulkanBackend::InvalidateBindings(void)
+	{
+		bound = BindingCache{};
+	}
+
+	void VulkanBackend::BeginRenderPassIfNeeded(void)
+	{
+		if (activePass == ActivePass::Main)
 		{
-			BarrierDepthImage(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, DEPTH_STAGES);
-			isDepthLayoutPending = false;
+			return;
 		}
+
+		EndRenderPassIfActive();
+
+		// Move both attachments into their layouts
+		//
+		// Drawing needs the attachment layouts; clears outside a pass and copies need the
+		// transfer ones. The game interleaves them freely, so the transition is driven by
+		// what is about to happen rather than fixed once per frame.
+		TransitionTo(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		TransitionDepth(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 		// Begin the pass
 		//
@@ -1363,13 +2194,13 @@ namespace scvk
 		// frame.
 		VkRenderPassBeginInfo beginInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 		beginInformation.renderPass        = renderPass;
-		beginInformation.framebuffer       = framebuffers[imageIndex];
+		beginInformation.framebuffer       = framebuffer;
 		beginInformation.renderArea.offset = { 0, 0 };
-		beginInformation.renderArea.extent = swapchainExtent;
+		beginInformation.renderArea.extent = { renderWidth, renderHeight };
 		beginInformation.clearValueCount   = 0;
 
 		vkCmdBeginRenderPass(commandBuffer, &beginInformation, VK_SUBPASS_CONTENTS_INLINE);
-		isRenderPassActive = true;
+		activePass = ActivePass::Main;
 
 		// Apply the viewport
 		//
@@ -1378,24 +2209,44 @@ namespace scvk
 		ApplyViewport();
 	}
 
+	void VulkanBackend::BeginColourOnlyPass(void)
+	{
+		if (activePass == ActivePass::ColourOnly)
+		{
+			return;
+		}
+
+		EndRenderPassIfActive();
+		TransitionTo(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		VkRenderPassBeginInfo beginInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		beginInformation.renderPass        = colourOnlyPass;
+		beginInformation.framebuffer       = colourOnlyFramebuffer;
+		beginInformation.renderArea.offset = { 0, 0 };
+		beginInformation.renderArea.extent = { renderWidth, renderHeight };
+
+		vkCmdBeginRenderPass(commandBuffer, &beginInformation, VK_SUBPASS_CONTENTS_INLINE);
+		activePass = ActivePass::ColourOnly;
+	}
+
 	void VulkanBackend::EndRenderPassIfActive(void)
 	{
-		if (!isRenderPassActive)
+		if (activePass == ActivePass::None)
 		{
 			return;
 		}
 
 		vkCmdEndRenderPass(commandBuffer);
-		isRenderPassActive = false;
+		activePass = ActivePass::None;
 
-		// The render pass declares this as its final layout, so it is recorded rather
-		// than emitting a redundant barrier.
-		currentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		// The passes declare these as their final layouts, so they are recorded rather
+		// than emitting redundant barriers.
+		backBuffer.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	}
 
 	void VulkanBackend::ApplyViewport(void)
 	{
-		if (!isRenderPassActive)
+		if (activePass == ActivePass::None)
 		{
 			return;
 		}
@@ -1410,15 +2261,15 @@ namespace scvk
 
 		int32_t x      = 0;
 		int32_t y      = 0;
-		int32_t width  = SwapchainWidth();
-		int32_t height = SwapchainHeight();
+		int32_t width  = RenderWidth();
+		int32_t height = RenderHeight();
 
 		if (viewportWidth > 0 && viewportHeight > 0)
 		{
 			x      = viewportX;
 			width  = std::min(viewportWidth, MAXIMUM_VIEWPORT_DIMENSION);
 			height = std::min(viewportHeight, MAXIMUM_VIEWPORT_DIMENSION);
-			y      = SwapchainHeight() - viewportY - viewportHeight;
+			y      = RenderHeight() - viewportY - viewportHeight;
 		}
 
 		x = std::max(VIEWPORT_BOUNDS_MINIMUM, std::min(x, VIEWPORT_BOUNDS_MAXIMUM - width));
@@ -1432,7 +2283,6 @@ namespace scvk
 		viewport.height   = static_cast<float>(height);
 		viewport.minDepth = 0.0f;
 		viewport.maxDepth = 1.0f;
-		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
 		// Scissor to the viewport, clamped to the window
 		//
@@ -1446,7 +2296,23 @@ namespace scvk
 			rectangle.extent = { 0, 0 };
 		}
 
-		vkCmdSetScissor(commandBuffer, 0, 1, &rectangle);
+		// Set only what changed since the command buffer last set it
+		bool const isViewportSame = bound.hasViewport && memcmp(&viewport, &bound.viewport, sizeof(viewport)) == 0;
+		bool const isScissorSame  = bound.hasViewport && memcmp(&rectangle, &bound.scissor, sizeof(rectangle)) == 0;
+
+		if (!isViewportSame)
+		{
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+		}
+
+		if (!isScissorSame)
+		{
+			vkCmdSetScissor(commandBuffer, 0, 1, &rectangle);
+		}
+
+		bound.viewport    = viewport;
+		bound.scissor     = rectangle;
+		bound.hasViewport = true;
 
 		// Log what actually reached Vulkan
 		//
@@ -1463,7 +2329,7 @@ namespace scvk
 			loggedViewport[2] = width;
 			loggedViewport[3] = height;
 
-			LogDebug("Vulkan: viewport %d,%d %dx%d (from game %d,%d %dx%d, swapchain %ux%u)", x, y, width, height, viewportX, viewportY, viewportWidth, viewportHeight, swapchainExtent.width, swapchainExtent.height);
+			LogDebug("Vulkan: viewport %d,%d %dx%d (from game %d,%d %dx%d, render %ux%u)", x, y, width, height, viewportX, viewportY, viewportWidth, viewportHeight, renderWidth, renderHeight);
 		}
 	}
 
@@ -1472,8 +2338,8 @@ namespace scvk
 		// Start from the game's rectangle, or the whole window
 		int32_t x      = 0;
 		int32_t y      = 0;
-		int32_t width  = SwapchainWidth();
-		int32_t height = SwapchainHeight();
+		int32_t width  = RenderWidth();
+		int32_t height = RenderHeight();
 
 		bool const isSubViewport = viewportWidth > 0 && viewportHeight > 0;
 
@@ -1485,7 +2351,7 @@ namespace scvk
 
 			// OpenGL measures the viewport from the bottom of the window and Vulkan from
 			// the top, so the origin has to be reflected.
-			y = SwapchainHeight() - viewportY - viewportHeight;
+			y = RenderHeight() - viewportY - viewportHeight;
 		}
 
 		// Clamp it to the window
@@ -1494,8 +2360,8 @@ namespace scvk
 		// the window is being resized.
 		if (x < 0) { width += x; x = 0; }
 		if (y < 0) { height += y; y = 0; }
-		if (x + width > SwapchainWidth())   { width  = SwapchainWidth() - x; }
-		if (y + height > SwapchainHeight()) { height = SwapchainHeight() - y; }
+		if (x + width > RenderWidth())   { width  = RenderWidth() - x; }
+		if (y + height > RenderHeight()) { height = RenderHeight() - y; }
 		if (width < 0)  { width = 0; }
 		if (height < 0) { height = 0; }
 
@@ -1552,8 +2418,37 @@ namespace scvk
 
 		DestroyReadbackBuffer();
 
-		if (!CreateHostBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackBuffer, readbackMemory, readbackMapped))
+		// Read back through system memory: the CPU reads it, which device memory makes slow
+		VkBufferCreateInfo bufferInformation{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		bufferInformation.size        = size;
+		bufferInformation.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		bufferInformation.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(device, &bufferInformation, nullptr, &readbackBuffer) != VK_SUCCESS)
 		{
+			readbackBuffer = VK_NULL_HANDLE;
+			return false;
+		}
+
+		VkMemoryRequirements requirements{};
+		vkGetBufferMemoryRequirements(device, readbackBuffer, &requirements);
+
+		uint32_t typeIndex = 0;
+		bool const hasCached = FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, typeIndex);
+		if (!hasCached && !FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, typeIndex))
+		{
+			DestroyReadbackBuffer();
+			return false;
+		}
+
+		VkMemoryAllocateInfo allocationInformation{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+		allocationInformation.allocationSize  = requirements.size;
+		allocationInformation.memoryTypeIndex = typeIndex;
+
+		if (AllocateDeviceMemory(allocationInformation, readbackMemory) != VK_SUCCESS || vkBindBufferMemory(device, readbackBuffer, readbackMemory, 0) != VK_SUCCESS || vkMapMemory(device, readbackMemory, 0, requirements.size, 0, &readbackMapped) != VK_SUCCESS)
+		{
+			readbackMapped = nullptr;
+			DestroyReadbackBuffer();
 			return false;
 		}
 
@@ -1563,6 +2458,11 @@ namespace scvk
 
 	void VulkanBackend::DestroyReadbackBuffer(void)
 	{
+		if (device == VK_NULL_HANDLE)
+		{
+			return;
+		}
+
 		if (readbackMapped != nullptr)        { vkUnmapMemory(device, readbackMemory); readbackMapped = nullptr; }
 		FreeDeviceMemory(readbackMemory);
 		if (readbackBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, readbackBuffer, nullptr); readbackBuffer = VK_NULL_HANDLE; }
@@ -1583,11 +2483,11 @@ namespace scvk
 				continue;
 			}
 
-			// Four bytes a texel either way, which for depth only holds while it is
-			// 32-bit float.
-			if (region.isDepth && region.format != VK_FORMAT_D32_SFLOAT)
+			// Four bytes a texel either way: a 32-bit depth, or a 24-bit one packed with
+			// the unused byte, which reads the same once masked.
+			if (region.isDepth && region.format != VK_FORMAT_D32_SFLOAT && region.format != VK_FORMAT_D24_UNORM_S8_UINT && region.format != VK_FORMAT_D32_SFLOAT_S8_UINT)
 			{
-				LogWarn("Vulkan: the depth region is format %d, not D32_SFLOAT; not capturing it.", region.format);
+				LogWarn("Vulkan: the depth region is format %d; not capturing it.", region.format);
 				return false;
 			}
 
@@ -1599,7 +2499,7 @@ namespace scvk
 			// Copy it out
 			//
 			// Saved regions are left in the transfer source layout, ready to be restored,
-			// which is also what a read needs.
+			// which is also what a read needs. Depth alone, never the stencil.
 			VkBufferImageCopy copy{};
 			copy.imageSubresource.aspectMask = region.isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 			copy.imageSubresource.layerCount = 1;
@@ -1617,7 +2517,7 @@ namespace scvk
 
 	bool VulkanBackend::RecordFrameCapture(void)
 	{
-		if (!EnsureReadbackBuffer(VkDeviceSize{ swapchainExtent.width } * swapchainExtent.height * 4u))
+		if (!EnsureReadbackBuffer(VkDeviceSize{ renderWidth } * renderHeight * 4u))
 		{
 			return false;
 		}
@@ -1625,15 +2525,11 @@ namespace scvk
 		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		VkBufferImageCopy copy{};
-		copy.bufferOffset      = 0;
-		copy.bufferRowLength   = 0;
-		copy.bufferImageHeight = 0;
 		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		copy.imageSubresource.layerCount = 1;
-		copy.imageOffset = { 0, 0, 0 };
-		copy.imageExtent = { swapchainExtent.width, swapchainExtent.height, 1 };
+		copy.imageExtent = { renderWidth, renderHeight, 1 };
 
-		vkCmdCopyImageToBuffer(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+		vkCmdCopyImageToBuffer(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
 		return true;
 	}
 
@@ -1643,7 +2539,10 @@ namespace scvk
 		//
 		// This stalls the pipeline, which is fine: captures are deliberate, rare, and the
 		// alternative is reading a buffer the GPU is still writing.
-		WaitForFence(frameFence, UINT64_MAX);
+		if (!WaitForFrame(frameSerial))
+		{
+			return;
+		}
 
 		// The readback memory holds bytes, whichever kind of capture it is.
 		uint8_t const* const pixels = static_cast<uint8_t const*>(readbackMapped);
@@ -1669,14 +2568,73 @@ namespace scvk
 		}
 
 		// Write a frame capture
-		if (WriteBmp(capturePath.c_str(), pixels, swapchainExtent.width, swapchainExtent.height, swapchainExtent.width * 4u))
+		if (WriteBmp(capturePath.c_str(), pixels, renderWidth, renderHeight, renderWidth * 4u))
 		{
-			LogInfo("Vulkan: captured frame %llu to %s (%ux%u)", presentedFrames + 1, capturePath.c_str(), swapchainExtent.width, swapchainExtent.height);
+			LogInfo("Vulkan: captured frame %llu to %s (%ux%u)", presentedFrames + 1, capturePath.c_str(), renderWidth, renderHeight);
 		}
 		else
 		{
 			LogWarn("Vulkan: could not write the capture to %s", capturePath.c_str());
 		}
+	}
+
+	void VulkanBackend::RecordPresentCopy(uint32_t swapchainImageIndex)
+	{
+		VkImage const target = swapchainImages[swapchainImageIndex];
+
+		// Move the back buffer to be read and the swapchain image to be written
+		//
+		// The image's old contents are discarded, so it starts UNDEFINED, in the stage
+		// the submit waits for it in.
+		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask       = 0;
+		barrier.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = target;
+		barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		// Copy it straight across when the two match, or scale it when they do not
+		//
+		// The window is another size than the picture in borderless fullscreen, when the
+		// video mode is smaller than the monitor, and whenever another plugin reshapes the
+		// window. The picture is stretched to fill it, as DXGI does for SCD3D11.
+		bool const isSameSize   = swapchainExtent.width == renderWidth && swapchainExtent.height == renderHeight;
+		bool const isSameFormat = swapchainFormat == backBuffer.format;
+
+		if (isSameSize && isSameFormat)
+		{
+			VkImageCopy copy{};
+			copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			copy.extent         = { renderWidth, renderHeight, 1 };
+
+			vkCmdCopyImage(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		}
+		else
+		{
+			VkImageBlit blit{};
+			blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			blit.srcOffsets[1]  = { RenderWidth(), RenderHeight(), 1 };
+			blit.dstOffsets[1]  = { static_cast<int32_t>(swapchainExtent.width), static_cast<int32_t>(swapchainExtent.height), 1 };
+
+			vkCmdBlitImage(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, isSameSize ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+		}
+
+		// Hand the image over for presenting
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = 0;
+		barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout     = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
 	void VulkanBackend::LogHeartbeat(void)
@@ -1686,7 +2644,7 @@ namespace scvk
 		//
 		// The rate since the last one says whether presenting waits for the display. A
 		// rate far above the refresh rate means it does not, which the game does not
-		// expect.
+		// expect unless vsync was switched off.
 		LARGE_INTEGER now{};
 		LARGE_INTEGER frequency{};
 		QueryPerformanceCounter(&now);
@@ -1736,6 +2694,9 @@ namespace scvk
 		{
 			LogDebug("Vulkan: texture hazards so far: %llu draws before an upload, %llu uploads after a draw in the same frame.", drawsBeforeUpload, uploadsAfterDraw);
 		}
+
+		// Keep the compiled pipelines, in case the session ends without a shutdown
+		SavePipelineCache();
 	}
 
 	void VulkanBackend::TimeFrame(int64_t nowTicks)
@@ -1893,6 +2854,18 @@ namespace scvk
 			VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 		};
 
+		// Ask for what the fullscreen policy needs when the loader has it
+		//
+		// VK_EXT_full_screen_exclusive builds on these two, and on Vulkan 1.0 the first
+		// has to be asked for by name. Without them the swapchain is created without a
+		// policy, as before.
+		canAskFullscreenPolicy = HasInstanceExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) && HasInstanceExtension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+		if (canAskFullscreenPolicy)
+		{
+			extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+			extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+		}
+
 		bool shouldCreateMessenger = false;
 #ifndef NDEBUG
 		if (HasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
@@ -1977,7 +2950,7 @@ namespace scvk
 
 	bool VulkanBackend::CreateSurfaceAndDevice(void* newWindowHandle, uint32_t width, uint32_t height)
 	{
-		if (isDead || instance == VK_NULL_HANDLE)
+		if (isDead || instance == VK_NULL_HANDLE || width == 0 || height == 0)
 		{
 			return false;
 		}
@@ -1988,6 +2961,11 @@ namespace scvk
 		// swapchain left from it would present into nothing.
 		DestroyDevice();
 		windowHandle = newWindowHandle;
+
+		// Time the frame's phases only when the log reports them
+		isPhaseTimingEnabled = IsLogged(LOG_LEVEL_DEBUG);
+		renderWidth  = width;
+		renderHeight = height;
 
 		// Create the surface for the window
 		//
@@ -2005,7 +2983,7 @@ namespace scvk
 		}
 
 		// Create the device and what every frame needs
-		if (!CreateLogicalDevice() || !CreateFrameResources() || !CreateStagingBuffer(STAGING_BUFFER_SIZE))
+		if (!CreateLogicalDevice() || !CreateFrameResources())
 		{
 			return false;
 		}
@@ -2019,12 +2997,28 @@ namespace scvk
 			return false;
 		}
 
-		return CreateSwapchain(width, height);
+		// Create what the game draws into, then the swapchain it is shown through
+		//
+		// A window with no area yet leaves the swapchain for later; the frames are drawn
+		// all the same.
+		if (!CreateRenderTargets())
+		{
+			isDead = true;
+			return false;
+		}
+
+		CreateEffectResources();
+		CreateSwapchain();
+
+		deviceGeneration++;
+		isPresentationPaused = false;
+		lastPresentResult    = VK_SUCCESS;
+		return !isDead;
 	}
 
 	bool VulkanBackend::IsReady(void)
 	{
-		return swapchain != VK_NULL_HANDLE || RestoreSwapchain();
+		return !isDead && !isDeviceLost && device != VK_NULL_HANDLE && backBuffer.image != VK_NULL_HANDLE;
 	}
 
 	void VulkanBackend::Destroy(void)
@@ -2055,60 +3049,31 @@ namespace scvk
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
-		// Remember the colour for frames that start without a clear
-		lastClearColour[0] = red;
-		lastClearColour[1] = green;
-		lastClearColour[2] = blue;
-		lastClearColour[3] = alpha;
-
-		VkClearColorValue colour{};
-		colour.float32[0] = red;
-		colour.float32[1] = green;
-		colour.float32[2] = blue;
-		colour.float32[3] = alpha;
-
-		// Clear only the scissor under a sub-viewport
+		// Clear inside the pass, only the scissor under a sub-viewport
 		//
 		// The game's OpenGL driver has its scissor test on there, and glClear honours it.
-		// An image clear has no rectangle, so this goes through the render pass.
+		// Clearing as an attachment keeps the pass open and the back buffer in its
+		// attachment layout, where an image clear would close both.
 		VkRect2D scissor{};
-		if (ViewportRectangle(scissor))
+		ViewportRectangle(scissor);
+
+		if (scissor.extent.width == 0 || scissor.extent.height == 0)
 		{
-			if (scissor.extent.width == 0 || scissor.extent.height == 0)
-			{
-				return;
-			}
-
-			BeginRenderPassIfNeeded();
-
-			VkClearAttachment attachment{};
-			attachment.aspectMask       = VK_IMAGE_ASPECT_COLOR_BIT;
-			attachment.colorAttachment  = 0;
-			attachment.clearValue.color = colour;
-
-			VkClearRect clearRectangle{};
-			clearRectangle.rect       = scissor;
-			clearRectangle.layerCount = 1;
-
-			vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRectangle);
 			return;
 		}
 
-		// Clear the whole image otherwise
-		//
-		// A clear is a transfer operation and cannot happen inside a render pass, so any
-		// open pass has to end first.
-		VkImageSubresourceRange range{};
-		range.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-		range.baseMipLevel   = 0;
-		range.levelCount     = 1;
-		range.baseArrayLayer = 0;
-		range.layerCount     = 1;
+		BeginRenderPassIfNeeded();
 
-		EndRenderPassIfActive();
-		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		VkClearAttachment attachment{};
+		attachment.aspectMask       = VK_IMAGE_ASPECT_COLOR_BIT;
+		attachment.colorAttachment  = 0;
+		attachment.clearValue.color = { { red, green, blue, alpha } };
 
-		vkCmdClearColorImage(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
+		VkClearRect clearRectangle{};
+		clearRectangle.rect       = scissor;
+		clearRectangle.layerCount = 1;
+
+		vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRectangle);
 	}
 
 	void VulkanBackend::BlitPixels(int32_t destinationX, int32_t destinationY, uint32_t width, uint32_t height, uint32_t sourceWidth, void const* pixels)
@@ -2139,7 +3104,7 @@ namespace scvk
 		uint32_t const left = static_cast<uint32_t>(destinationX);
 		uint32_t const top  = static_cast<uint32_t>(destinationY);
 
-		if (left >= swapchainExtent.width || top >= swapchainExtent.height)
+		if (left >= renderWidth || top >= renderHeight)
 		{
 			return;
 		}
@@ -2148,26 +3113,24 @@ namespace scvk
 		//
 		// Rows are still strided by the full source width, which is what bufferRowLength
 		// expresses, so clipping the extent alone gives the correct result.
-		uint32_t const copyWidth  = std::min(width, swapchainExtent.width - left);
-		uint32_t const copyHeight = std::min(height, swapchainExtent.height - top);
+		uint32_t const copyWidth  = std::min(width, renderWidth - left);
+		uint32_t const copyHeight = std::min(height, renderHeight - top);
 
 		// Stage the pixels
 		VkDeviceSize const bytes = VkDeviceSize{ sourceWidth } * height * 4u;
 
-		if (stagingUsed + bytes > stagingSize)
+		VkBuffer     stagingBuffer = VK_NULL_HANDLE;
+		VkDeviceSize offset        = 0;
+		uint8_t*     destination   = nullptr;
+
+		if (!AllocateFrameStaging(bytes, stagingBuffer, offset, destination))
 		{
-			LogWarn("Vulkan: staging buffer exhausted (%llu bytes needed, %llu free); skipping a blit.", bytes, stagingSize - stagingUsed);
+			LogWarn("Vulkan: no staging for a blit of %llu bytes; skipping it.", bytes);
 			return;
 		}
 
-		// The staging memory is plain bytes, and the copy fits the 16 MB buffer, so its
-		// size fits a size_t.
-		VkDeviceSize const offset = stagingUsed;
-		memcpy(static_cast<uint8_t*>(stagingMapped) + offset, pixels, static_cast<size_t>(bytes));
-
-		// Offsets into the buffer must satisfy the texel size alignment, which is 4 for a
-		// 32-bit format. Rounding up keeps every later blit legal.
-		stagingUsed = (offset + bytes + 3u) & ~VkDeviceSize{ 3 };
+		// The copy fits the arena block, so its size fits a size_t.
+		memcpy(destination, pixels, static_cast<size_t>(bytes));
 
 		// Copy them into the image
 		//
@@ -2177,57 +3140,27 @@ namespace scvk
 		copy.bufferOffset      = offset;
 		copy.bufferRowLength   = sourceWidth;
 		copy.bufferImageHeight = height;
-		copy.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-		copy.imageSubresource.mipLevel       = 0;
-		copy.imageSubresource.baseArrayLayer = 0;
-		copy.imageSubresource.layerCount     = 1;
-		copy.imageOffset = { destinationX, destinationY, 0 };
-		copy.imageExtent = { copyWidth, copyHeight, 1 };
+		copy.imageSubresource  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageOffset       = { destinationX, destinationY, 0 };
+		copy.imageExtent       = { copyWidth, copyHeight, 1 };
 
 		EndRenderPassIfActive();
 		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-		vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 	}
 
 	bool VulkanBackend::ReadFramePixels(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t* outPixels)
 	{
-		if (isDead || outPixels == nullptr || width == 0 || height == 0)
+		if (!IsReady() || outPixels == nullptr || width == 0 || height == 0)
 		{
 			return false;
 		}
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
-		// Choose what to read
-		//
-		// Mid-frame, the frame drawn so far, the way the DirectX driver reads its back
-		// buffer. Between frames the swapchain image already belongs to the display, so
-		// the copy of the frame last presented stands in. That is when the game takes a
-		// photo, expecting the frame it last showed.
-		bool const isBetweenFrames = !isFrameActive;
-
-		if (isBetweenFrames && !lastFrame.hasContent)
+		if (x >= renderWidth || y >= renderHeight || width > renderWidth - x || height > renderHeight - y)
 		{
-			return false;
-		}
-
-		uint32_t const sourceWidth  = isBetweenFrames ? lastFrame.width : swapchainExtent.width;
-		uint32_t const sourceHeight = isBetweenFrames ? lastFrame.height : swapchainExtent.height;
-		VkFormat const sourceFormat = isBetweenFrames ? lastFrame.format : swapchainFormat;
-
-		if (x >= sourceWidth || y >= sourceHeight || width > sourceWidth - x || height > sourceHeight - y)
-		{
-			return false;
-		}
-
-		// Refuse a source that is not BGRA
-		//
-		// The caller wants BGRA bytes, and only B8G8R8A8_UNORM holds them in that order.
-		// Windows always offers it for the swapchain, so this is not expected to happen.
-		if (sourceFormat != VK_FORMAT_B8G8R8A8_UNORM)
-		{
-			LogWarn("Vulkan: the frame is format %d, not B8G8R8A8_UNORM; not reading it back.", sourceFormat);
 			return false;
 		}
 
@@ -2245,25 +3178,27 @@ namespace scvk
 		// copy has finished; reading its result on the host also needs the write made
 		// visible there.
 		VkBufferImageCopy copy{};
-		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		copy.imageSubresource.layerCount = 1;
-		copy.imageOffset = { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 };
-		copy.imageExtent = { width, height, 1 };
+		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageOffset      = { static_cast<int32_t>(x), static_cast<int32_t>(y), 0 };
+		copy.imageExtent      = { width, height, 1 };
 
 		VkMemoryBarrier barrier{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
 
-		// Read the last frame on commands of its own
-		//
-		// Its copy rests ready to be read. The barrier that left it so orders this read
-		// after the frame that wrote it, which may still be running, since barriers reach
-		// across submissions to the same queue.
-		if (isBetweenFrames)
+		if (!isFrameActive)
 		{
+			// Between frames, read the back buffer on commands of their own
+			//
+			// It still holds the frame last presented, which is what the game expects for
+			// a photo. The barrier reaches back across the frames already submitted, so
+			// the read waits for the one that drew it.
 			BeginUploadCommands();
-			vkCmdCopyImageToBuffer(uploadCommandBuffer, lastFrame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+			commandBuffer = uploadCommandBuffer;
+			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			vkCmdCopyImageToBuffer(uploadCommandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
 			vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+			commandBuffer = VK_NULL_HANDLE;
 			SubmitUploadCommands();
 		}
 		else
@@ -2272,7 +3207,7 @@ namespace scvk
 			EndRenderPassIfActive();
 			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
-			vkCmdCopyImageToBuffer(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+			vkCmdCopyImageToBuffer(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
 			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 
 			if (!SubmitFrameSoFar())
@@ -2281,9 +3216,14 @@ namespace scvk
 			}
 		}
 
+		if (isDeviceLost)
+		{
+			return false;
+		}
+
 		// Hand the pixels over with every alpha opaque
 		//
-		// The swapchain's alpha holds whatever blending left there, which is not part of
+		// The back buffer's alpha holds whatever blending left there, which is not part of
 		// the picture, so it is replaced the way SCGL does. The readback memory holds
 		// bytes.
 		uint8_t const* const source = static_cast<uint8_t const*>(readbackMapped);
@@ -2302,7 +3242,7 @@ namespace scvk
 
 	void VulkanBackend::Present(void)
 	{
-		if (isDead)
+		if (isDead || isDeviceLost)
 		{
 			return;
 		}
@@ -2315,26 +3255,20 @@ namespace scvk
 		// nothing asked us to start a frame. Otherwise the swapchain stops cycling, the
 		// window keeps showing its last image, and every overlay that hooks
 		// vkQueuePresentKHR, including Steam and any FPS counter, freezes with it, which
-		// looks exactly like a hang without being one.
-		//
-		// The synthesised frame is cleared rather than left undefined, because presenting
-		// an undefined image shows whatever happened to be in that memory.
-		if (!isFrameActive)
+		// looks exactly like a hang without being one. The back buffer still holds the
+		// last frame, so presenting it again shows what the game expects.
+		if (!isFrameActive && !EnsureFrame())
 		{
-			if (!EnsureFrame())
-			{
-				return;
-			}
-
-			Clear(lastClearColour[0], lastClearColour[1], lastClearColour[2], lastClearColour[3]);
+			return;
 		}
 
+		NoteRenderPhase("Present: recording the end of the frame");
 		EndRenderPassIfActive();
 
 		// Record a requested capture
 		//
-		// Recorded into this frame's command buffer, between the last draw and the
-		// transition for presenting, so it sees exactly what the user sees.
+		// Recorded between the last draw and the copy for presenting, so it sees exactly
+		// what the user sees.
 		bool     isCapturingRegion = false;
 		bool     isCapturingFrame  = false;
 		uint32_t regionWidth       = 0;
@@ -2352,43 +3286,66 @@ namespace scvk
 			isCaptureRequested = false;
 		}
 
-		// Keep a copy for reading back between frames
-		SaveLastFrame();
+		// Acquire an image to show the frame in, rebuilding the swapchain if it is gone
+		//
+		// The frame's drawing does not depend on it: a minimised window, which has no
+		// swapchain, still gets its frames drawn into the back buffer, as a DirectX device
+		// does with presentation paused.
+		FrameSlot& slot = frameSlots[currentSlot];
+		uint32_t   imageIndex  = 0;
+		bool       isAcquired  = false;
 
-		// Finish and submit the frame
-		TransitionTo(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+		NoteRenderPhase("Present: acquiring a swapchain image");
 
-		VkResult result = vkEndCommandBuffer(commandBuffer);
-		if (result != VK_SUCCESS)
+		if (swapchain != VK_NULL_HANDLE || RestoreSwapchain())
 		{
-			Fail("vkEndCommandBuffer", result);
-			isFrameActive = false;
-			return;
+			VkResult result;
+			{
+				PhaseScope const acquiring(*this, FRAME_PHASE_SWAPCHAIN);
+				result = vkAcquireNextImageKHR(device, swapchain, ACQUIRE_TIMEOUT_NANOSECONDS, slot.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+			}
+
+			if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+			{
+				isAcquired = true;
+			}
+			else if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
+			{
+				LogDebug("Vulkan: the swapchain no longer fits the window (%s); rebuilding it.", VkResultName(result));
+				DestroySwapchain();
+				CreateSwapchain();
+			}
+			else if (NoteDeviceLoss(result))
+			{
+				return;
+			}
+			else if (result != VK_TIMEOUT && result != VK_NOT_READY && result != lastPresentResult)
+			{
+				LogWarn("Vulkan: vkAcquireNextImageKHR returned %s; this frame is not shown.", VkResultName(result));
+			}
 		}
 
-		// Wait for the image unless a readback already submitted part of the frame, which
-		// waited for it then
-		VkPipelineStageFlags waitStages = ACQUIRE_STAGES;
-
-		VkSubmitInfo submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-		submit.waitSemaphoreCount   = hasSubmittedImageWait ? 0u : 1u;
-		submit.pWaitSemaphores      = &imageAvailableSemaphore;
-		submit.pWaitDstStageMask    = &waitStages;
-		submit.commandBufferCount   = 1;
-		submit.pCommandBuffers      = &commandBuffer;
-		submit.signalSemaphoreCount = 1;
-		submit.pSignalSemaphores    = &renderFinishedSemaphore;
-
-		// Send the texture uploads ahead of the draws that sample them
-		SubmitTextureBatch();
-
-		vkResetFences(device, 1, &frameFence);
-
-		result = SubmitToQueue(submit, frameFence);
-		if (result != VK_SUCCESS)
+		// Say when presenting stops and starts again
+		if (isAcquired == isPresentationPaused)
 		{
-			Fail("vkQueueSubmit", result);
-			isFrameActive = false;
+			HWND const window = static_cast<HWND>(windowHandle);
+			LogInfo("Vulkan: presentation %s (iconic %d, visible %d, foreground %d).", isAcquired ? "resumed" : "paused", IsIconic(window) ? 1 : 0, IsWindowVisible(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0);
+			isPresentationPaused = !isAcquired;
+		}
+
+		// Copy the back buffer into it and submit the frame
+		if (isAcquired)
+		{
+			RecordPresentCopy(imageIndex);
+		}
+
+		NoteRenderPhase("Present: submitting the frame");
+
+		bool const isSubmitted = SubmitCommandBuffer(isAcquired ? slot.imageAvailable : VK_NULL_HANDLE, VK_PIPELINE_STAGE_TRANSFER_BIT, isAcquired ? renderFinishedSemaphores[imageIndex] : VK_NULL_HANDLE, true);
+		isFrameActive = false;
+
+		if (!isSubmitted)
+		{
 			return;
 		}
 
@@ -2398,30 +3355,55 @@ namespace scvk
 		}
 
 		// Present it
-		result = PresentImage();
-		isFrameActive = false;
+		VkResult result = VK_SUCCESS;
 
-		// Rebuild the swapchain when it no longer fits the window
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+		if (isAcquired)
 		{
-			LogDebug("Vulkan: swapchain needs rebuilding after present (%s).", VkResultName(result));
-			DestroySwapchain();
+			NoteRenderPhase("Present: vkQueuePresentKHR");
 
-			// A failure here leaves no swapchain, which makes IsDeviceReady report false
-			// and stops the game drawing until RestoreSwapchain makes one again. Silence
-			// would make that indistinguishable from a hang, so it says so.
-			if (!CreateSwapchain(swapchainExtent.width, swapchainExtent.height))
-			{
-				LogWarn("Vulkan: could not rebuild the swapchain; drawing waits until the window has area again.");
-			}
+			VkPresentInfoKHR present{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+			present.waitSemaphoreCount = 1;
+			present.pWaitSemaphores    = &renderFinishedSemaphores[imageIndex];
+			present.swapchainCount     = 1;
+			present.pSwapchains        = &swapchain;
+			present.pImageIndices      = &imageIndex;
 
-			return;
+			PhaseScope const presenting(*this, FRAME_PHASE_SWAPCHAIN);
+			result = vkQueuePresentKHR(queue, &present);
 		}
 
-		if (result != VK_SUCCESS)
+		// Move on to the next frame slot
+		currentSlot = (currentSlot + 1) % FRAMES_IN_FLIGHT;
+		frameSerial++;
+
+		// Log a change in what presenting returns, success codes included
+		if (result != lastPresentResult)
 		{
-			Fail("vkQueuePresentKHR", result);
+			HWND const window = static_cast<HWND>(windowHandle);
+			LogInfo("Vulkan: present returned %s (was %s; iconic %d, visible %d, foreground %d).", VkResultName(result), VkResultName(lastPresentResult), IsIconic(window) ? 1 : 0, IsWindowVisible(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0);
+			lastPresentResult = result;
+		}
+
+		// Rebuild the swapchain when it no longer fits the window
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
+		{
+			DestroySwapchain();
+
+			// A failure here leaves no swapchain, and frames are drawn without being shown
+			// until RestoreSwapchain makes one again. Silence would make that
+			// indistinguishable from a hang, so it says so.
+			if (!CreateSwapchain())
+			{
+				LogWarn("Vulkan: could not rebuild the swapchain; frames are drawn but not shown until the window has area again.");
+			}
+		}
+		else if (NoteDeviceLoss(result))
+		{
 			return;
+		}
+		else if (result != VK_SUCCESS)
+		{
+			LogWarn("Vulkan: vkQueuePresentKHR failed with %s.", VkResultName(result));
 		}
 
 		// Time the gap since the last present
@@ -2445,6 +3427,12 @@ namespace scvk
 		if ((presentedFrames % HEARTBEAT_FRAMES) == 0)
 		{
 			LogHeartbeat();
+		}
+
+		// Hold a frame nobody sees, so a minimised game does not spin a core
+		if (!isAcquired)
+		{
+			Sleep(PAUSED_FRAME_MILLISECONDS);
 		}
 	}
 

@@ -59,12 +59,15 @@
 
     Override order: an explicit /p:VulkanSdkDir=..., then a VULKAN_SDK_32
     environment variable, then the known 1.3.296.0 install, then whatever
-    VULKAN_SDK points at.
+    VULKAN_SDK points at, then the Vulkan 1.3.296 headers in vendor\vulkan, so
+    a machine with no SDK at all still builds. Only the validation layers of a
+    Debug build need a real SDK.
   -->
   <PropertyGroup Label="VulkanSdk">
     <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And '$(VULKAN_SDK_32)' != ''">$(VULKAN_SDK_32)</VulkanSdkDir>
     <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And Exists('S:\VulkanSDK\1.3.296.0\Include\vulkan\vulkan.h')">S:\VulkanSDK\1.3.296.0</VulkanSdkDir>
-    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == ''">$(VULKAN_SDK)</VulkanSdkDir>
+    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == '' And '$(VULKAN_SDK)' != '' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h')">$(VULKAN_SDK)</VulkanSdkDir>
+    <VulkanSdkDir Condition="'$(VulkanSdkDir)' == ''">$(MSBuildThisFileDirectory)vendor\vulkan</VulkanSdkDir>
   </PropertyGroup>
   <!--
     Warnings.
@@ -86,8 +89,8 @@
   </PropertyGroup>
   <Target Name="ScvkCheckVulkanSdk" BeforeTargets="ClCompile">
     <Error Condition="!Exists('$(VulkanSdkDir)\Include\vulkan\vulkan.h')"
-           Text="Vulkan headers not found. Set VULKAN_SDK_32 or pass /p:VulkanSdkDir=&lt;sdk root&gt;. Looked in '$(VulkanSdkDir)'." />
-    <Message Importance="high" Text="scvk: using Vulkan SDK at $(VulkanSdkDir)" />
+           Text="Vulkan headers not found in '$(VulkanSdkDir)'. vendor\vulkan\Include should hold them; set VULKAN_SDK_32 or pass /p:VulkanSdkDir=&lt;sdk root&gt; to use an SDK instead." />
+    <Message Importance="high" Text="scvk: using the Vulkan headers at $(VulkanSdkDir)" />
   </Target>
   <!--
     C runtime.
@@ -109,7 +112,7 @@
       <AdditionalOptions>$(ScvkExtraWarnings) %(AdditionalOptions)</AdditionalOptions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)vendor\reshade\include;$(ProjectDir)include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <Optimization>Disabled</Optimization>
@@ -117,6 +120,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>version.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -132,7 +136,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)vendor\include;$(ProjectDir)vendor\reshade\include;$(ProjectDir)include;$(ProjectDir)src;$(VulkanSdkDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <Optimization>MaxSpeed</Optimization>
@@ -142,6 +146,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>version.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -150,18 +155,73 @@
     <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
     <ClCompile Include="src\cVKDriver_Draw.cpp" />
     <ClCompile Include="src\cVKDriver_Ext.cpp" />
+    <ClCompile Include="src\cVKDriver_Lighting.cpp" />
+    <ClCompile Include="src\cVKDriver_LiveShadows.cpp" />
+    <ClCompile Include="src\cVKDriver_ReShade.cpp" />
     <ClCompile Include="src\cVKDriver_State.cpp" />
     <ClCompile Include="src\cVKDriver_Textures.cpp" />
     <ClCompile Include="src\cVKDriver_Video.cpp" />
     <ClCompile Include="src\cVKDriversCOMDirector.cpp" />
     <ClCompile Include="src\FpsLimit.cpp" />
     <ClCompile Include="src\Logger.cpp" />
+    <ClCompile Include="src\ModuleLog.cpp" />
+    <ClCompile Include="src\PrintScreen.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
+    <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
     <ClCompile Include="src\VulkanBackend.cpp" />
     <ClCompile Include="src\VulkanBackend_Draw.cpp" />
+    <ClCompile Include="src\VulkanBackend_Effects.cpp" />
     <ClCompile Include="src\VulkanBackend_Regions.cpp" />
     <ClCompile Include="src\VulkanBackend_Textures.cpp" />
+    <ClCompile Include="src\Watchdog.cpp" />
+  </ItemGroup>
+  <!--
+    Carried over from SCD3D11 nearly as they are: the game-side shadow modules, the
+    thumbnail focus guard and the pixel conversions. They keep the warning level they
+    were written for, like the vendored sources below, so that they can follow upstream.
+  -->
+  <ItemGroup>
+    <ClCompile Include="src\NativeShadowDiagnostics.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\NativeShadowExperiment.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\NativeShadowMasks.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\NativeShadowRegistry.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\TerrainShadowMap.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\TerrainShadows.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\TextureUploadUtils.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\ThumbnailFocusGuard.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
   </ItemGroup>
   <!--
     Vendored sources keep the level they were written for. They are not ours to
@@ -186,14 +246,27 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\scvk_frame.h" />
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\Logger.h" />
+    <ClInclude Include="src\ModuleLog.h" />
+    <ClInclude Include="src\NativeShadowDiagnostics.h" />
+    <ClInclude Include="src\NativeShadowExperiment.h" />
+    <ClInclude Include="src\NativeShadowMasks.h" />
+    <ClInclude Include="src\NativeShadowRegistry.h" />
     <ClInclude Include="src\SC4Version.h" />
+    <ClInclude Include="src\Settings.h" />
     <ClInclude Include="src\ShaderBinaries.h" />
+    <ClInclude Include="src\TerrainShadowMap.h" />
+    <ClInclude Include="src\TerrainShadows.h" />
+    <ClInclude Include="src\TextureUploadUtils.h" />
+    <ClInclude Include="src\PrintScreen.h" />
+    <ClInclude Include="src\ThumbnailFocusGuard.h" />
     <ClInclude Include="src\version.h" />
     <ClInclude Include="src\VulkanApi.h" />
     <ClInclude Include="src\VulkanBackend.h" />
+    <ClInclude Include="src\Watchdog.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

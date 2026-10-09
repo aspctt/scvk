@@ -33,11 +33,11 @@ public:
 	virtual char const* GetVertexBufferName(uint32_t gdVertexFormat) = 0;
 	virtual uint32_t VertexBufferType(uint32_t) = 0;
 	virtual uint32_t MaxVertices(uint32_t) = 0;
-	virtual uint32_t GetVertices(int32_t, bool) = 0;
+	virtual uint32_t GetVertices(int32_t, uint32_t) = 0; // scvk: the count is a full word, as SCD3D11 has it
 	virtual uint32_t ContinueVertices(uint32_t, uint32_t) = 0;
 	virtual void ReleaseVertices(uint32_t) = 0;
 	virtual void DrawPrims(uint32_t, uint32_t gdPrimType, void*, uint32_t) = 0;
-	virtual void DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t*, void*, uint32_t) = 0;
+	virtual void DrawPrimsIndexed(uint32_t, uint32_t gdPrimType, uint32_t, uint16_t*) = 0; // scvk: four arguments, as SCD3D11 has it
 	virtual void Reset(void) = 0;
 
 	virtual ~cIGZGDriverVertexBufferExtension(void) = 0;

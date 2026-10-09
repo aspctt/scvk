@@ -22,8 +22,13 @@
  *
  * Everything the fixed function interface treats as state that Vulkan bakes into a
  * pipeline becomes part of a pipeline key, and everything that changes per draw goes in
- * push constants. The game's geometry lives in client memory, so each draw copies its
- * vertices and indices into per-frame arenas first.
+ * push constants or dynamic state. The game's geometry lives in client memory, so each
+ * draw copies its vertices and indices into per-frame arenas first.
+ *
+ * A city redraw at the widest zoom records over a hundred thousand draws, so each one
+ * binds only what differs from the draw before it: the pipeline comes from a hash table
+ * with the last one checked first, and the pipeline, push constants, descriptor sets,
+ * vertex buffers, viewport and dynamic state are each skipped when unchanged.
  */
 
 //// Dependencies
@@ -40,21 +45,6 @@
 
 namespace scvk
 {
-	//// Types
-
-	namespace
-	{
-		/** The push constant block, laid out as both shader stages declare it. */
-		struct PushConstantBlock
-		{
-			float    transform[16];
-			float    fragmentState[4];
-			uint32_t combinerState[4];
-			float    constantColour[4];
-			float    sceneTint[4];
-		};
-	}
-
 	//// Constants
 
 	namespace
@@ -73,6 +63,14 @@ namespace scvk
 		constexpr VkDeviceSize INDEX_BLOCK_SIZE      = 8u * 1024u * 1024u;
 		constexpr size_t       ARENA_MAXIMUM_BLOCKS  = 8;
 
+		// Staging for blits: a full-screen 1920x1080 BGRA image is about 8 MB.
+		constexpr VkDeviceSize STAGING_BLOCK_SIZE     = 16u * 1024u * 1024u;
+		constexpr size_t       STAGING_MAXIMUM_BLOCKS = 4;
+
+		// Uniforms of the passes of scvk's own, a few hundred bytes each.
+		constexpr VkDeviceSize UNIFORM_BLOCK_SIZE     = 1024u * 1024u;
+		constexpr size_t       UNIFORM_MAXIMUM_BLOCKS = 4;
+
 		// Vertex data is aligned so the binding offset stays legal for the attributes.
 		constexpr VkDeviceSize VERTEX_ALIGNMENT = 16;
 
@@ -80,8 +78,6 @@ namespace scvk
 		// scene tint: 128 bytes, the guaranteed minimum.
 		constexpr uint32_t PUSH_CONSTANT_BYTES = sizeof(float) * 32;
 		constexpr VkShaderStageFlags PUSH_CONSTANT_STAGES = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-		static_assert(sizeof(PushConstantBlock) == PUSH_CONSTANT_BYTES, "the push constant block must fill the guaranteed 128 bytes exactly");
 
 		// A combiner word that modulates the texture with the previous stage, in the
 		// layout the fragment shader reads.
@@ -93,6 +89,7 @@ namespace scvk
 		// The texture environment modes, in the game's own order, and the lighting flags
 		// packed above the mode for the vertex stage.
 		constexpr uint32_t ENVIRONMENT_MODULATE    = 1;
+		constexpr uint32_t ENVIRONMENT_BLEND       = 3;
 		constexpr uint32_t ENVIRONMENT_COMBINE     = 4;
 		constexpr uint32_t ENVIRONMENT_COMBINE4    = 5;
 		constexpr uint32_t ALPHA_FROM_VERTEX_FLAG  = 8;
@@ -161,6 +158,36 @@ namespace scvk
 			default: return VK_BLEND_FACTOR_ONE;
 			}
 		}
+
+		/** The game's stencil operations, the five its DirectX driver maps: keep, replace, increment and decrement clamped, invert. */
+		VkStencilOp MapStencilOperation(uint32_t gdOperation)
+		{
+			switch (gdOperation)
+			{
+			case 1:  return VK_STENCIL_OP_REPLACE;
+			case 2:  return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+			case 3:  return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+			case 4:  return VK_STENCIL_OP_INVERT;
+			default: return VK_STENCIL_OP_KEEP;
+			}
+		}
+
+		/** Mixes a value into a hash, FNV-1a style. */
+		size_t MixHash(size_t hash, uint32_t value)
+		{
+			return (hash ^ value) * 16777619u;
+		}
+	}
+
+	size_t VulkanBackend::PipelineKeyHash::operator()(PipelineKey const& key) const
+	{
+		size_t hash = 2166136261u;
+		hash = MixHash(hash, key.format);
+		hash = MixHash(hash, static_cast<uint32_t>(key.topology));
+		hash = MixHash(hash, (key.isBlendEnabled ? 1u : 0u) | (key.sourceFactor << 1) | (key.destinationFactor << 6));
+		hash = MixHash(hash, (key.isDepthTestEnabled ? 1u : 0u) | (key.isDepthWriteEnabled ? 2u : 0u) | (key.depthComparison << 2) | (key.isColourWriteEnabled ? 64u : 0u) | (key.isFaceCullingEnabled ? 128u : 0u) | (key.isFlatShaded ? 256u : 0u));
+		hash = MixHash(hash, (key.isStencilTestEnabled ? 1u : 0u) | (key.stencilComparison << 1) | (key.stencilFailOperation << 5) | (key.stencilDepthFailOperation << 9) | (key.stencilPassOperation << 13));
+		return hash;
 	}
 
 	bool VulkanBackend::CreateShaderModule(uint32_t const* code, size_t wordCount, VkShaderModule& outModule)
@@ -186,15 +213,25 @@ namespace scvk
 			return true;
 		}
 
-		// Indexed by hasColour * 3 + textureCoordinateSets, matching the order the
-		// generated header declares them in.
+		// Indexed by flat * 6 + hasColour * 3 + textureCoordinateSets, matching the order
+		// the generated header declares them in. The flat variants hand the colour over
+		// without interpolating it, for ShadeModel(flat).
 		return CreateShaderModule(GEOMETRY_VERTEX_SPIRV_NONE, _countof(GEOMETRY_VERTEX_SPIRV_NONE), vertexModules[0])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE), vertexModules[1])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE2), vertexModules[2])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR), vertexModules[3])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE), vertexModules[4])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2), vertexModules[5])
-			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModule);
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_NONE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_NONE), vertexModules[6])
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE), vertexModules[7])
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE2, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE2), vertexModules[8])
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR), vertexModules[9])
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE), vertexModules[10])
+			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE2, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE2), vertexModules[11])
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModules[0])
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_FLAT_SPIRV, _countof(GEOMETRY_FRAGMENT_FLAT_SPIRV), fragmentModules[1])
+			&& CreateShaderModule(GEOMETRY_VERTEX_LIT_SPIRV, _countof(GEOMETRY_VERTEX_LIT_SPIRV), vertexModules[12])
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_LIT_SPIRV, _countof(GEOMETRY_FRAGMENT_LIT_SPIRV), fragmentModules[2]);
 	}
 
 	bool VulkanBackend::CreatePipelineLayout(void)
@@ -217,7 +254,7 @@ namespace scvk
 		// Keeping them separate is what lets a descriptor set stay a property of one
 		// texture: a single set with two bindings would need a set per pair of textures
 		// instead, and the pairs multiply. Four sets is the minimum every Vulkan device
-		// supports.
+		// supports. The blits and the shadow casters use the same layout.
 		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, imageSetLayout, samplerSetLayout, samplerSetLayout };
 
 		VkPipelineLayoutCreateInfo information{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
@@ -266,7 +303,18 @@ namespace scvk
 		indexArena.blockSize     = INDEX_BLOCK_SIZE;
 		indexArena.maximumBlocks = ARENA_MAXIMUM_BLOCKS;
 
-		if (!ArenaAddBlock(indexArena))
+		// The staging the blits copy from, and the uniforms of scvk's own passes
+		stagingArena.name          = "staging";
+		stagingArena.usage         = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		stagingArena.blockSize     = STAGING_BLOCK_SIZE;
+		stagingArena.maximumBlocks = STAGING_MAXIMUM_BLOCKS;
+
+		uniformArena.name          = "uniform";
+		uniformArena.usage         = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		uniformArena.blockSize     = UNIFORM_BLOCK_SIZE;
+		uniformArena.maximumBlocks = UNIFORM_MAXIMUM_BLOCKS;
+
+		if (!ArenaAddBlock(indexArena) || !ArenaAddBlock(stagingArena) || !ArenaAddBlock(uniformArena))
 		{
 			return false;
 		}
@@ -298,23 +346,47 @@ namespace scvk
 
 	VkPipeline VulkanBackend::GetPipeline(PipelineKey const& key)
 	{
-		// Reuse a pipeline made for the same key
-		for (PipelineEntry const& entry : pipelines)
+		// Reuse the pipeline of the last draw, which most draws share
+		if (lastPipeline != VK_NULL_HANDLE && key == lastPipelineKey)
 		{
-			if (entry.key == key)
-			{
-				return entry.pipeline;
-			}
+			return lastPipeline;
 		}
 
+		// Or one made earlier for the same key
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		auto const found = pipelines.find(key);
+
+		if (found != pipelines.end())
+		{
+			pipeline = found->second;
+		}
+		else
+		{
+			pipeline = CreatePipeline(key);
+			if (pipeline == VK_NULL_HANDLE)
+			{
+				return VK_NULL_HANDLE;
+			}
+
+			pipelines.emplace(key, pipeline);
+		}
+
+		lastPipelineKey = key;
+		lastPipeline    = pipeline;
+		return pipeline;
+	}
+
+	VkPipeline VulkanBackend::CreatePipeline(PipelineKey const& key)
+	{
 		PhaseScope const creating(*this, FRAME_PHASE_PIPELINES);
 
-		// Pick the vertex shader variant for the format's attributes
+		// Pick the shader variants for the format's attributes
 		//
 		// A shader may not declare an input the pipeline does not supply, so the variant
 		// has to match which attributes this format actually has.
-		VertexLayout const layout = DecodeVertexLayout(key.format);
-		uint32_t const variant = (layout.hasColour ? 3u : 0u) + layout.textureCoordinateSets;
+		VertexLayout const layout  = DecodeVertexLayout(key.format);
+		bool const         isLit   = key.format == LIT_VERTEX_FORMAT;
+		uint32_t const     variant = isLit ? 12u : (key.isFlatShaded ? 6u : 0u) + (layout.hasColour ? 3u : 0u) + layout.textureCoordinateSets;
 
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -323,7 +395,7 @@ namespace scvk
 		stages[0].pName  = "main";
 		stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-		stages[1].module = fragmentModule;
+		stages[1].module = fragmentModules[isLit ? 2 : (key.isFlatShaded ? 1 : 0)];
 		stages[1].pName  = "main";
 
 		// Describe the vertex attributes
@@ -343,7 +415,7 @@ namespace scvk
 		bindings[1].stride    = sizeof(DrawRecord);
 		bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-		VkVertexInputAttributeDescription attributes[12]{};
+		VkVertexInputAttributeDescription attributes[12 + 1 + 2 * LIT_LIGHT_COUNT]{};
 		uint32_t attributeCount = 0;
 
 		attributes[attributeCount].location = 0;
@@ -393,6 +465,31 @@ namespace scvk
 			attributeCount++;
 		}
 
+		// The lit variant's normal, vectors to the lights and light colours
+		if (isLit)
+		{
+			attributes[attributeCount].location = 12;
+			attributes[attributeCount].binding  = 0;
+			attributes[attributeCount].format   = VK_FORMAT_R32G32B32_SFLOAT;
+			attributes[attributeCount].offset   = offsetof(LitVertex, normal);
+			attributeCount++;
+
+			for (uint32_t light = 0; light < LIT_LIGHT_COUNT; light++)
+			{
+				attributes[attributeCount].location = 13 + light;
+				attributes[attributeCount].binding  = 0;
+				attributes[attributeCount].format   = VK_FORMAT_R32G32B32_SFLOAT;
+				attributes[attributeCount].offset   = static_cast<uint32_t>(offsetof(LitVertex, toLight) + light * sizeof(LitVertex::toLight[0]));
+				attributeCount++;
+
+				attributes[attributeCount].location = 13 + LIT_LIGHT_COUNT + light;
+				attributes[attributeCount].binding  = 0;
+				attributes[attributeCount].format   = VK_FORMAT_R8G8B8A8_UNORM;
+				attributes[attributeCount].offset   = static_cast<uint32_t>(offsetof(LitVertex, lightColour) + light * sizeof(LitVertex::lightColour[0]));
+				attributeCount++;
+			}
+		}
+
 		VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 		vertexInput.vertexBindingDescriptionCount   = _countof(bindings);
 		vertexInput.pVertexBindingDescriptions      = bindings;
@@ -406,6 +503,9 @@ namespace scvk
 		// Direct3D driver culls faces that wind clockwise on screen. The clip space
 		// correction flips y and Vulkan's framebuffer y points down, so a face winding
 		// counter-clockwise on screen is front-facing here as it is under OpenGL.
+		//
+		// The depth bias is always on and set per draw from the polygon offset, which is
+		// zero for nearly every draw.
 		VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
 		assembly.topology = key.topology;
 
@@ -414,21 +514,29 @@ namespace scvk
 		viewport.scissorCount  = 1;
 
 		VkPipelineRasterizationStateCreateInfo rasterisation{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-		rasterisation.polygonMode = VK_POLYGON_MODE_FILL;
-		rasterisation.cullMode    = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-		rasterisation.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		rasterisation.lineWidth   = 1.0f;
+		rasterisation.polygonMode     = VK_POLYGON_MODE_FILL;
+		rasterisation.cullMode        = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+		rasterisation.frontFace       = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+		rasterisation.depthBiasEnable = VK_TRUE;
+		rasterisation.lineWidth       = 1.0f;
 
 		VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 		multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-		// Describe depth and blending from the key
+		// Describe depth, stencil and blending from the key
 		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
 		depthStencil.depthTestEnable  = key.isDepthTestEnabled ? VK_TRUE : VK_FALSE;
 		depthStencil.depthWriteEnable = key.isDepthWriteEnabled ? VK_TRUE : VK_FALSE;
 		depthStencil.depthCompareOp   = MapCompareOperation(key.depthComparison);
 		depthStencil.minDepthBounds   = 0.0f;
 		depthStencil.maxDepthBounds   = 1.0f;
+
+		depthStencil.stencilTestEnable = (key.isStencilTestEnabled && hasStencil) ? VK_TRUE : VK_FALSE;
+		depthStencil.front.failOp      = MapStencilOperation(key.stencilFailOperation);
+		depthStencil.front.depthFailOp = MapStencilOperation(key.stencilDepthFailOperation);
+		depthStencil.front.passOp      = MapStencilOperation(key.stencilPassOperation);
+		depthStencil.front.compareOp   = MapCompareOperation(key.stencilComparison);
+		depthStencil.back              = depthStencil.front;
 
 		VkPipelineColorBlendAttachmentState blendAttachment{};
 		blendAttachment.blendEnable         = key.isBlendEnabled ? VK_TRUE : VK_FALSE;
@@ -444,13 +552,21 @@ namespace scvk
 		blend.attachmentCount = 1;
 		blend.pAttachments    = &blendAttachment;
 
-		// Leave the viewport and scissor to each draw
-		VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+		// Leave the viewport, scissor, depth bias and stencil values to each draw
+		VkDynamicState dynamicStates[] = {
+			VK_DYNAMIC_STATE_VIEWPORT,
+			VK_DYNAMIC_STATE_SCISSOR,
+			VK_DYNAMIC_STATE_DEPTH_BIAS,
+			VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+			VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+			VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+		};
+
 		VkPipelineDynamicStateCreateInfo dynamic{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
 		dynamic.dynamicStateCount = _countof(dynamicStates);
 		dynamic.pDynamicStates    = dynamicStates;
 
-		// Create and remember the pipeline
+		// Create the pipeline, through the cache that outlives the session
 		VkGraphicsPipelineCreateInfo information{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 		information.stageCount          = _countof(stages);
 		information.pStages             = stages;
@@ -467,30 +583,31 @@ namespace scvk
 		information.subpass             = 0;
 
 		VkPipeline pipeline = VK_NULL_HANDLE;
-		VkResult const result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &information, nullptr, &pipeline);
+		VkResult const result = vkCreateGraphicsPipelines(device, pipelineCache, 1, &information, nullptr, &pipeline);
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkCreateGraphicsPipelines", result);
 			return VK_NULL_HANDLE;
 		}
 
-		LogDebug("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
-
-		pipelines.push_back({ key, pipeline });
+		unsavedPipelines++;
+		LogDebug("Vulkan: created pipeline %zu for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u), stencil %d, flat %d.", pipelines.size() + 1, key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor, key.isStencilTestEnabled ? 1 : 0, key.isFlatShaded ? 1 : 0);
 		return pipeline;
 	}
 
 	void VulkanBackend::DestroyPipelines(void)
 	{
-		for (PipelineEntry const& entry : pipelines)
+		for (auto const& entry : pipelines)
 		{
-			if (entry.pipeline != VK_NULL_HANDLE)
+			if (entry.second != VK_NULL_HANDLE)
 			{
-				vkDestroyPipeline(device, entry.pipeline, nullptr);
+				vkDestroyPipeline(device, entry.second, nullptr);
 			}
 		}
 
 		pipelines.clear();
+		lastPipeline    = VK_NULL_HANDLE;
+		lastPipelineKey = PipelineKey{};
 	}
 
 	VulkanBackend::VertexLayout VulkanBackend::DecodeVertexLayout(uint32_t gdVertexFormat)
@@ -499,6 +616,19 @@ namespace scvk
 		// table. The formats disagree about which attributes are present and where, and
 		// the packed encoding is the authority.
 		VertexLayout layout;
+
+		// The lit vertex, which is scvk's own
+		if (gdVertexFormat == LIT_VERTEX_FORMAT)
+		{
+			layout.stride                     = sizeof(LitVertex);
+			layout.hasColour                  = true;
+			layout.colourOffset               = offsetof(LitVertex, colour);
+			layout.textureCoordinateSets      = 2;
+			layout.textureCoordinateOffset[0] = offsetof(LitVertex, coordinates[0]);
+			layout.textureCoordinateOffset[1] = offsetof(LitVertex, coordinates[1]);
+			return layout;
+		}
+
 		layout.stride = RZVertexFormatStride(gdVertexFormat);
 
 		// Find the colour
@@ -573,32 +703,78 @@ namespace scvk
 			return false;
 		}
 
-		// Move to the next block when this one is full
+		// Round up to the alignment
 		//
-		// Blocks stay allocated once added, so a heavy frame pays for the allocation once
-		// rather than every time it recurs.
-		VkDeviceSize aligned = (arena.usedBytes + alignment - 1u) & ~(alignment - 1u);
+		// A power of two, except for vertices, which are aligned to their stride. Blocks
+		// are far smaller than four gigabytes, so the division works in 32 bits.
+		VkDeviceSize aligned;
 
+		if ((alignment & (alignment - 1u)) == 0)
+		{
+			aligned = (arena.usedBytes + alignment - 1u) & ~(alignment - 1u);
+		}
+		else
+		{
+			uint32_t const used = static_cast<uint32_t>(arena.usedBytes);
+			uint32_t const step = static_cast<uint32_t>(alignment);
+			aligned = VkDeviceSize{ (used + step - 1u) / step * step };
+		}
+
+		// Move on through the ring when this block is full
 		if (aligned + bytes > arena.blockSize)
 		{
-			if (arena.currentBlock + 1 >= arena.blocks.size())
+			size_t const next = (arena.currentBlock + 1) % arena.blocks.size();
+			uint64_t const nextFrame = arena.blocks[next].lastFrame;
+			bool const isNextThisFrame = arena.blocks.size() == 1 || nextFrame == frameSerial;
+			bool const isNextInFlight  = nextFrame > completedSerial;
+
+			if (isNextThisFrame || isNextInFlight)
 			{
-				if (arena.blocks.size() >= arena.maximumBlocks || !ArenaAddBlock(arena))
+				// Add a block after this one while the arena may grow, which costs less than
+				// waiting for the GPU. Blocks stay once added, so a heavy frame pays for the
+				// allocation once rather than every time it recurs.
+				if (arena.blocks.size() < arena.maximumBlocks)
 				{
+					ArenaBlock block;
+					if (!CreateHostBuffer(arena.blockSize, arena.usage, block.buffer, block.memory, block.mapped))
+					{
+						return false;
+					}
+
+					arena.blocks.insert(arena.blocks.begin() + static_cast<ptrdiff_t>(arena.currentBlock + 1), block);
+					arena.currentBlock++;
+					LogDebug("Vulkan: the %s arena grew to %zu blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
+				}
+				else if (isNextThisFrame)
+				{
+					// The frame alone fills the ring; the caller submits it part way
 					return false;
 				}
+				else
+				{
+					// Wait for the frame still reading the next block
+					if (!WaitForFrame(nextFrame))
+					{
+						return false;
+					}
 
-				LogDebug("Vulkan: the %s arena grew to %u blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
+					arenaWaits++;
+					arena.currentBlock = next;
+				}
+			}
+			else
+			{
+				arena.currentBlock = next;
 			}
 
-			arena.currentBlock++;
 			aligned = 0;
 		}
 
 		// Hand out the space
 		//
 		// The mapped memory is untyped bytes.
-		ArenaBlock const& block = arena.blocks[arena.currentBlock];
+		ArenaBlock& block = arena.blocks[arena.currentBlock];
+		block.lastFrame = frameSerial;
 
 		outBuffer       = block.buffer;
 		outOffset       = aligned;
@@ -607,24 +783,35 @@ namespace scvk
 		return true;
 	}
 
-	bool VulkanBackend::ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment)
+	bool VulkanBackend::ArenaHasRoom(Arena const& arena, VkDeviceSize bytes, VkDeviceSize alignment) const
 	{
-		// The same test ArenaAllocate makes: the rest of this block, or a block after it
-		// that is kept from an earlier frame or may still be added.
+		if (arena.blocks.empty() || bytes > arena.blockSize)
+		{
+			return false;
+		}
+
+		// The rest of this block, a block the arena may still add, or the next one, which
+		// is either free or waited for, unless this frame wrote it
 		VkDeviceSize const aligned = (arena.usedBytes + alignment - 1u) & ~(alignment - 1u);
 
-		if (aligned + bytes <= arena.blockSize)
+		if (aligned + bytes <= arena.blockSize || arena.blocks.size() < arena.maximumBlocks)
 		{
 			return true;
 		}
 
-		return arena.currentBlock + 1 < arena.blocks.size() || arena.blocks.size() < arena.maximumBlocks;
+		size_t const next = (arena.currentBlock + 1) % arena.blocks.size();
+		return arena.blocks.size() > 1 && arena.blocks[next].lastFrame != frameSerial;
 	}
 
 	void VulkanBackend::ArenaRewind(Arena& arena)
 	{
 		arena.currentBlock = 0;
 		arena.usedBytes    = 0;
+
+		for (ArenaBlock& block : arena.blocks)
+		{
+			block.lastFrame = 0;
+		}
 	}
 
 	void VulkanBackend::DestroyArena(Arena& arena)
@@ -640,13 +827,13 @@ namespace scvk
 		ArenaRewind(arena);
 	}
 
-	bool VulkanBackend::ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes)
+	bool VulkanBackend::ReserveDrawSpace(VkDeviceSize vertexBytes, VkDeviceSize indexBytes, uint32_t vertexStride)
 	{
 		// Count the draw record in with the vertices
 		//
 		// It comes from the same arena when the draw has to write a fresh copy, with
-		// alignment padding before it.
-		VkDeviceSize const vertexArenaBytes = vertexBytes + VERTEX_ALIGNMENT + sizeof(DrawRecord);
+		// alignment padding before it, as the vertices have before them.
+		VkDeviceSize const vertexArenaBytes = vertexBytes + vertexStride + VERTEX_ALIGNMENT + sizeof(DrawRecord);
 
 		bool const hasVertexRoom = ArenaHasRoom(vertexArena, vertexArenaBytes, VERTEX_ALIGNMENT);
 		bool const hasIndexRoom  = indexBytes == 0 || ArenaHasRoom(indexArena, indexBytes, sizeof(uint32_t));
@@ -659,46 +846,48 @@ namespace scvk
 		// Submit the frame so far and reuse the arenas
 		//
 		// Done before the draw takes any space, so nothing it writes is rewound under it.
-		// A full redraw of a large city at the widest zoom fills every block. Dropping the
-		// rest of the frame lost whatever the game draws last, the sea above all, and the
-		// game then saved that scene and kept restoring it without the water.
+		// A full redraw of a large city at the widest zoom can fill every block. Dropping
+		// the rest of the frame lost whatever the game draws last, the sea above all, and
+		// the game then saved that scene and kept restoring it without the water.
 		if (!SubmitFrameSoFar())
 		{
 			return false;
 		}
 
-		ArenaRewind(vertexArena);
-		ArenaRewind(indexArena);
-
-		// The draw record's copy lived in the vertex arena
-		drawRecordBuffer = VK_NULL_HANDLE;
-
-		LogDebug("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", presentedFrames);
+		LogDebug("Vulkan: the per-frame geometry filled every block; submitted frame %llu part way to reuse it.", frameSerial);
 		return true;
 	}
 
-	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, VkDeviceSize& outOffset)
+	bool VulkanBackend::UploadVertices(void const* vertices, uint32_t firstVertex, uint32_t vertexCount, VertexLayout const& layout, VkBuffer& outBuffer, uint32_t& outBaseVertex)
 	{
 		// Reserve the space
 		//
 		// Measured in 64 bits, so a range the game's indices make absurdly large is
 		// refused by the arena rather than wrapping.
+		//
+		// Aligned to the stride, so the copy starts on a whole vertex of the block. The
+		// block is then bound once and each draw names the vertex it starts at, where
+		// binding it again at every draw's own offset cost a call per draw, and a city
+		// redraw at the widest zoom makes over a hundred thousand. Strides are whole
+		// numbers of floats, so every attribute stays aligned to its components.
 		VkDeviceSize const bytes = VkDeviceSize{ vertexCount } * layout.stride;
+		VkDeviceSize offset      = 0;
 		uint8_t* destination = nullptr;
 
-		if (!ArenaAllocate(vertexArena, bytes, VERTEX_ALIGNMENT, outBuffer, outOffset, destination))
+		if (!ArenaAllocate(vertexArena, bytes, layout.stride, outBuffer, offset, destination))
 		{
 			LogWarn("Vulkan: no room for per-frame vertex data; dropping a draw of %u vertices.", vertexCount);
 			return false;
 		}
 
+		// A block is far smaller than four gigabytes, so the offset fits 32 bits.
+		outBaseVertex = static_cast<uint32_t>(offset) / layout.stride;
+
 		// Copy the vertices
 		//
 		// The game's vertices are untyped bytes, and the arena accepted the size, so it
 		// fits within one block and within a size_t. They go in as they are: the vertex
-		// stage works out each stage's coordinates from the draw record. Writing them into
-		// the copy here took a second pass over every terrain vertex, and widened the
-		// copy of each building whose second stage needed a set the format lacked.
+		// stage works out each stage's coordinates from the draw record.
 		uint8_t const* const source = static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * layout.stride;
 
 		PhaseScope const copying(*this, FRAME_PHASE_VERTEX_COPIES);
@@ -719,11 +908,13 @@ namespace scvk
 		//
 		// Byte totals stay far below the range where a double loses whole megabytes.
 		double const megabyte = 1024.0 * 1024.0;
-		LogDebug("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte);
+		LogDebug("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB; %zu vertex blocks, %u waits for the GPU, %u partial submits; %zu pipelines.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte, vertexArena.blocks.size(), arenaWaits, partialSubmits, pipelines.size());
 
 		vertexUploads           = 0;
 		vertexUploadBytes       = 0;
 		largestFrameVertexBytes = 0;
+		arenaWaits              = 0;
+		partialSubmits          = 0;
 	}
 
 	bool VulkanBackend::IsTwoStageDraw(uint32_t textureCoordinateSets) const
@@ -760,7 +951,7 @@ namespace scvk
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout)
 	{
 		// Find the pipeline for the current state
-		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled };
+		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled, isStencilTestEnabled && hasStencil, stencilComparison, stencilFailOperation, stencilDepthFailOperation, stencilPassOperation, isFlatShaded };
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -791,16 +982,90 @@ namespace scvk
 
 		fragmentState[3] = isCombining ? 2.0f : 1.0f;
 
-		// Bind everything
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		// Bind what changed
+		if (bound.pipeline != pipeline)
+		{
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			bound.pipeline = pipeline;
+		}
+
+		ApplyDynamicState();
 		PushDrawConstants(isTwoStage, isCombining);
 		BindTextures(isTwoStage);
 
-		VkBuffer buffers[] = { vertexBuffer, recordBuffer };
-		VkDeviceSize offsets[] = { vertexOffset, recordOffset };
-		vkCmdBindVertexBuffers(commandBuffer, 0, _countof(buffers), buffers, offsets);
+		if (bound.vertexBuffer != vertexBuffer || bound.vertexOffset != vertexOffset)
+		{
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
+			bound.vertexBuffer = vertexBuffer;
+			bound.vertexOffset = vertexOffset;
+		}
+
+		if (bound.recordBuffer != recordBuffer || bound.recordOffset != recordOffset)
+		{
+			vkCmdBindVertexBuffers(commandBuffer, 1, 1, &recordBuffer, &recordOffset);
+			bound.recordBuffer = recordBuffer;
+			bound.recordOffset = recordOffset;
+		}
 
 		return true;
+	}
+
+	void VulkanBackend::BindDescriptorSets(VkPipelineLayout layout, VkDescriptorSet const sets[4])
+	{
+		// A change of layout disturbs every set, so all four go again
+		if (bound.layout != layout)
+		{
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 4, sets, 0, nullptr);
+			memcpy(bound.sets, sets, sizeof(bound.sets));
+			bound.layout = layout;
+			return;
+		}
+
+		// Otherwise bind the run from the first set that changed to the last
+		uint32_t first = 4;
+		uint32_t last  = 0;
+
+		for (uint32_t index = 0; index < 4; index++)
+		{
+			if (bound.sets[index] != sets[index])
+			{
+				first = std::min(first, index);
+				last  = index;
+			}
+		}
+
+		if (first > last)
+		{
+			return;
+		}
+
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, last - first + 1, sets + first, 0, nullptr);
+		memcpy(bound.sets, sets, sizeof(bound.sets));
+	}
+
+	void VulkanBackend::ApplyDynamicState(void)
+	{
+		// The polygon offset, in units of the depth buffer's resolution, as Direct3D's
+		// depth bias takes it
+		if (bound.depthBias != polygonOffset)
+		{
+			vkCmdSetDepthBias(commandBuffer, static_cast<float>(polygonOffset), 0.0f, 0.0f);
+			bound.depthBias = polygonOffset;
+		}
+
+		// The stencil values, kept even while the test is off since every pipeline names
+		// them as dynamic state
+		if (!bound.hasStencilState || bound.stencilReference != stencilReference || bound.stencilCompareMask != stencilReadMask || bound.stencilWriteMask != stencilWriteMask)
+		{
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
+			vkCmdSetStencilCompareMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReadMask);
+			vkCmdSetStencilWriteMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilWriteMask);
+
+			bound.stencilReference   = stencilReference;
+			bound.stencilCompareMask = stencilReadMask;
+			bound.stencilWriteMask   = stencilWriteMask;
+			bound.hasStencilState    = true;
+		}
 	}
 
 	void VulkanBackend::PushDrawConstants(bool isTwoStage, bool isCombining)
@@ -874,11 +1139,19 @@ namespace scvk
 			block.fragmentState[3] = 20.0f + static_cast<float>(debugChannel);
 		}
 
-		// Push the whole block
+		// Push the whole block, unless the last draw pushed the same
 		//
 		// In one call rather than one per part. A redraw of the city at the widest zoom
-		// records over a hundred thousand draws, so every call a draw makes counts.
+		// records over a hundred thousand draws, so every call a draw makes counts, and
+		// consecutive draws of one mesh repeat their constants.
+		if (bound.hasPushConstants && memcmp(&bound.pushConstants, &block, sizeof(block)) == 0)
+		{
+			return;
+		}
+
 		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, 0, sizeof(block), &block);
+		bound.pushConstants    = block;
+		bound.hasPushConstants = true;
 	}
 
 	void VulkanBackend::BindTextures(bool isTwoStage)
@@ -894,10 +1167,10 @@ namespace scvk
 		// zero multiplies the vertex colour by whatever happens to sit in that texel. The
 		// water side faces are drawn exactly that way, eight untextured colour-only
 		// draws, and the texel they landed on took them to black.
-		uint32_t const bound  = (isStageEnabled[0] && currentTexture < textures.size() && textures[currentTexture].isLive) ? currentTexture : 0;
+		uint32_t const bound0 = (isStageEnabled[0] && currentTexture < textures.size() && textures[currentTexture].isLive) ? currentTexture : 0;
 		uint32_t const bound1 = (isTwoStage && currentTexture1 < textures.size() && textures[currentTexture1].isLive) ? currentTexture1 : 0;
 
-		NoteTextureUse(bound);
+		NoteTextureUse(bound0);
 		NoteTextureUse(bound1);
 
 		// Bind their sets
@@ -907,13 +1180,24 @@ namespace scvk
 		// of the texture they project, so the mask tiled and every shadow repeated along
 		// the streets.
 		VkDescriptorSet const sets[] = {
-			textures[bound].descriptor,
+			textures[bound0].descriptor,
 			textures[bound1].descriptor,
 			GetSamplerSet(stageParameters[0]),
 			GetSamplerSet(stageParameters[1]),
 		};
 
-		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);
+		BindDescriptorSets(pipelineLayout, sets);
+	}
+
+	void VulkanBackend::BindIndexBuffer(VkBuffer buffer)
+	{
+		if (bound.indexBuffer == buffer)
+		{
+			return;
+		}
+
+		vkCmdBindIndexBuffer(commandBuffer, buffer, 0, VK_INDEX_TYPE_UINT32);
+		bound.indexBuffer = buffer;
 	}
 
 	void VulkanBackend::UpdateDrawRecord(DrawRecord const& record)
@@ -1007,10 +1291,10 @@ namespace scvk
 
 	void VulkanBackend::SetTextureEnvironmentMode(uint32_t mode)
 	{
-		// The game's own order: 0 replace, 1 modulate, 2 decal. Anything else falls back
-		// to modulate, which is the fixed function default, except that the combine modes
-		// are noted so the draw can run the network instead.
-		textureEnvironmentMode = (mode <= 2u) ? mode : ENVIRONMENT_MODULATE;
+		// The game's own order: 0 replace, 1 modulate, 2 decal, 3 blend. Anything else
+		// falls back to modulate, which is the fixed function default, except that the
+		// combine modes are noted so the draw can run the network instead.
+		textureEnvironmentMode = (mode <= ENVIRONMENT_BLEND) ? mode : ENVIRONMENT_MODULATE;
 		isFirstStageCombining  = (mode == ENVIRONMENT_COMBINE || mode == ENVIRONMENT_COMBINE4);
 	}
 
@@ -1024,6 +1308,29 @@ namespace scvk
 		isDepthTestEnabled  = isTestEnabled;
 		isDepthWriteEnabled = isWriteEnabled;
 		depthComparison     = comparison;
+	}
+
+	void VulkanBackend::SetStencilState(bool isTestEnabled, uint32_t comparison, uint32_t reference, uint32_t readMask, uint32_t writeMask, uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation)
+	{
+		// The masks and reference are eight bits deep, as the stencil buffer is
+		isStencilTestEnabled      = isTestEnabled;
+		stencilComparison         = comparison;
+		stencilReference          = reference & 0xffu;
+		stencilReadMask           = readMask & 0xffu;
+		stencilWriteMask          = writeMask & 0xffu;
+		stencilFailOperation      = failOperation;
+		stencilDepthFailOperation = depthFailOperation;
+		stencilPassOperation      = passOperation;
+	}
+
+	void VulkanBackend::SetPolygonOffset(int32_t offset)
+	{
+		polygonOffset = offset;
+	}
+
+	void VulkanBackend::SetFlatShading(bool isEnabled)
+	{
+		isFlatShaded = isEnabled;
 	}
 
 	void VulkanBackend::SetFaceCulling(bool isEnabled)
@@ -1160,20 +1467,20 @@ namespace scvk
 			return;
 		}
 
-		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, 0))
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, 0, layout.stride))
 		{
 			return;
 		}
 
 		// Copy the vertices and bind the state
-		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
-		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, firstVertex, vertexCount, layout, vertexBuffer, vertexOffset))
+		VkBuffer vertexBuffer = VK_NULL_HANDLE;
+		uint32_t baseVertex   = 0;
+		if (!UploadVertices(vertices, firstVertex, vertexCount, layout, vertexBuffer, baseVertex))
 		{
 			return;
 		}
 
-		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, layout))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, 0, layout))
 		{
 			return;
 		}
@@ -1181,7 +1488,7 @@ namespace scvk
 		// Draw plain primitives directly
 		if (!isQuadList)
 		{
-			vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
+			vkCmdDraw(commandBuffer, vertexCount, 1, baseVertex, 0);
 			return;
 		}
 
@@ -1198,8 +1505,9 @@ namespace scvk
 			return;
 		}
 
-		vkCmdBindIndexBuffer(commandBuffer, quadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
-		vkCmdDrawIndexed(commandBuffer, quads * 6u, 1, 0, 0, 0);
+		// The base vertex is below the block's size in vertices, far from INT32_MAX.
+		BindIndexBuffer(quadIndexBuffer);
+		vkCmdDrawIndexed(commandBuffer, quads * 6u, 1, 0, static_cast<int32_t>(baseVertex), 0);
 	}
 
 	void VulkanBackend::DrawIndexedVertices(uint32_t gdPrimitiveType, uint32_t gdVertexFormat, void const* vertices, void const* indices, uint32_t indexCount, bool isIndex32Bit)
@@ -1238,12 +1546,21 @@ namespace scvk
 		uint32_t lowest  = UINT32_MAX;
 		uint32_t highest = 0;
 
-		for (uint32_t i = 0; i < indexCount; i++)
+		if (isIndex32Bit)
 		{
-			uint32_t const index = isIndex32Bit ? wideIndices[i] : narrowIndices[i];
-
-			lowest  = std::min(lowest, index);
-			highest = std::max(highest, index);
+			for (uint32_t i = 0; i < indexCount; i++)
+			{
+				lowest  = std::min(lowest, wideIndices[i]);
+				highest = std::max(highest, wideIndices[i]);
+			}
+		}
+		else
+		{
+			for (uint32_t i = 0; i < indexCount; i++)
+			{
+				lowest  = std::min(lowest, uint32_t{ narrowIndices[i] });
+				highest = std::max(highest, uint32_t{ narrowIndices[i] });
+			}
 		}
 
 		// Count the indices, expanded when they describe quads
@@ -1261,15 +1578,15 @@ namespace scvk
 
 		size_t const indexBytes = size_t{ emitted } * sizeof(uint32_t);
 
-		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, indexBytes))
+		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, indexBytes, layout.stride))
 		{
 			return;
 		}
 
 		// Copy that range of vertices
-		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
-		VkDeviceSize vertexOffset = 0;
-		if (!UploadVertices(vertices, lowest, vertexCount, layout, vertexBuffer, vertexOffset))
+		VkBuffer vertexBuffer = VK_NULL_HANDLE;
+		uint32_t baseVertex   = 0;
+		if (!UploadVertices(vertices, lowest, vertexCount, layout, vertexBuffer, baseVertex))
 		{
 			return;
 		}
@@ -1325,19 +1642,26 @@ namespace scvk
 		}
 
 		// Bind the state and draw
-		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, vertexOffset, layout))
+		if (!BindDrawState(gdVertexFormat, topology, vertexBuffer, 0, layout))
 		{
 			return;
 		}
 
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32);
+		// Bind the block once and address the indices through the first index
+		//
+		// The offset is a multiple of four, which the arena's alignment guarantees, and a
+		// block is far smaller than four billion indices.
+		BindIndexBuffer(indexBuffer);
 
-		// Offset the indices back to the start of the copied slice
+		// Offset the indices to where the copied slice sits in the block
 		//
 		// The indices went in unchanged, so they still count from the start of the game's
-		// array while the buffer holds only the slice from the lowest one onward. A
-		// negative vertex offset closes that gap, which is what the parameter is signed
-		// for. Real indices are far below INT32_MAX, so the conversion loses nothing.
-		vkCmdDrawIndexed(commandBuffer, emitted, 1, 0, -static_cast<int32_t>(lowest), 0);
+		// array, while the block holds the slice from the lowest one onward, starting at
+		// the base vertex. The vertex offset closes that gap, negative when the slice sits
+		// nearer the start than its lowest index, which is what the parameter is signed
+		// for. Real indices and base vertices are far below INT32_MAX, so the conversions
+		// lose nothing.
+		int32_t const vertexOffset = static_cast<int32_t>(baseVertex) - static_cast<int32_t>(lowest);
+		vkCmdDrawIndexed(commandBuffer, emitted, 1, static_cast<uint32_t>(indexOffset / sizeof(uint32_t)), vertexOffset, 0);
 	}
 }

@@ -52,6 +52,7 @@
 	X(vkDestroyInstance)                            \
 	X(vkEnumeratePhysicalDevices)                   \
 	X(vkGetPhysicalDeviceProperties)                \
+	X(vkEnumerateDeviceExtensionProperties)         \
 	X(vkGetPhysicalDeviceQueueFamilyProperties)     \
 	X(vkGetPhysicalDeviceMemoryProperties)          \
 	X(vkGetPhysicalDeviceFormatProperties)          \
@@ -138,7 +139,18 @@
 	X(vkFreeMemory)                      \
 	X(vkBindBufferMemory)                \
 	X(vkMapMemory)                       \
-	X(vkUnmapMemory)
+	X(vkUnmapMemory)                     \
+	X(vkResetCommandPool)                \
+	X(vkResetDescriptorPool)             \
+	X(vkCreatePipelineCache)             \
+	X(vkDestroyPipelineCache)            \
+	X(vkGetPipelineCacheData)            \
+	X(vkCmdBlitImage)                    \
+	X(vkCmdSetDepthBias)                 \
+	X(vkCmdSetStencilReference)          \
+	X(vkCmdSetStencilCompareMask)        \
+	X(vkCmdSetStencilWriteMask)          \
+	X(vkGetImageSubresourceLayout)
 
 //// References
 

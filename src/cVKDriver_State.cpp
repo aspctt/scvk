@@ -42,10 +42,19 @@ namespace scvk
 
 	namespace
 	{
-		// The game's clear mask, in its own encoding rather than GL's. Stencil is 0x2000,
-		// and there is no stencil attachment to clear.
-		constexpr uint32_t CLEAR_DEPTH  = 0x1000;
-		constexpr uint32_t CLEAR_COLOUR = 0x4000;
+		// The game's clear mask, in its own encoding rather than GL's.
+		constexpr uint32_t CLEAR_DEPTH   = 0x1000;
+		constexpr uint32_t CLEAR_STENCIL = 0x2000;
+		constexpr uint32_t CLEAR_COLOUR  = 0x4000;
+
+		// The game's comparisons run never, less, equal, less or equal, greater, not
+		// equal, greater or equal, always; its stencil operations keep, replace,
+		// increment, decrement, invert. Anything past them is refused, as SCD3D11 does.
+		constexpr uint32_t GD_COMPARISON_COUNT        = 8;
+		constexpr uint32_t GD_STENCIL_OPERATION_COUNT = 5;
+
+		// The shade models: 0 flat, 1 smooth.
+		constexpr uint32_t GD_SHADE_SMOOTH = 1;
 
 		// The game's matrix targets: 0 modelview, 1 projection. It also names texture and
 		// colour matrices, but never selects them.
@@ -129,6 +138,16 @@ namespace scvk
 		{
 			vulkan->SetFaceCulling(isEnabled);
 		}
+
+		if (gdCapability == kGDCapability_StencilTest)
+		{
+			PushStencilState();
+		}
+	}
+
+	void cVKDriver::PushStencilState(void)
+	{
+		vulkan->SetStencilState(isCapabilityEnabled[kGDCapability_StencilTest], stencilComparison, stencilReference, stencilReadMask, stencilWriteMask, stencilFailOperation, stencilDepthFailOperation, stencilPassOperation);
 	}
 
 	void cVKDriver::PushBlendState(void)
@@ -191,6 +210,15 @@ namespace scvk
 		// four camera rotations under SCGL. An earlier scvk added that term with the
 		// normal transformed by the transposed matrix, and it washed the sea out to white
 		// and brightened the shaded cliff faces by half.
+		//
+		// With the lighting switched off through the lighting extension, the vertex colour
+		// goes through as it is, as SCD3D11 draws it unlit.
+		if (!isFixedLightingEnabled)
+		{
+			vulkan->SetSceneTint(1.0f, 1.0f, 1.0f, 1.0f, true, true);
+			return;
+		}
+
 		vulkan->SetSceneTint(colourMultiplier[0], colourMultiplier[1], colourMultiplier[2], colourMultiplier[3], isVertexColourAmbient, isAlphaFromVertexColour);
 	}
 
@@ -234,11 +262,18 @@ namespace scvk
 		if ((mask & CLEAR_COLOUR) != 0 && isColourWriteEnabled)
 		{
 			vulkan->Clear(clearColour[0], clearColour[1], clearColour[2], clearColour[3]);
+
+			// A cleared back buffer no longer holds the effects ReShade drew into it
+			isReShadeEffectsInBackBuffer = false;
 		}
 
-		if ((mask & CLEAR_DEPTH) != 0 && isDepthWriteEnabled)
+		// Depth and stencil clear together, the stencil as SCD3D11 clears it
+		bool const shouldClearDepth   = (mask & CLEAR_DEPTH) != 0 && isDepthWriteEnabled;
+		bool const shouldClearStencil = (mask & CLEAR_STENCIL) != 0;
+
+		if (shouldClearDepth || shouldClearStencil)
 		{
-			vulkan->ClearDepth(clearDepthValue);
+			vulkan->ClearDepth(shouldClearDepth, clearDepthValue, shouldClearStencil, clearStencilValue);
 		}
 	}
 
@@ -259,12 +294,15 @@ namespace scvk
 		// Kept until the game asks for a clear, matching how ClearColor works. The value
 		// needs no conversion beyond precision: OpenGL's depth clear is already 0 to 1,
 		// and the Vulkan clip correction puts depth in the same range.
-		clearDepthValue = static_cast<float>(depth);
+		clearDepthValue = static_cast<float>((depth < 0.0) ? 0.0 : ((depth > 1.0) ? 1.0 : depth));
 	}
 
 	void cVKDriver::ClearStencil(int32_t stencil)
 	{
 		SCVK_CALL("%d", stencil);
+
+		// The stencil buffer has eight bits; the value is taken modulo that, as OpenGL does.
+		clearStencilValue = static_cast<uint32_t>(stencil) & 0xffu;
 	}
 
 	void cVKDriver::ColorMask(bool isEnabled)
@@ -281,6 +319,12 @@ namespace scvk
 	{
 		SCVK_CALL("%u", gdComparison);
 
+		if (gdComparison >= GD_COMPARISON_COUNT)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
 		depthComparison = gdComparison;
 		PushDepthState();
 	}
@@ -296,16 +340,43 @@ namespace scvk
 	void cVKDriver::StencilFunc(uint32_t gdComparison, int32_t reference, uint32_t mask)
 	{
 		SCVK_CALL("%u, %d, 0x%x", gdComparison, reference, mask);
+
+		if (gdComparison >= GD_COMPARISON_COUNT)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		// The reference is clamped into the stencil buffer's eight bits, as OpenGL clamps
+		// it to the buffer's range.
+		stencilComparison = gdComparison;
+		stencilReference  = static_cast<uint32_t>((reference < 0) ? 0 : ((reference > 0xff) ? 0xff : reference));
+		stencilReadMask   = mask & 0xffu;
+		PushStencilState();
 	}
 
 	void cVKDriver::StencilMask(uint32_t mask)
 	{
 		SCVK_CALL("0x%x", mask);
+
+		stencilWriteMask = mask & 0xffu;
+		PushStencilState();
 	}
 
 	void cVKDriver::StencilOp(uint32_t gdStencilFailOperation, uint32_t gdDepthFailOperation, uint32_t gdPassOperation)
 	{
 		SCVK_CALL("%u, %u, %u", gdStencilFailOperation, gdDepthFailOperation, gdPassOperation);
+
+		if (gdStencilFailOperation >= GD_STENCIL_OPERATION_COUNT || gdDepthFailOperation >= GD_STENCIL_OPERATION_COUNT || gdPassOperation >= GD_STENCIL_OPERATION_COUNT)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		stencilFailOperation      = gdStencilFailOperation;
+		stencilDepthFailOperation = gdDepthFailOperation;
+		stencilPassOperation      = gdPassOperation;
+		PushStencilState();
 	}
 
 	void cVKDriver::BlendFunc(uint32_t gdSourceFactor, uint32_t gdDestinationFactor)
@@ -331,6 +402,17 @@ namespace scvk
 	void cVKDriver::ShadeModel(uint32_t gdShade)
 	{
 		SCVK_CALL("%u", gdShade);
+
+		// Flat takes each primitive's colour from its first vertex, as Direct3D's flat
+		// shading does; the backend draws it with shader variants that do not
+		// interpolate the colour.
+		if (gdShade > GD_SHADE_SMOOTH)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		vulkan->SetFlatShading(gdShade != GD_SHADE_SMOOTH);
 	}
 
 	void cVKDriver::Fog(uint32_t gdFogParameterType, uint32_t gdFogParameter)
@@ -409,17 +491,23 @@ namespace scvk
 		// The global ambient light colour. With the one fixed light, this is the whole of
 		// SimCity 4's lighting, and it is what carries the day and night cycle. See
 		// PushLighting.
-		colourMultiplier[0] = red;
-		colourMultiplier[1] = green;
-		colourMultiplier[2] = blue;
-		PushSceneTint();
+		//
+		// As SCD3D11 takes it: it turns the lighting on, makes the ambient material white
+		// again, and is clamped to 0 to 1, since Direct3D 7 holds the ambient light as a
+		// colour of bytes.
+		isFixedLightingEnabled = true;
+		materialAmbient[0] = materialAmbient[1] = materialAmbient[2] = 1.0f;
+		LightModelAmbient(red, green, blue, 1.0f);
 	}
 
 	void cVKDriver::AlphaMultiplier(float alpha)
 	{
 		SCVK_CALL("%.3f", alpha);
 
-		colourMultiplier[3] = alpha;
+		// The diffuse material's alpha, and it turns the lighting on, as under SCD3D11
+		isFixedLightingEnabled = true;
+		colourMultiplier[3]    = alpha;
+		materialDiffuse[3]     = alpha;
 
 		// Take the alpha from the material while it is below one
 		//
@@ -469,6 +557,9 @@ namespace scvk
 
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
 		memcpy(target, matrix, sizeof(float) * 16);
+
+		isTransformDirty         = true;
+		areStageCoordinatesDirty = true;
 	}
 
 	void cVKDriver::LoadIdentity(void)
@@ -477,6 +568,9 @@ namespace scvk
 
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
 		memcpy(target, IDENTITY_MATRIX, sizeof(IDENTITY_MATRIX));
+
+		isTransformDirty         = true;
+		areStageCoordinatesDirty = true;
 	}
 
 	void cVKDriver::Enable(uint32_t gdCapability)
@@ -542,5 +636,9 @@ namespace scvk
 	void cVKDriver::PolygonOffset(int32_t offset)
 	{
 		SCVK_CALL("%d", offset);
+
+		// A constant depth bias in units of the depth buffer's resolution, as SCD3D11
+		// hands it to Direct3D's DepthBias.
+		vulkan->SetPolygonOffset(offset);
 	}
 }

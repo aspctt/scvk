@@ -21,36 +21,26 @@
  * 2D blits.
  *
  * Six entry points covering the cross product of stretched/unstretched and
- * plain/alpha/alpha-modulated.
+ * plain/alpha/alpha-modulated, all drawn the way SCD3D11 draws them: the source pixels go
+ * into a texture of the driver's and a quad is drawn over the destination, scaled to it,
+ * point sampled so a 1:1 blit stays exact. The plain blits are opaque unless the game has
+ * asked through Punt for the source alpha; the Alpha blits take a constant alpha, and the
+ * modulated ones multiply by a colour. A colour key turns matching texels transparent.
  *
- * The first traces, from a build that could not yet draw textures, had the game put its
- * startup screen on the display with StretchBlt. Every call was identical,
- *
- *     StretchBlt(576,240 768x600 from 768x600, fmt 3, type 1)
- *
- * which is a 768x600 image centred in a 1920x1080 window, unscaled, and it was called
- * continuously while the game sat on that screen.
- *
- * Since textures work the game draws that screen as textured tiles in a 768x600 viewport
- * instead, and no later session has called any of these. The DirectX driver implements
- * none of the six either: each only sets the not supported error (0x882050 to 0x882080).
- * So this is a fallback, kept for the case where the game takes that path again.
- *
- * They are implemented as a staged upload followed by vkCmdCopyBufferToImage straight into
- * the swapchain image, which works because the game's BGRA8 pixels match the swapchain
- * format exactly. No conversion, no shader, no render pass.
- *
- * One thing remains unresolved: the interface hands over two void pointers and names
- * neither. See UploadBlit.
+ * The game draws its startup screen this way in some configurations, and its interface
+ * through textured quads otherwise.
  */
 
 //// Dependencies
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "TextureUploadUtils.h"
 #include "VulkanBackend.h"
 
-#include <Windows.h>
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
 
 namespace scvk
 {
@@ -61,8 +51,16 @@ namespace scvk
 		// The game's own format and type enumerations, as decoded from SCGL's translation
 		// tables. Index 3 of the format table is BGRA and index 1 of the type table is
 		// unsigned byte, which together mean plain BGRA8.
+		constexpr uint32_t GD_FORMAT_BGR         = 2;
 		constexpr uint32_t GD_FORMAT_BGRA        = 3;
 		constexpr uint32_t GD_TYPE_UNSIGNED_BYTE = 1;
+
+		// How a blit treats alpha: opaque, the source's, a constant, or the source's
+		// multiplied by a colour.
+		constexpr uint32_t BLIT_ALPHA_OPAQUE           = 0;
+		constexpr uint32_t BLIT_ALPHA_SOURCE           = 1;
+		constexpr uint32_t BLIT_ALPHA_CONSTANT         = 2;
+		constexpr uint32_t BLIT_ALPHA_SOURCE_MODULATED = 3;
 
 		// Page protections that allow reading.
 		constexpr DWORD READABLE_PROTECTION = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
@@ -79,6 +77,25 @@ namespace scvk
 
 	namespace
 	{
+		/**
+		 * A blit's colour or alpha, 0xAARRGGBB. A bare byte carries only alpha, so 0xFF
+		 * and 0xFFFFFFFF both leave the colour alone, as SCD3D11 reads it.
+		 */
+		void UnpackColour(uint32_t value, float rgba[4])
+		{
+			if (value <= 0xff)
+			{
+				rgba[0] = rgba[1] = rgba[2] = 1.0f;
+				rgba[3] = static_cast<float>(value) / 255.0f;
+				return;
+			}
+
+			rgba[0] = static_cast<float>((value >> 16) & 0xff) / 255.0f;
+			rgba[1] = static_cast<float>((value >> 8) & 0xff) / 255.0f;
+			rgba[2] = static_cast<float>(value & 0xff) / 255.0f;
+			rgba[3] = static_cast<float>(value >> 24) / 255.0f;
+		}
+
 		/** True if the range can be read without faulting. */
 		bool IsReadable(void const* address, size_t bytes)
 		{
@@ -165,10 +182,11 @@ namespace scvk
 		}
 	}
 
-	void cVKDriver::UploadBlit(char const* caller, int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer1, void const* buffer2)
+	void cVKDriver::UploadBlit(char const* caller, int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* pixels, bool isColourKeyed, void const* colourKey, uint32_t alphaMode, uint32_t alphaValue)
 	{
-		if (sourceWidth <= 0 || sourceHeight <= 0)
+		if (destinationWidth <= 0 || destinationHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0 || pixels == nullptr)
 		{
+			SetLastError(DriverError::INVALID_VALUE);
 			return;
 		}
 
@@ -176,89 +194,175 @@ namespace scvk
 		uint32_t const width  = static_cast<uint32_t>(sourceWidth);
 		uint32_t const height = static_cast<uint32_t>(sourceHeight);
 
-		// Describe the two source pointers, a few times a session
-		size_t const expectedBytes = size_t{ width } * height * 4u;
-
+		// Describe the pixels, a few times a session
 		if (blitProbesRemaining > 0)
 		{
 			blitProbesRemaining--;
-			LogDebug("  %s source buffers, expecting %zu bytes of BGRA8:", caller, expectedBytes);
-			DescribeBuffer("buffer1", buffer1, expectedBytes);
-			DescribeBuffer("buffer2", buffer2, expectedBytes);
+			LogDebug("  %s source buffers, %ux%u format %u type %u:", caller, width, height, gdTextureFormat, gdType);
+			DescribeBuffer("pixels", pixels, size_t{ width } * height * 4u);
 		}
 
-		// Take the first pointer as the pixels
-		//
-		// That is the working assumption. If the probe above shows it is zero-filled and
-		// the second is not, this is the line to change.
-		void const* const pixels = buffer1;
-
-		if (pixels == nullptr)
+		// Read the format the way SCD3D11 does: up to four bytes a pixel
+		uint32_t const pixelBytes = TextureSourcePixelBytes(gdTextureFormat, gdType);
+		if (pixelBytes == 0 || pixelBytes > 4)
 		{
-			return;
-		}
+			static bool hasLogged = false;
+			if (!hasLogged)
+			{
+				hasLogged = true;
+				LogWarn("%s: source format %u type %u is not implemented.", caller, gdTextureFormat, gdType);
+			}
 
-		// Refuse anything but BGRA8
-		//
-		// It is the only combination seen from the game, and it happens to match the
-		// swapchain exactly, so it copies with no conversion. Any other format would need
-		// converting before this could work, so it says so rather than uploading
-		// nonsense.
-		if (gdTextureFormat != GD_FORMAT_BGRA || gdType != GD_TYPE_UNSIGNED_BYTE)
-		{
-			LogWarn("%s: unsupported pixel format %u type %u; skipping.", caller, gdTextureFormat, gdType);
 			SetLastError(DriverError::NOT_SUPPORTED);
 			return;
 		}
 
-		// Copy it unscaled
-		//
-		// Scaling needs an intermediate image and vkCmdBlitImage. Every call observed so
-		// far is 1:1, so the copy path covers it and the scaling path can wait until
-		// something actually needs it.
-		if (destinationWidth != sourceWidth || destinationHeight != sourceHeight)
+		isColourKeyed = isColourKeyed && colourKey != nullptr;
+
+		uint32_t key = 0;
+		if (isColourKeyed)
 		{
-			LogWarn("%s: scaled blit %dx%d from %dx%d is not implemented yet; copying unscaled.", caller, destinationWidth, destinationHeight, sourceWidth, sourceHeight);
+			memcpy(&key, colourKey, pixelBytes);
 		}
 
-		vulkan->BlitPixels(destinationLeft, destinationTop, width, height, width, pixels);
+		bool isSourceAlphaUsed = alphaMode == BLIT_ALPHA_SOURCE || alphaMode == BLIT_ALPHA_SOURCE_MODULATED;
+
+		// The constant alpha, or the modulating colour, unpacked from 0xAARRGGBB
+		float modulate[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+		if (alphaMode == BLIT_ALPHA_CONSTANT)
+		{
+			float colour[4];
+			UnpackColour(alphaValue, colour);
+			modulate[3] = colour[3];
+		}
+		else if (alphaMode == BLIT_ALPHA_SOURCE_MODULATED)
+		{
+			UnpackColour(alphaValue, modulate);
+		}
+
+		// Bring the pixels to tight BGRA8 rows
+		//
+		// BGRA8 is the back buffer's own order and goes as it is; every other format is
+		// read pixel by pixel. Packed formats cannot be compared in the shader, so their
+		// colour key is applied here.
+		uint32_t const   sourcePitch = ((pixelStoreRowLength != 0) ? pixelStoreRowLength : width) * pixelBytes;
+		uint8_t const*   bgra        = static_cast<uint8_t const*>(pixels);
+		bool const       isBgra      = gdType == GD_TYPE_UNSIGNED_BYTE && gdTextureFormat == GD_FORMAT_BGRA;
+		bool const       isBgr       = gdType == GD_TYPE_UNSIGNED_BYTE && gdTextureFormat == GD_FORMAT_BGR;
+
+		if (!isBgra || sourcePitch != width * 4u)
+		{
+			blitScratch.resize(size_t{ width } * height * 4u);
+
+			for (uint32_t y = 0; y < height; y++)
+			{
+				uint8_t const* source      = static_cast<uint8_t const*>(pixels) + size_t{ y } * sourcePitch;
+				uint8_t*       destination = blitScratch.data() + size_t{ y } * width * 4u;
+
+				if (isBgra)
+				{
+					memcpy(destination, source, size_t{ width } * 4u);
+					continue;
+				}
+
+				for (uint32_t x = 0; x < width; x++, source += pixelBytes, destination += 4)
+				{
+					if (isBgr)
+					{
+						destination[0] = source[0];
+						destination[1] = source[1];
+						destination[2] = source[2];
+						destination[3] = 0xff;
+						continue;
+					}
+
+					uint8_t rgba[4];
+					if (!ConvertTextureSourcePixel(gdTextureFormat, gdType, source, rgba))
+					{
+						SetLastError(DriverError::NOT_SUPPORTED);
+						return;
+					}
+
+					destination[0] = rgba[2];
+					destination[1] = rgba[1];
+					destination[2] = rgba[0];
+					// Both arms a byte, so the choice stays one rather than becoming an int
+					destination[3] = isSourceAlphaUsed ? rgba[3] : uint8_t{ 0xff };
+
+					if (isColourKeyed)
+					{
+						uint32_t raw = 0;
+						memcpy(&raw, source, pixelBytes);
+
+						if (raw == key)
+						{
+							destination[3] = 0;
+						}
+					}
+				}
+			}
+
+			// The converted alpha already holds the key and the source alpha
+			if (!isBgra && !isBgr)
+			{
+				isSourceAlphaUsed = true;
+				isColourKeyed     = false;
+			}
+
+			bgra = blitScratch.data();
+		}
+
+		// A 24 or 32-bit key is 0x00RRGGBB, matching the order of BGR(A) pixels
+		float keyColour[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+		if (isColourKeyed)
+		{
+			keyColour[0] = static_cast<float>((key >> 16) & 0xff) / 255.0f;
+			keyColour[1] = static_cast<float>((key >> 8) & 0xff) / 255.0f;
+			keyColour[2] = static_cast<float>(key & 0xff) / 255.0f;
+			keyColour[3] = 1.0f;
+		}
+
+		bool const isBlended = alphaMode != BLIT_ALPHA_OPAQUE || isColourKeyed || isSourceAlphaUsed;
+		vulkan->DrawPixels(destinationLeft, destinationTop, destinationWidth, destinationHeight, width, height, bgra, modulate, keyColour, isSourceAlphaUsed, isBlended);
 	}
 
 	//// Public API
 
-	void cVKDriver::BitBlt(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, void const* buffer2)
+	void cVKDriver::BitBlt(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey)
 	{
-		SCVK_CALL("%d,%d %dx%d, fmt %u, type %u", destinationLeft, destinationTop, width, height, gdTextureFormat, gdType);
-		UploadBlit("BitBlt", destinationLeft, destinationTop, width, height, width, height, gdTextureFormat, gdType, buffer, buffer2);
+		SCVK_CALL("%d,%d %dx%d, fmt %u, type %u, key %d", destinationLeft, destinationTop, width, height, gdTextureFormat, gdType, isColourKeyed);
+		UploadBlit("BitBlt", destinationLeft, destinationTop, width, height, width, height, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, isBlitSourceAlphaUsed ? BLIT_ALPHA_SOURCE : BLIT_ALPHA_OPAQUE, 0xffffffffu);
 	}
 
-	void cVKDriver::StretchBlt(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, void const* buffer2)
+	void cVKDriver::StretchBlt(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey)
 	{
-		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType);
-		UploadBlit("StretchBlt", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, buffer, buffer2);
+		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u, key %d", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, isColourKeyed);
+		UploadBlit("StretchBlt", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, isBlitSourceAlphaUsed ? BLIT_ALPHA_SOURCE : BLIT_ALPHA_OPAQUE, 0xffffffffu);
 	}
 
-	void cVKDriver::BitBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, [[maybe_unused]] void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, [[maybe_unused]] void const* buffer2, uint32_t alpha)
+	void cVKDriver::BitBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey, uint32_t alpha)
 	{
-		SCVK_CALL("%d,%d %dx%d, fmt %u, type %u, alpha %u", destinationLeft, destinationTop, width, height, gdTextureFormat, gdType, alpha);
-		SetLastError(DriverError::NOT_SUPPORTED);
+		SCVK_CALL("%d,%d %dx%d, fmt %u, type %u, key %d, alpha 0x%x", destinationLeft, destinationTop, width, height, gdTextureFormat, gdType, isColourKeyed, alpha);
+		UploadBlit("BitBltAlpha", destinationLeft, destinationTop, width, height, width, height, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, BLIT_ALPHA_CONSTANT, alpha);
 	}
 
-	void cVKDriver::StretchBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, [[maybe_unused]] void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, [[maybe_unused]] void const* buffer2, uint32_t alpha)
+	void cVKDriver::StretchBltAlpha(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey, uint32_t alpha)
 	{
-		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u, alpha %u", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, alpha);
-		SetLastError(DriverError::NOT_SUPPORTED);
+		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u, key %d, alpha 0x%x", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, isColourKeyed, alpha);
+		UploadBlit("StretchBltAlpha", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, BLIT_ALPHA_CONSTANT, alpha);
 	}
 
-	void cVKDriver::BitBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t width, uint32_t gdTextureFormat, uint32_t gdType, [[maybe_unused]] void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, [[maybe_unused]] void const* buffer2, uint32_t alpha)
+	void cVKDriver::BitBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t width, int32_t height, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey, uint32_t alpha)
 	{
-		SCVK_CALL("%d,%d w%d, fmt %u, type %u, alpha %u", destinationLeft, destinationTop, width, gdTextureFormat, gdType, alpha);
-		SetLastError(DriverError::NOT_SUPPORTED);
+		SCVK_CALL("%d,%d %dx%d, fmt %u, type %u, key %d, colour 0x%x", destinationLeft, destinationTop, width, height, gdTextureFormat, gdType, isColourKeyed, alpha);
+		UploadBlit("BitBltAlphaModulate", destinationLeft, destinationTop, width, height, width, height, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, BLIT_ALPHA_SOURCE_MODULATED, alpha);
 	}
 
-	void cVKDriver::StretchBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, [[maybe_unused]] void const* buffer, [[maybe_unused]] bool isUnknownFlagSet, [[maybe_unused]] void const* buffer2, uint32_t alpha)
+	void cVKDriver::StretchBltAlphaModulate(int32_t destinationLeft, int32_t destinationTop, int32_t destinationWidth, int32_t destinationHeight, int32_t sourceWidth, int32_t sourceHeight, uint32_t gdTextureFormat, uint32_t gdType, void const* buffer, bool isColourKeyed, void const* colourKey, uint32_t alpha)
 	{
-		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u, alpha %u", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, alpha);
-		SetLastError(DriverError::NOT_SUPPORTED);
+		SCVK_CALL("%d,%d %dx%d from %dx%d, fmt %u, type %u, key %d, colour 0x%x", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, isColourKeyed, alpha);
+		UploadBlit("StretchBltAlphaModulate", destinationLeft, destinationTop, destinationWidth, destinationHeight, sourceWidth, sourceHeight, gdTextureFormat, gdType, buffer, isColourKeyed, colourKey, BLIT_ALPHA_SOURCE_MODULATED, alpha);
 	}
 }

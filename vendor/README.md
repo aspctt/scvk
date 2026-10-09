@@ -1,8 +1,10 @@
 # Vendored third-party sources
 
-Every file in this directory is an **unmodified verbatim copy** from an upstream
-project, with its original copyright and license notice intact. All are
-**LGPL-2.1-or-later**, matching scvk's own license.
+Every file in this directory is a copy from an upstream project, with its
+original copyright and license notice intact, and unmodified except for the
+fixes listed under [Local changes](#local-changes). All are
+**LGPL-2.1-or-later**, matching scvk's own license, except the ReShade headers,
+which are BSD-3-Clause or MIT, and the Vulkan headers, which are Apache-2.0.
 
 Nothing here is scvk's own work. Do not edit these files in place. See
 [Updating](#updating) below.
@@ -97,6 +99,54 @@ gzcom-dll, plus the vertex format decoder.
 > notice comments removed**. scvk takes those files from gzcom-dll upstream
 > instead, so notices stay intact as the license requires. Only the five files
 > above, which are genuinely SCGL's own, are taken from SCGL.
+
+### SCD3D11 (9 headers)
+
+From SCD3D11's `vendor/framework`, its copy of gzcom-dll's headers ·
+LGPL-2.1-or-later
+
+The game interfaces the shadow modules carried over from SCD3D11 read the city,
+its terrain and its render properties through: `include/GZServDecls.h`,
+`include/GZServPtrs.h`, `include/cRZSysServPtr.h`, `include/SC4Rect.h`,
+`include/cISC4App.h`, `include/cISC4City.h`, `include/cISC4RenderProperties.h`,
+`include/cISTETerrain.h`, `include/cISTETerrainMap.h`.
+
+### ReShade add-on API (8 headers)
+
+<https://github.com/crosire/reshade> · ReShade 6.0.0 · Copyright (C) 2014
+Patrick Mours · BSD-3-Clause OR MIT, see `reshade/LICENSE.md`
+
+`reshade/include/*.hpp`, used header-only to register scvk as an add-on of a
+ReShade that is already loaded. Nothing of ReShade itself is linked in.
+
+### Vulkan headers (29 headers)
+
+<https://github.com/KhronosGroup/Vulkan-Headers> · tag `v1.3.296` · Copyright
+2015-2024 The Khronos Group Inc. · Apache-2.0, see `vulkan/LICENSE.md`
+
+`vulkan/Include/vulkan/*.h` and `vulkan/Include/vk_video/*.h`, the C headers
+only, laid out as the Vulkan SDK lays out its `Include` folder. scvk loads
+`vulkan-1.dll` at run time and links nothing of Vulkan, so these are all a build
+needs: the Visual Studio project falls back to them when no SDK is installed,
+and `tools/build-mingw.sh` uses them by default. 1.3.296 is the release whose SDK
+still ships the 32-bit validation layers a Debug build can use.
+
+## Local changes
+
+The interface headers carried two wrong signatures, which SCD3D11 corrected and
+scvk now corrects the same way, each marked `scvk:` where it changed:
+
+- `include/cIGZGDriver.h`: `BitBltAlphaModulate` takes a height, like the other
+  blits. Without it the parameters after the width were read one slot off.
+- `include/ext/cIGZGDriverVertexBufferExtension.h`: `GetVertices` takes a full
+  word for its count, and `DrawPrimsIndexed` takes four arguments. scvk used to
+  decline this interface, which hid both.
+
+One ReShade header changed too, so GCC builds it as well as MSVC:
+
+- `reshade/include/reshade.hpp`: the four casts of an event callback to `void *`
+  are `reinterpret_cast` rather than `static_cast`, which only MSVC accepts for a
+  function pointer.
 
 ## Build integration
 

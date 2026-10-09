@@ -37,9 +37,14 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "NativeShadowMasks.h"
+#include "Settings.h"
 #include "VulkanBackend.h"
 
 #include <VertexFormatUtils.h>
+
+#include <windows.h>
+#include <algorithm>
 
 namespace scvk
 {
@@ -154,12 +159,46 @@ namespace scvk
 		return isTextureStageEnabled[0] && isTextureStageEnabled[1] && stage1Texture != 0 && IsGeneratingCoordinates(0) && IsGeneratingCoordinates(1);
 	}
 
+	void cVKDriver::NoteGridDebug(void)
+	{
+		// The grid pass generates its first stage's coordinates from the position
+		if (!GetSettings().isGridDebugEnabled || !isTextureStageEnabled[0] || !IsGeneratingCoordinates(0))
+		{
+			return;
+		}
+
+		static ULONGLONG lastLog = 0;
+		ULONGLONG const  now     = GetTickCount64();
+
+		if (now - lastLog < 1000)
+		{
+			return;
+		}
+
+		uint32_t width = 0, height = 0, levels = 0, uploadedLevels = 0, uploads = 0;
+		if (!vulkan->DescribeTexture(boundTexture, width, height, levels, uploadedLevels, uploads))
+		{
+			return;
+		}
+
+		uint32_t parameters[4] = {};
+		vulkan->GetStageParameters(0, parameters);
+
+		float const* const m = textureStageMatrices[0];
+		LogInfo("[grid] texture=%u size=%ux%u mips=%u uploaded=%u filter=%u/%u wrap=%u/%u matrix=[%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g]", boundTexture, width, height, levels, uploadedLevels, parameters[0], parameters[1], parameters[2], parameters[3], static_cast<double>(m[0]), static_cast<double>(m[1]), static_cast<double>(m[2]), static_cast<double>(m[3]), static_cast<double>(m[4]), static_cast<double>(m[5]), static_cast<double>(m[6]), static_cast<double>(m[7]), static_cast<double>(m[8]), static_cast<double>(m[9]), static_cast<double>(m[10]), static_cast<double>(m[11]), static_cast<double>(m[12]), static_cast<double>(m[13]), static_cast<double>(m[14]), static_cast<double>(m[15]));
+		lastLog = now;
+	}
+
 	//// Public API
 
 	void cVKDriver::DrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
 	{
 		SCVK_CALL("%u, %d, %d", gdPrimitiveType, first, count);
+		DrawClientArrays(gdPrimitiveType, first, count);
+	}
 
+	void cVKDriver::DrawClientArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
+	{
 		if (count <= 0 || first < 0 || vertexPointer == nullptr || vertexStride == 0)
 		{
 			return;
@@ -170,40 +209,64 @@ namespace scvk
 			return;
 		}
 
-		// Describe the draw for the diagnostics
-		ProbeDrawArrays(gdPrimitiveType, first, count);
-		MaybeArmDump();
-		DumpDraw(gdPrimitiveType, count, first, nullptr, false);
-		ReportLargeDraw(gdPrimitiveType, first, count);
-		ReportProjectionMismatch(gdPrimitiveType, count);
-		NoteRegionDraw(gdPrimitiveType, count, first, nullptr, false);
-		NoteMultitexturedDraw(vertexFormat);
-		NoteDarkTintedDraw(gdPrimitiveType, count);
-		ReportShadowMaskDraw(gdPrimitiveType, count, first, nullptr, false);
-		NoteShadowStrength();
-		NoteSharedSetDraw(gdPrimitiveType, count);
+		// Describe the draw for the diagnostics, when the log keeps them
+		//
+		// Every one of them writes only at the debug level, and a city redraw at the
+		// widest zoom makes over a hundred thousand draws, some of whose descriptions
+		// project vertices. At the default level they would cost time and show nothing.
+		if (areDrawDiagnosticsEnabled)
+		{
+			ProbeDrawArrays(gdPrimitiveType, first, count);
+			MaybeArmDump();
+			DumpDraw(gdPrimitiveType, count, first, nullptr, false);
+			ReportLargeDraw(gdPrimitiveType, first, count);
+			ReportProjectionMismatch(gdPrimitiveType, count);
+			NoteRegionDraw(gdPrimitiveType, count, first, nullptr, false);
+			NoteMultitexturedDraw(vertexFormat);
+			NoteDarkTintedDraw(gdPrimitiveType, count);
+			ReportShadowMaskDraw(gdPrimitiveType, count, first, nullptr, false);
+			NoteShadowStrength();
+			NoteSharedSetDraw(gdPrimitiveType, count);
+		}
+
+		// Both numbers were checked to be positive above.
+		uint32_t const firstVertex = static_cast<uint32_t>(first);
+		uint32_t const vertexCount = static_cast<uint32_t>(count);
+
+		// Capture it for the shadow map, when the shadow modules asked for it
+		uint8_t const* const vertices = static_cast<uint8_t const*>(vertexPointer) + size_t{ firstVertex } * vertexStride;
+		NoteLiveShadowCandidate(gdPrimitiveType, vertices, vertexCount, nullptr, 0, false, 0);
 
 		// Draw it
-		//
-		// Both numbers were checked to be positive above.
-		PushStageCoordinates();
-		UpdateTransform();
-		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, static_cast<uint32_t>(first), static_cast<uint32_t>(count));
+		if (areStageCoordinatesDirty)
+		{
+			PushStageCoordinates();
+			areStageCoordinatesDirty = false;
+		}
+
+		if (isTransformDirty)
+		{
+			UpdateTransform();
+			CaptureShadowUniforms();
+			isTransformDirty = false;
+		}
+
+		NoteGridDebug();
+
+		// Light it on the CPU when the lighting extension asks for more than the shader
+		// does on its own
+		if (IsFixedFunctionLightingNeeded())
+		{
+			DrawLit(gdPrimitiveType, firstVertex, vertexCount, nullptr, 0, false);
+			return;
+		}
+
+		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, firstVertex, vertexCount);
 	}
 
 	void cVKDriver::DrawElements(uint32_t gdPrimitiveType, int32_t count, uint32_t gdType, void const* indices)
 	{
 		SCVK_CALL("%u, %d, %u, %p", gdPrimitiveType, count, gdType, indices);
-
-		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
-		{
-			return;
-		}
-
-		if (shouldSkipCloudShadows && IsCloudShadowDraw())
-		{
-			return;
-		}
 
 		// Read the index width
 		//
@@ -226,22 +289,90 @@ namespace scvk
 			return;
 		}
 
-		// Describe the draw for the diagnostics
-		NoteRegionDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
-		NoteMultitexturedDraw(vertexFormat);
-		NoteDarkTintedDraw(gdPrimitiveType, count);
-		ReportShadowMaskDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
-		NoteShadowStrength();
-		NoteSharedSetDraw(gdPrimitiveType, count);
-		MaybeArmDump();
-		DumpDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+		DrawClientElements(gdPrimitiveType, count, indices, isIndex32Bit);
+	}
+
+	void cVKDriver::DrawClientElements(uint32_t gdPrimitiveType, int32_t count, void const* indices, bool isIndex32Bit)
+	{
+		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		if (shouldSkipCloudShadows && IsCloudShadowDraw())
+		{
+			return;
+		}
+
+		// Describe the draw for the diagnostics, when the log keeps them
+		if (areDrawDiagnosticsEnabled)
+		{
+			NoteRegionDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+			NoteMultitexturedDraw(vertexFormat);
+			NoteDarkTintedDraw(gdPrimitiveType, count);
+			ReportShadowMaskDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+			NoteShadowStrength();
+			NoteSharedSetDraw(gdPrimitiveType, count);
+			MaybeArmDump();
+			DumpDraw(gdPrimitiveType, count, 0, indices, isIndex32Bit);
+		}
+
+		// The count was checked to be positive above.
+		uint32_t const indexCount = static_cast<uint32_t>(count);
+
+		// Capture it for the shadow map, when the shadow modules asked for it. Only then
+		// is the index range worth finding.
+		if (NativeShadowMasks::LiveNetworkDrawActive() || NativeShadowMasks::HasLivePropMeshes())
+		{
+			uint32_t lowest  = UINT32_MAX;
+			uint32_t highest = 0;
+
+			for (uint32_t index = 0; index < indexCount; index++)
+			{
+				uint32_t const value = isIndex32Bit ? static_cast<uint32_t const*>(indices)[index] : static_cast<uint16_t const*>(indices)[index];
+				lowest  = std::min(lowest, value);
+				highest = std::max(highest, value);
+			}
+
+			uint8_t const* const vertices = static_cast<uint8_t const*>(vertexPointer) + size_t{ lowest } * vertexStride;
+			NoteLiveShadowCandidate(gdPrimitiveType, vertices, highest - lowest + 1, indices, indexCount, isIndex32Bit, lowest);
+		}
 
 		// Draw it
-		//
-		// The count was checked to be positive above.
-		PushStageCoordinates();
-		UpdateTransform();
-		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, static_cast<uint32_t>(count), isIndex32Bit);
+		if (areStageCoordinatesDirty)
+		{
+			PushStageCoordinates();
+			areStageCoordinatesDirty = false;
+		}
+
+		if (isTransformDirty)
+		{
+			UpdateTransform();
+			CaptureShadowUniforms();
+			isTransformDirty = false;
+		}
+
+		NoteGridDebug();
+
+		// Light the range the indices read on the CPU when the lighting extension asks
+		// for more than the shader does on its own
+		if (IsFixedFunctionLightingNeeded())
+		{
+			uint32_t lowest  = UINT32_MAX;
+			uint32_t highest = 0;
+
+			for (uint32_t index = 0; index < indexCount; index++)
+			{
+				uint32_t const value = isIndex32Bit ? static_cast<uint32_t const*>(indices)[index] : static_cast<uint16_t const*>(indices)[index];
+				lowest  = std::min(lowest, value);
+				highest = std::max(highest, value);
+			}
+
+			DrawLit(gdPrimitiveType, lowest, highest - lowest + 1, indices, indexCount, isIndex32Bit);
+			return;
+		}
+
+		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, indexCount, isIndex32Bit);
 	}
 
 	void cVKDriver::InterleavedArrays(uint32_t gdVertexFormat, int32_t stride, void const* pointer)

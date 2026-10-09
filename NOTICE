@@ -106,5 +106,32 @@ verbatim. They are noted here and in their own file headers.
           Copyright (c) caspervg
           LGPL-2.1-or-later
 
+  src/cVKDriver_LiveShadows.cpp, src/cVKDriver_ReShade.cpp,
+  src/NativeShadow*.cpp, src/NativeShadow*.h, src/TerrainShadow*.cpp,
+  src/TerrainShadow*.h, src/ThumbnailFocusGuard.cpp, src/ThumbnailFocusGuard.h,
+  src/TextureUploadUtils.cpp, src/TextureUploadUtils.h, src/Watchdog.cpp,
+  shaders/composite.frag, shaders/shadow.vert, shaders/shadow.frag,
+  shaders/blit.frag, shaders/scene_depth.frag
+
+      Carried over from SCD3D11, the Direct3D 11 renderer: the game-side shadow
+      modules nearly as they are, the live shadows, the ReShade integration, the
+      blits, the render watchdog and the thumbnail focus guard rewritten for
+      Vulkan, and their shaders translated from HLSL to GLSL.
+
+          SCD3D11
+          Copyright (C) 2025, 2026 Nelson Gomez (nsgomez) and the SCD3D11 authors
+          LGPL-2.1-or-later
+
+  vendor/reshade/include
+
+      The ReShade add-on API headers, used header-only to register scvk as an
+      add-on of a ReShade that is already loaded. ReShade itself is not part of
+      scvk.
+
+          ReShade 6.0.0
+          https://github.com/crosire/reshade
+          Copyright (C) 2014 Patrick Mours
+          BSD-3-Clause OR MIT; see vendor/reshade/LICENSE.md
+
 No code or assets from SimCity 4, Maxis, or Electronic Arts Inc. are included in
 this repository.

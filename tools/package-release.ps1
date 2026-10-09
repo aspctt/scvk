@@ -2,7 +2,7 @@
 #
 #   pwsh tools/package-release.ps1
 #
-# The zip holds scvk.dll and scvk.ini, which go into the game's Plugins folder, beside the
+# The zip holds scvk.dll, which goes into the game's Plugins folder, beside the
 # readme and the third party notices from package\ and the license. The version comes from
 # src\version.h, so bump it there first. Release notes are written by hand beside the zip.
 
@@ -25,7 +25,6 @@ $packageFiles = [ordered]@{
 	"LICENSE.txt"             = Join-Path $repositoryRoot "LICENSE"
 	"README.htm"              = Join-Path $repositoryRoot "package\README.htm"
 	"scvk.dll"                = Join-Path $repositoryRoot "Release\scvk.dll"
-	"scvk.ini"                = Join-Path $repositoryRoot "scvk.ini"
 	"Third Party Notices.txt" = Join-Path $repositoryRoot "package\Third Party Notices.txt"
 }
 
