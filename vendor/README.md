@@ -15,13 +15,13 @@ parameter types are fixed by SC4.exe, not by us. These headers are the
 reverse-engineered description of that contract. They are a dependency in the
 strictest sense: scvk cannot invent its own version and still load.
 
-The compiled code here is deliberately tiny: three `.cpp` files that do COM
+The compiled code here is deliberately tiny: four `.cpp` files that do COM
 registration, string handling, and reference counting. Everything else is pure
 interface declaration.
 
 ## Provenance
 
-### gzcom-dll (19 files)
+### gzcom-dll (36 files)
 
 <https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
 (C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
@@ -44,6 +44,17 @@ interfaces.
 | `include/cRZAutoRefCount.h` | Scoped refcount helper |
 | `include/GZCLSIDDefs.h` | Well-known class IDs |
 | `include/cRZRect.h` | Rectangle type |
+| `include/cISC4App.h`, `include/cISC4Nation.h`, `include/cISC4Region.h`, `include/cISC4RegionalCity.h` | The game, its regions and their cities, for the benchmark's city loading |
+| `include/cISC4Simulator.h`, `include/cISC4View3DWin.h`, `include/cIGZWin.h` | Pausing the city and moving the camera |
+| `include/cIGZMessage2.h`, `include/cIGZMessageServer2.h`, `include/cIGZMessageTarget2.h`, `include/cIGZSystemService.h` | The game's messages, and a tick from its main loop |
+| `include/GZServPtrs.h`, `include/GZServDecls.h`, `include/cRZSysServPtr.h` | Typed access to the game's services |
+| `include/SC4String.h`, `src/SC4String.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
+
+> Two declarations here do not match the game. The benchmark works around both in
+> its own source rather than editing them: `cISC4Nation::SetActiveRegion` takes the
+> region's index, not a pointer (0x4972f0), and `cISC4View3DWin::SetScrolling` takes
+> a direction in radians and a speed, not the X and Z its parameter names suggest
+> (0x7e6c60).
 
 ### Scion (2 files)
 
