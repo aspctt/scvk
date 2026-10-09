@@ -46,7 +46,10 @@ SimCity 4 selects a renderer by GZCOM class ID and knows exactly three:
 DirectX (`0xBADB6906`), OpenGL (`0xC4554841`), and Software (`0x7ACA35C6`).
 There is no way to register a fourth. scvk therefore claims the **OpenGL class
 ID** and registers at a higher version so the GZCOM prefers it over the game's
-built-in driver.
+built-in driver. It claims the **DirectX class ID**, the game's default, as well,
+one version lower, so the game picks scvk without any settings while a renderer
+built for that slot, such as [scd3d11](https://github.com/caspervg/scd3d11), still
+takes it.
 
 > **scvk and [SCGL](https://github.com/nsgomez/scgl) cannot be installed at the
 > same time.** Both claim the same class ID, and whichever registers the higher
@@ -63,7 +66,10 @@ ubershader reproducing the combiner network in fragment code.
 
 - [SC4Fix](https://github.com/nsgomez/sc4fix): fully compatible.
 - [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options): fully
-  compatible, and the easiest way to select scvk. See [Installing](#installing).
+  compatible, and the easiest way to choose between renderers. See
+  [Installing](#installing).
+- [scd3d11](https://github.com/caspervg/scd3d11): can be installed alongside, and
+  keeps the DirectX slot. See [Installing](#installing).
 
 ### FPS limits: built in
 
@@ -204,11 +210,16 @@ To see a debug view, put an empty file with one of these names next to
 scvk needs Windows 10 or 11, a graphics card with Vulkan support and game version
 641.
 
-1. Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
-   and copy `scvk.dll` and `scvk.ini` into the `Plugins` folder of your SimCity 4
-   installation.
-2. **Select the OpenGL renderer.** The easiest way is
-   [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options):
+Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
+and copy `scvk.dll` and `scvk.ini` into the `Plugins` folder of your SimCity 4
+installation. That is all: the game picks scvk by default. On a machine without
+Vulkan, the game keeps its own DirectX renderer.
+
+With [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options),
+both `Driver=DirectX` and `Driver=OpenGL` select scvk. With scd3d11 installed as
+well, `DirectX` selects scd3d11 and `OpenGL` selects scvk. `ColorDepth=32` is
+recommended: Windows 8 and later no longer report 16-bit display modes, so every
+mode scvk can enumerate is 32bpp, while SC4 defaults to 16.
 
 ```ini
 [GraphicsOptions]
@@ -226,14 +237,9 @@ ColorDepth=32
 > works the same way, which is why graphics-options accepts `Driver=SCGL` as a
 > literal alias for the same entry.
 >
-> If you leave this set to `DirectX`, SC4 will still load scvk and may still
-> call `Init` on it while enumerating drivers, then quietly use DirectX
-> instead. The log will show a short burst of activity ending in `Shutdown`,
-> which looks like a failure but is just scvk not being the chosen renderer.
-
-`ColorDepth=32` matters too: Windows 8 and later no longer report 16-bit
-display modes, so every mode scvk can enumerate is 32bpp, while SC4 defaults to
-16.
+> The game starts a driver for every slot and keeps them all until it exits, so
+> the log shows a second scvk driver that starts, never draws and shuts down at
+> exit. That is the slot the game is not using.
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
 directory if the Plugins folder is not writable. `LogLevel` in `scvk.ini` sets
@@ -241,7 +247,7 @@ how much goes into it, from `trace` to `off`, and is `info` by default.
 
 To turn scvk off without removing it, keep `scvk.ini` next to the DLL and set
 `Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk
-is never loaded at all.
+is never loaded at all. That is also the way back to the game's DirectX renderer.
 
 ## License
 
