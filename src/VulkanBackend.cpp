@@ -25,6 +25,7 @@
 //// Dependencies
 
 #include "VulkanBackend.h"
+#include "FrameCallback.h"
 #include "Logger.h"
 #include "version.h"
 
@@ -913,10 +914,12 @@ namespace scvk
 	{
 		if (device != VK_NULL_HANDLE)
 		{
+			// Let another plugin destroy what it made with the device, once the device is idle
+			vkDeviceWaitIdle(device);
+			RunFrameCallback(SCVK_EVENT_BEFORE_DEVICE_DESTROY);
+
 			// Destroy what renders, then everything retired, then the textures and their
 			// descriptors
-			vkDeviceWaitIdle(device);
-
 			DestroySwapchain();
 			DestroyAllBufferRegions();
 			DestroyPipelines();
@@ -1873,6 +1876,45 @@ namespace scvk
 		LogDebug("Vulkan: %s in ms: game %.0f, recording %.0f, vertex copies %.0f, pipelines %.0f, textures %.0f, submits %.0f, GPU waits %.0f, swapchain %.0f.", heading, milliseconds[FRAME_PHASE_GAME], milliseconds[FRAME_PHASE_RECORDING], milliseconds[FRAME_PHASE_VERTEX_COPIES], milliseconds[FRAME_PHASE_PIPELINES], milliseconds[FRAME_PHASE_TEXTURES], milliseconds[FRAME_PHASE_SUBMITS], milliseconds[FRAME_PHASE_GPU_WAITS], milliseconds[FRAME_PHASE_SWAPCHAIN]);
 	}
 
+	void VulkanBackend::RunFrameCallback(uint32_t event)
+	{
+		// Charge it to the game, since the time is another plugin's rather than scvk's
+		PhaseScope const callback(*this, FRAME_PHASE_GAME);
+
+		// Describe the frame and the device
+		//
+		// The image is the one being drawn, or for a device about to go, the last one
+		// acquired, and absent when the swapchain never got as far as having views.
+		bool const isRender = event == SCVK_EVENT_RENDER;
+		bool const hasImage = imageIndex < swapchainImages.size() && imageIndex < swapchainImageViews.size();
+
+		SCVKFrameContext frame{};
+		frame.structSize          = sizeof(frame);
+		frame.apiVersion          = SCVK_FRAME_API_VERSION;
+		frame.event               = event;
+		frame.deviceGeneration    = deviceGeneration;
+		frame.getInstanceProcAddr = vkGetInstanceProcAddr;
+		frame.vulkanApiVersion    = INSTANCE_API_VERSION;
+		frame.instance            = instance;
+		frame.physicalDevice      = physicalDevice;
+		frame.device              = device;
+		frame.queueFamilyIndex    = queueFamily;
+		frame.queue               = queue;
+		frame.commandBuffer       = isRender ? commandBuffer : VK_NULL_HANDLE;
+		frame.renderPass          = renderPass;
+		frame.image               = hasImage ? swapchainImages[imageIndex] : VK_NULL_HANDLE;
+		frame.imageView           = hasImage ? swapchainImageViews[imageIndex] : VK_NULL_HANDLE;
+		frame.format              = swapchainFormat;
+		frame.extent              = swapchainExtent;
+		frame.imageCount          = swapchainImages.size();
+
+		// The driver interface carries the window as a plain pointer, and the context
+		// types it as the HWND it is.
+		frame.window = static_cast<HWND>(windowHandle);
+
+		InvokeFrameCallback(frame);
+	}
+
 	bool VulkanBackend::WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch)
 	{
 		FILE* file = nullptr;
@@ -1948,7 +1990,7 @@ namespace scvk
 		application.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 		application.pEngineName        = "scvk";
 		application.engineVersion      = VK_MAKE_VERSION(SCVK_VERSION_MAJOR, SCVK_VERSION_MINOR, SCVK_VERSION_PATCH);
-		application.apiVersion         = VK_API_VERSION_1_0;
+		application.apiVersion         = INSTANCE_API_VERSION;
 
 		// Ask for the window surface extensions, and debug messages in Debug builds
 		std::vector<char const*> extensions{
@@ -2080,7 +2122,17 @@ namespace scvk
 		}
 
 		// Create the device and what every frame needs
-		if (!CreateLogicalDevice() || !CreateFrameResources() || !CreateStagingBuffer(STAGING_BUFFER_SIZE))
+		//
+		// A new device starts a new generation for a plugin drawing over the game, since
+		// nothing it made with the last one survives.
+		if (!CreateLogicalDevice())
+		{
+			return false;
+		}
+
+		deviceGeneration = NextDeviceGeneration();
+
+		if (!CreateFrameResources() || !CreateStagingBuffer(STAGING_BUFFER_SIZE))
 		{
 			return false;
 		}
@@ -2402,6 +2454,16 @@ namespace scvk
 			}
 
 			Clear(lastClearColour[0], lastClearColour[1], lastClearColour[2], lastClearColour[3]);
+		}
+
+		// Let another plugin draw over the finished frame
+		//
+		// Inside a render pass, where an overlay records as it would at the end of a pass
+		// of its own, and before the captures, so they show what was drawn.
+		if (IsFrameCallbackRegistered())
+		{
+			BeginRenderPassIfNeeded();
+			RunFrameCallback(SCVK_EVENT_RENDER);
 		}
 
 		EndRenderPassIfActive();

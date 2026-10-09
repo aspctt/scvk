@@ -360,6 +360,10 @@ namespace scvk
 		// Distinct filter and wrap combinations; the game uses a handful.
 		static constexpr size_t MAXIMUM_SAMPLERS = 64;
 
+		// The Vulkan version the instance is created for, which a plugin drawing over the
+		// game is told as well. See CreateInstance.
+		static constexpr uint32_t INSTANCE_API_VERSION = VK_API_VERSION_1_0;
+
 		//// State
 
 		// The instance and the device
@@ -372,6 +376,9 @@ namespace scvk
 		std::string              deviceName;
 		std::string              apiVersion;
 		bool                     isDead         = false;
+
+		// Which device this is, for a plugin drawing over the game. See FrameCallback.h.
+		uint32_t deviceGeneration = 0;
 
 		// Whether the instance can and the device does take a fullscreen policy for the
 		// swapchain. See CreateSwapchain.
@@ -717,6 +724,9 @@ namespace scvk
 
 		/** The periodic line saying the swapchain is still presenting. */
 		void LogHeartbeat(void);
+
+		/** Calls another plugin's frame callback, if one is registered, with this frame and device. */
+		void RunFrameCallback(uint32_t event);
 
 		/** Writes BGRA pixels as a 32 bit BMP. */
 		static bool WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch);

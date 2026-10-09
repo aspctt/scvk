@@ -155,6 +155,7 @@
     <ClCompile Include="src\cVKDriver_Video.cpp" />
     <ClCompile Include="src\cVKDriversCOMDirector.cpp" />
     <ClCompile Include="src\FpsLimit.cpp" />
+    <ClCompile Include="src\FrameCallback.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
@@ -188,8 +189,10 @@
   <ItemGroup>
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
+    <ClInclude Include="src\FrameCallback.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\SC4Version.h" />
+    <ClInclude Include="src\SCVKFrameCallback.h" />
     <ClInclude Include="src\ShaderBinaries.h" />
     <ClInclude Include="src\version.h" />
     <ClInclude Include="src\VulkanApi.h" />

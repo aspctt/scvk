@@ -117,6 +117,25 @@ untidy but not dangerous.
 by changing the same code, and the two work together. With `UnlockRunningFPS=true`,
 only the plugin that starts first gets that change.
 
+### Drawing over the game from another plugin
+
+scvk.dll exports two functions that let another plugin draw over every frame, such as
+an overlay made with Dear ImGui. They work like scd3d11's frame callback, with Vulkan in
+place of Direct3D 11:
+
+```c
+BOOL __stdcall SCVKRegisterFrameCallback(SCVKFrameCallback callback, void* userData);
+BOOL __stdcall SCVKUnregisterFrameCallback(SCVKFrameCallback callback, void* userData);
+```
+
+The callback runs on the game's main thread once a frame, after the game has drawn
+everything including its interface. It gets the instance, device, queue and loader, and a
+command buffer already inside a render pass on the frame's image. It runs once more,
+with the device idle, before scvk destroys a device, which it does for every video mode
+the game sets. [`src/SCVKFrameCallback.h`](src/SCVKFrameCallback.h) is the whole contract
+and depends on nothing else, so a plugin copies it as it is. There is no import library:
+find `scvk.dll` with `GetModuleHandleW` and look the functions up with `GetProcAddress`.
+
 ## Building
 
 Requires Visual Studio 2022 or later with the desktop C++ workload, and the
