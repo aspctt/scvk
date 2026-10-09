@@ -210,6 +210,14 @@ namespace scvk
 
 	void cVKDriver::ProbeDrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
 	{
+		// Stop once every slot is taken, since nothing more can be described, rather than
+		// hashing the projection and searching a full table on every draw for the rest of
+		// the session.
+		if (probedCombinations >= _countof(probedKeys))
+		{
+			return;
+		}
+
 		// Key the draw on its format, primitive type and projection
 		//
 		// Sampling the first few draws only reported tiny sub-pixel quads. Sampling per
@@ -234,11 +242,6 @@ namespace scvk
 			{
 				return;
 			}
-		}
-
-		if (probedCombinations >= _countof(probedKeys))
-		{
-			return;
 		}
 
 		probedKeys[probedCombinations++] = probeKey;
@@ -393,6 +396,14 @@ namespace scvk
 
 		uint32_t const key = (vertexFormat << 12) ^ (gdPrimitiveType << 8) ^ (isBlending ? 0x80u : 0u) ^ (blendSourceFactor << 4) ^ blendDestinationFactor ^ (isAlphaTesting ? 0x40000u : 0u) ^ (alphaComparison << 20);
 
+		// Catch a repeat before the search, since at night every draw comes through here
+		if (key == lastDarkTintKey)
+		{
+			return;
+		}
+
+		lastDarkTintKey = key;
+
 		if (!NoteOnce(NOTE_CLOUD_SHADOW, key))
 		{
 			return;
@@ -514,6 +525,14 @@ namespace scvk
 		// The environment modes are small and never negative, so their low bits convert
 		// to unsigned unchanged.
 		uint32_t const key = (vertexFormat << 12) ^ (static_cast<uint32_t>(textureEnvironmentMode[0] & 0xf) << 4) ^ static_cast<uint32_t>(textureEnvironmentMode[1] & 0xf) ^ (isBlending ? 0x100u : 0u) ^ (blendSourceFactor << 16) ^ (blendDestinationFactor << 20);
+
+		// Catch a repeat before the search, since every lit window comes through here
+		if (key == lastSharedSetKey)
+		{
+			return;
+		}
+
+		lastSharedSetKey = key;
 
 		if (!NoteOnce(NOTE_SHARED_SET, key))
 		{
@@ -946,6 +965,15 @@ namespace scvk
 		currentTile.subViewport[1] = viewportY;
 		currentTile.subViewport[2] = viewportWidth;
 		currentTile.subViewport[3] = viewportHeight;
+
+		// Sort it into classes only while the tile draws are recorded
+		//
+		// Measuring its depth projects eight of its vertices, on every draw of every tile
+		// the game redraws, for a breakdown only a Scroll Lock capture shows.
+		if (drawRing.empty())
+		{
+			return;
+		}
 
 		// Key the draw on everything that decides whether it can land on the screen
 		uint32_t const key = (vertexFormat & 0xffu) | ((isCapabilityEnabled[kGDCapability_Blend] ? 1u : 0u) << 8) | ((blendSourceFactor & 0xfu) << 9) | ((blendDestinationFactor & 0xfu) << 13) | ((isCapabilityEnabled[kGDCapability_DepthTest] ? 1u : 0u) << 17) | ((isDepthWriteEnabled ? 1u : 0u) << 18) | ((depthComparison & 7u) << 19) | ((isColourWriteEnabled ? 1u : 0u) << 22) | ((isTextureStageEnabled[0] ? 1u : 0u) << 23) | ((isTextureStageEnabled[1] ? 1u : 0u) << 24) | ((IsCloudShadowDraw() ? 1u : 0u) << 25) | ((isCapabilityEnabled[kGDCapability_AlphaTest] ? 1u : 0u) << 26);

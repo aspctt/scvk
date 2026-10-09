@@ -363,6 +363,11 @@ namespace scvk
 		uint32_t notedCount          = 0;
 		uint32_t lastMultitextureKey = 0xffffffffu;
 
+		// The same for the dark tinted and the shared set draws. At night every draw is
+		// tinted dark, and the lit windows all share their set.
+		uint32_t lastDarkTintKey  = 0xffffffffu;
+		uint32_t lastSharedSetKey = 0xffffffffu;
+
 		// Diagnostic budgets. The geometry probe samples one draw per distinct vertex
 		// format, primitive type and projection rather than by position in the frame, so
 		// each rendering context gets described once. Sampling the first few draws
