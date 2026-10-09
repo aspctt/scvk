@@ -145,6 +145,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\Benchmark.cpp" />
     <ClCompile Include="src\cVKDriver.cpp" />
     <ClCompile Include="src\cVKDriver_Blit.cpp" />
     <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
@@ -181,12 +182,17 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
+    <ClCompile Include="vendor\src\SC4String.cpp">
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
     <ClCompile Include="vendor\src\VertexFormatUtils.cpp">
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Benchmark.h" />
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\FrameCallback.h" />

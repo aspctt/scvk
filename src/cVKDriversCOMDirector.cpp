@@ -19,6 +19,7 @@
 
 //// Dependencies
 
+#include "Benchmark.h"
 #include "cVKDriver.h"
 #include "FpsLimit.h"
 #include "Logger.h"
@@ -27,6 +28,7 @@
 #include "version.h"
 
 #include <cIGZCOM.h>
+#include <cIGZFrameWork.h>
 #include <cRZCOMDllDirector.h>
 #include <stdint.h>
 #include <string.h>
@@ -172,22 +174,57 @@ namespace scvk
 
 		void EnumClassObjects(ClassObjectEnumerationCallback callback, void* context) override
 		{
+			// Leave both slots to the game's own drivers when a benchmark measures DirectX
+			if (IsBenchmarkOnDirectX())
+			{
+				return;
+			}
+
 			// Outranks the game's own OpenGL and DirectX drivers, which register the same
 			// class IDs at version 0.
 			callback(cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION, context);
 			callback(DIRECTX_GZCLSID, DIRECTX_VERSION, context);
 		}
 
-		bool OnStart([[maybe_unused]] cIGZCOM* com) override
+		bool OnStart(cIGZCOM* com) override
 		{
 			LogOpen();
-			LogInfo("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
+
+			if (IsBenchmarkOnDirectX())
+			{
+				LogInfo("scvk %s loaded for a benchmark of the game's DirectX driver; claiming no driver.", SCVK_VERSION_STRING);
+			}
+			else
+			{
+				LogInfo("scvk %s loaded; claiming GZCLSID %08x at version %u.", SCVK_VERSION_STRING, cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION);
+			}
+
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
 
 			// Change the game's frame pacing, the only place scvk writes to game memory.
 			// Only the paused padding and the animation clock's floor change without
 			// scvk.ini asking.
 			ApplyFpsLimitSettings();
+
+			// Hear when the game is up and when it shuts down, for a benchmark run
+			if (IsBenchmarkEnabled())
+			{
+				PrepareBenchmark();
+				com->FrameWork()->AddHook(this);
+			}
+
+			return true;
+		}
+
+		bool PostAppInit(void) override
+		{
+			StartBenchmark();
+			return true;
+		}
+
+		bool PreAppShutdown(void) override
+		{
+			StopBenchmark();
 			return true;
 		}
 	};
