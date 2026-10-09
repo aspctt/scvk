@@ -322,6 +322,12 @@ namespace scvk
 		float    projectionMatrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 		uint32_t activeMatrix         = 0;
 
+		// Whether the transform or the stages' coordinates changed since a draw last
+		// handed them to the backend. Most draws reuse the last one's matrices, and
+		// working them out again cost every draw over a hundred nanoseconds.
+		bool isTransformDirty        = true;
+		bool isStageCoordinatesDirty = true;
+
 		// The global ambient light colour and the diffuse material alpha, plus whether
 		// the vertex colour feeds either. Together these are all the lighting SimCity 4
 		// uses.
@@ -491,6 +497,9 @@ namespace scvk
 		/** Forwards the fog, or the 3D view's own while the marker forces it. */
 		void PushFog(void);
 
+		/** Marks what a matrix just loaded into the active slot changes, for the next draw to hand over. */
+		void NoteMatrixChange(void);
+
 		// Draws, in cVKDriver_Draw.cpp
 
 		/** Recomputes projection times modelview and hands it to the backend. */
@@ -498,6 +507,9 @@ namespace scvk
 
 		/** Recomputes and forwards where each stage's coordinates come from. */
 		void PushStageCoordinates(void);
+
+		/** Hands the backend the transform and the stages' coordinates, where they changed since the last draw. */
+		void PushChangedTransforms(void);
 
 		/** Whether a stage generates its coordinates from the eye-space position. */
 		bool IsGeneratingCoordinates(uint32_t stage) const;

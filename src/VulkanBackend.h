@@ -144,6 +144,39 @@ namespace scvk
 			float stageSources[4]   = { 0.0f, 1.0f, 0.0f, 0.0f };
 		};
 
+		/** The push constant block, laid out as both shader stages declare it. */
+		struct PushConstantBlock
+		{
+			float    transform[16];
+			float    fragmentState[4];
+			uint32_t combinerState[4];
+			float    constantColour[4];
+			float    sceneTint[4];
+		};
+
+		/**
+		 * What the frame's command buffer has bound, so a draw records only what changed.
+		 *
+		 * At the widest zoom nearly every draw repeats the last one's pipeline and
+		 * viewport, and most repeat its constants and textures. Bound state lasts for the
+		 * whole command buffer, across render passes, until it is begun again. A null
+		 * handle or a false flag means nothing is known, so the next draw records it.
+		 */
+		struct BoundState
+		{
+			VkPipeline        pipeline         = VK_NULL_HANDLE;
+			VkDescriptorSet   sets[4]          = {};
+			VkBuffer          vertexBuffers[2] = {};
+			VkDeviceSize      vertexOffsets[2] = {};
+			VkBuffer          indexBuffer      = VK_NULL_HANDLE;
+			VkDeviceSize      indexOffset      = 0;
+			bool              hasViewport      = false;
+			VkViewport        viewport{};
+			VkRect2D          scissor{};
+			bool              hasConstants     = false;
+			PushConstantBlock constants{};
+		};
+
 		/** A stretch of a texture block, by offset and size. */
 		struct MemoryRange
 		{
@@ -412,6 +445,7 @@ namespace scvk
 		bool            isFrameActive           = false;
 		bool            isRenderPassActive      = false;
 		uint64_t        presentedFrames         = 0;
+		BoundState      boundState;
 
 		// Whether part of the frame has already been submitted, which consumed the wait for
 		// its swapchain image. A readback submits the frame early to wait for it.
@@ -464,6 +498,11 @@ namespace scvk
 		VkShaderModule             fragmentModule   = VK_NULL_HANDLE;
 		VkPipelineLayout           pipelineLayout   = VK_NULL_HANDLE;
 		std::vector<PipelineEntry> pipelines;
+
+		// The pipeline the last draw asked for, which the next one nearly always asks for
+		// again. A null pipeline means there is none.
+		PipelineKey lastPipelineKey{};
+		VkPipeline  lastPipeline = VK_NULL_HANDLE;
 
 		// The combined transform, already corrected into Vulkan clip space.
 		float transform[16] = {
@@ -668,6 +707,9 @@ namespace scvk
 		/** Submits what the frame has recorded so far, waits for it, and carries on recording the same frame. */
 		bool SubmitFrameSoFar(void);
 
+		/** Treats everything the command buffer had bound as unknown, so the next draw binds it all. */
+		void ForgetBoundState(void);
+
 		/** vkQueueSubmit of one batch, timed as a submit. */
 		VkResult SubmitToQueue(VkSubmitInfo const& submit, VkFence fence);
 
@@ -783,6 +825,12 @@ namespace scvk
 
 		/** Binds the textures and sampler of both stages, applying their parameters. */
 		void BindTextures(bool isTwoStage);
+
+		/** Binds the vertex copy and the draw record's copy, skipping either already bound. */
+		void BindVertexBuffers(VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VkBuffer recordBuffer, VkDeviceSize recordOffset);
+
+		/** Binds 32-bit indices, unless they are already bound. */
+		void BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset);
 
 		/** Changes the draw record, so the next draw writes a fresh copy of it. */
 		void UpdateDrawRecord(DrawRecord const& record);

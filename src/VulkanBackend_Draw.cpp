@@ -40,21 +40,6 @@
 
 namespace scvk
 {
-	//// Types
-
-	namespace
-	{
-		/** The push constant block, laid out as both shader stages declare it. */
-		struct PushConstantBlock
-		{
-			float    transform[16];
-			float    fragmentState[4];
-			uint32_t combinerState[4];
-			float    constantColour[4];
-			float    sceneTint[4];
-		};
-	}
-
 	//// Constants
 
 	namespace
@@ -80,8 +65,6 @@ namespace scvk
 		// scene tint: 128 bytes, the guaranteed minimum.
 		constexpr uint32_t PUSH_CONSTANT_BYTES = sizeof(float) * 32;
 		constexpr VkShaderStageFlags PUSH_CONSTANT_STAGES = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-		static_assert(sizeof(PushConstantBlock) == PUSH_CONSTANT_BYTES, "the push constant block must fill the guaranteed 128 bytes exactly");
 
 		// A combiner word that modulates the texture with the previous stage, in the
 		// layout the fragment shader reads.
@@ -207,6 +190,8 @@ namespace scvk
 		// Carry all per-draw state in push constants
 		//
 		// No uniform buffer and no per-frame allocation.
+		static_assert(sizeof(PushConstantBlock) == PUSH_CONSTANT_BYTES, "the push constant block must fill the guaranteed 128 bytes exactly");
+
 		VkPushConstantRange range{};
 		range.stageFlags = PUSH_CONSTANT_STAGES;
 		range.offset     = 0;
@@ -298,11 +283,22 @@ namespace scvk
 
 	VkPipeline VulkanBackend::GetPipeline(PipelineKey const& key)
 	{
+		// Reuse the last draw's pipeline
+		//
+		// Nearly every draw asks for the same one as the draw before, so the list is only
+		// searched when the key changes.
+		if (lastPipeline != VK_NULL_HANDLE && key == lastPipelineKey)
+		{
+			return lastPipeline;
+		}
+
 		// Reuse a pipeline made for the same key
 		for (PipelineEntry const& entry : pipelines)
 		{
 			if (entry.key == key)
 			{
+				lastPipelineKey = key;
+				lastPipeline    = entry.pipeline;
 				return entry.pipeline;
 			}
 		}
@@ -477,6 +473,8 @@ namespace scvk
 		LogDebug("Vulkan: created pipeline for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
 
 		pipelines.push_back({ key, pipeline });
+		lastPipelineKey = key;
+		lastPipeline    = pipeline;
 		return pipeline;
 	}
 
@@ -491,6 +489,7 @@ namespace scvk
 		}
 
 		pipelines.clear();
+		lastPipeline = VK_NULL_HANDLE;
 	}
 
 	VulkanBackend::VertexLayout VulkanBackend::DecodeVertexLayout(uint32_t gdVertexFormat)
@@ -791,14 +790,16 @@ namespace scvk
 
 		fragmentState[3] = isCombining ? 2.0f : 1.0f;
 
-		// Bind everything
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		// Bind what changed since the last draw
+		if (pipeline != boundState.pipeline)
+		{
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			boundState.pipeline = pipeline;
+		}
+
 		PushDrawConstants(isTwoStage, isCombining);
 		BindTextures(isTwoStage);
-
-		VkBuffer buffers[] = { vertexBuffer, recordBuffer };
-		VkDeviceSize offsets[] = { vertexOffset, recordOffset };
-		vkCmdBindVertexBuffers(commandBuffer, 0, _countof(buffers), buffers, offsets);
+		BindVertexBuffers(vertexBuffer, vertexOffset, recordBuffer, recordOffset);
 
 		return true;
 	}
@@ -874,11 +875,19 @@ namespace scvk
 			block.fragmentState[3] = 20.0f + static_cast<float>(debugChannel);
 		}
 
-		// Push the whole block
+		// Push the whole block, unless the command buffer already holds it
 		//
 		// In one call rather than one per part. A redraw of the city at the widest zoom
-		// records over a hundred thousand draws, so every call a draw makes counts.
+		// records over a hundred thousand draws, so every call a draw makes counts. Every
+		// pipeline shares the layout, so a block pushed for one stays for the next.
+		if (boundState.hasConstants && memcmp(&boundState.constants, &block, sizeof(block)) == 0)
+		{
+			return;
+		}
+
 		vkCmdPushConstants(commandBuffer, pipelineLayout, PUSH_CONSTANT_STAGES, 0, sizeof(block), &block);
+		boundState.constants    = block;
+		boundState.hasConstants = true;
 	}
 
 	void VulkanBackend::BindTextures(bool isTwoStage)
@@ -913,7 +922,73 @@ namespace scvk
 			GetSamplerSet(stageParameters[1]),
 		};
 
-		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, _countof(sets), sets, 0, nullptr);
+		// Bind the run of sets from the first that changed to the last
+		//
+		// Every pipeline shares the layout, so sets bound for one stay bound for the next.
+		uint32_t firstChanged = _countof(sets);
+		uint32_t lastChanged  = 0;
+
+		for (uint32_t set = 0; set < _countof(sets); set++)
+		{
+			if (sets[set] != boundState.sets[set])
+			{
+				firstChanged = std::min(firstChanged, set);
+				lastChanged  = set;
+			}
+		}
+
+		if (firstChanged == _countof(sets))
+		{
+			return;
+		}
+
+		uint32_t const changedCount = lastChanged - firstChanged + 1u;
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstChanged, changedCount, sets + firstChanged, 0, nullptr);
+		std::copy(sets + firstChanged, sets + lastChanged + 1u, boundState.sets + firstChanged);
+	}
+
+	void VulkanBackend::BindVertexBuffers(VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VkBuffer recordBuffer, VkDeviceSize recordOffset)
+	{
+		// Bind the run of bindings from the first that changed to the last
+		//
+		// The vertex copy is new with every draw, while the draw record's copy stays put
+		// until the record changes.
+		VkBuffer const     buffers[] = { vertexBuffer, recordBuffer };
+		VkDeviceSize const offsets[] = { vertexOffset, recordOffset };
+
+		uint32_t firstChanged = _countof(buffers);
+		uint32_t lastChanged  = 0;
+
+		for (uint32_t binding = 0; binding < _countof(buffers); binding++)
+		{
+			if (buffers[binding] != boundState.vertexBuffers[binding] || offsets[binding] != boundState.vertexOffsets[binding])
+			{
+				firstChanged = std::min(firstChanged, binding);
+				lastChanged  = binding;
+			}
+		}
+
+		if (firstChanged == _countof(buffers))
+		{
+			return;
+		}
+
+		uint32_t const changedCount = lastChanged - firstChanged + 1u;
+		vkCmdBindVertexBuffers(commandBuffer, firstChanged, changedCount, buffers + firstChanged, offsets + firstChanged);
+		std::copy(buffers + firstChanged, buffers + lastChanged + 1u, boundState.vertexBuffers + firstChanged);
+		std::copy(offsets + firstChanged, offsets + lastChanged + 1u, boundState.vertexOffsets + firstChanged);
+	}
+
+	void VulkanBackend::BindIndexBuffer(VkBuffer buffer, VkDeviceSize offset)
+	{
+		if (buffer == boundState.indexBuffer && offset == boundState.indexOffset)
+		{
+			return;
+		}
+
+		vkCmdBindIndexBuffer(commandBuffer, buffer, offset, VK_INDEX_TYPE_UINT32);
+		boundState.indexBuffer = buffer;
+		boundState.indexOffset = offset;
 	}
 
 	void VulkanBackend::UpdateDrawRecord(DrawRecord const& record)
@@ -1198,7 +1273,7 @@ namespace scvk
 			return;
 		}
 
-		vkCmdBindIndexBuffer(commandBuffer, quadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+		BindIndexBuffer(quadIndexBuffer, 0);
 		vkCmdDrawIndexed(commandBuffer, quads * 6u, 1, 0, 0, 0);
 	}
 
@@ -1330,7 +1405,7 @@ namespace scvk
 			return;
 		}
 
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32);
+		BindIndexBuffer(indexBuffer, indexOffset);
 
 		// Offset the indices back to the start of the copied slice
 		//

@@ -1171,6 +1171,8 @@ namespace scvk
 			return false;
 		}
 
+		ForgetBoundState();
+
 		// Release what the previous frame was using
 		//
 		// Safe here: the fence wait above means the previous submit is done.
@@ -1251,8 +1253,8 @@ namespace scvk
 
 		// Carry on recording the same frame
 		//
-		// Nothing needs binding again: every draw binds its own pipeline, constants,
-		// textures, vertices and indices, and opening the render pass applies the viewport.
+		// Nothing bound survives the command buffer being begun again, so the next draw
+		// binds all of its state.
 		vkResetCommandBuffer(commandBuffer, 0);
 
 		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -1266,7 +1268,13 @@ namespace scvk
 			return false;
 		}
 
+		ForgetBoundState();
 		return true;
+	}
+
+	void VulkanBackend::ForgetBoundState(void)
+	{
+		boundState = BoundState{};
 	}
 
 	VkResult VulkanBackend::SubmitToQueue(VkSubmitInfo const& submit, VkFence fence)
@@ -1498,7 +1506,13 @@ namespace scvk
 		viewport.height   = static_cast<float>(height);
 		viewport.minDepth = 0.0f;
 		viewport.maxDepth = 1.0f;
-		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		// Set it unless the command buffer has it from an earlier draw, as it nearly
+		// always does: draws apply it one after another and it rarely changes between them.
+		if (!boundState.hasViewport || memcmp(&viewport, &boundState.viewport, sizeof(viewport)) != 0)
+		{
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+		}
 
 		// Scissor to the viewport, clamped to the window
 		//
@@ -1512,7 +1526,15 @@ namespace scvk
 			rectangle.extent = { 0, 0 };
 		}
 
-		vkCmdSetScissor(commandBuffer, 0, 1, &rectangle);
+		if (!boundState.hasViewport || memcmp(&rectangle, &boundState.scissor, sizeof(rectangle)) != 0)
+		{
+			vkCmdSetScissor(commandBuffer, 0, 1, &rectangle);
+		}
+
+		// Remember both for the next draw
+		boundState.viewport    = viewport;
+		boundState.scissor     = rectangle;
+		boundState.hasViewport = true;
 
 		// Log what actually reached Vulkan
 		//
@@ -1912,7 +1934,12 @@ namespace scvk
 		// types it as the HWND it is.
 		frame.window = static_cast<HWND>(windowHandle);
 
-		InvokeFrameCallback(frame);
+		// Call it, then bind everything again should anything be drawn after it, since it
+		// may have bound anything
+		if (InvokeFrameCallback(frame))
+		{
+			ForgetBoundState();
+		}
 	}
 
 	bool VulkanBackend::WriteBmp(char const* path, uint8_t const* pixels, uint32_t width, uint32_t height, uint32_t rowPitch)

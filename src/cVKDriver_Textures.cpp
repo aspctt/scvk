@@ -372,6 +372,7 @@ namespace scvk
 		// stage's source decides whether the draw generates its coordinates, which is
 		// what the cloud shadows do.
 		textureCoordinateSource[activeTextureStage] = gdTextureCoordinateSource;
+		isStageCoordinatesDirty = true;
 
 		if (NoteOnce(NOTE_COORDINATE_SOURCE, activeTextureStage | (gdTextureCoordinateSource << 8)))
 		{
@@ -399,6 +400,7 @@ namespace scvk
 		// alone. A 2D sample uses only those first two rows, so none of that distinction
 		// reaches here, and the fourth row is taken to leave q at one.
 		memcpy(textureStageMatrices[activeTextureStage], (matrix != nullptr) ? matrix : IDENTITY_MATRIX, sizeof(textureStageMatrices[activeTextureStage]));
+		isStageCoordinatesDirty = true;
 
 		// Report the first few matrices
 		//

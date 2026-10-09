@@ -135,6 +135,21 @@ namespace scvk
 		}
 	}
 
+	void cVKDriver::PushChangedTransforms(void)
+	{
+		if (isStageCoordinatesDirty)
+		{
+			PushStageCoordinates();
+			isStageCoordinatesDirty = false;
+		}
+
+		if (isTransformDirty)
+		{
+			UpdateTransform();
+			isTransformDirty = false;
+		}
+	}
+
 	bool cVKDriver::IsGeneratingCoordinates(uint32_t stage) const
 	{
 		return (textureCoordinateSource[stage] & ~SOURCE_SET_BITS) == CAMERA_SPACE_POSITION_SOURCE;
@@ -186,8 +201,7 @@ namespace scvk
 		// Draw it
 		//
 		// Both numbers were checked to be positive above.
-		PushStageCoordinates();
-		UpdateTransform();
+		PushChangedTransforms();
 		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, static_cast<uint32_t>(first), static_cast<uint32_t>(count));
 	}
 
@@ -239,8 +253,7 @@ namespace scvk
 		// Draw it
 		//
 		// The count was checked to be positive above.
-		PushStageCoordinates();
-		UpdateTransform();
+		PushChangedTransforms();
 		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, static_cast<uint32_t>(count), isIndex32Bit);
 	}
 

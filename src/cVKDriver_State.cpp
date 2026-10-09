@@ -196,6 +196,12 @@ namespace scvk
 
 	void cVKDriver::PushFog(void)
 	{
+		// Hand the fog's distance row over again at the next draw
+		//
+		// It goes with the transform, and the backend ignores it while the fog is off, so
+		// fog switched on needs the row the transform last gave it.
+		isTransformDirty = true;
+
 		// Stand in the 3D view's own fog while the marker forces it
 		//
 		// Only where the game has the fog off, so fog the game does send still draws as
@@ -208,6 +214,20 @@ namespace scvk
 		}
 
 		vulkan->SetFog(isCapabilityEnabled[kGDCapability_Fog], fogMode, fogDensity, fogStart, fogEnd, fogColour);
+	}
+
+	void cVKDriver::NoteMatrixChange(void)
+	{
+		isTransformDirty = true;
+
+		// Coordinates generated from the position go through the modelview as well. A
+		// stage that starts generating later is marked when its source changes.
+		bool const isGenerating = IsGeneratingCoordinates(0) || IsGeneratingCoordinates(1);
+
+		if (activeMatrix != PROJECTION_MATRIX && isGenerating)
+		{
+			isStageCoordinatesDirty = true;
+		}
 	}
 
 	//// Public API
@@ -469,6 +489,7 @@ namespace scvk
 
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
 		memcpy(target, matrix, sizeof(float) * 16);
+		NoteMatrixChange();
 	}
 
 	void cVKDriver::LoadIdentity(void)
@@ -477,6 +498,7 @@ namespace scvk
 
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
 		memcpy(target, IDENTITY_MATRIX, sizeof(IDENTITY_MATRIX));
+		NoteMatrixChange();
 	}
 
 	void cVKDriver::Enable(uint32_t gdCapability)
