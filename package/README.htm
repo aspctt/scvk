@@ -55,8 +55,8 @@ ColorDepth=32</code></pre></li>
 <p><code>Driver=OpenGL</code> does not start the game's own unfinished OpenGL
 renderer. The game picks its renderer by an ID, and scvk registers under the
 OpenGL one with a higher version, so the game gets scvk instead.</p>
-<p><code>ColorDepth=32</code> matters too: Windows no longer offers the 16-bit
-display modes the game uses by default.</p>
+<p>scvk draws in 32-bit whatever <code>ColorDepth</code> says. Keep it at 32 for
+windowed play: at 16, the game's default, the game switches to fullscreen.</p>
 <p>To go back to DirectX, set <code>Driver=DirectX</code>. scvk still loads and
 its frame rate changes still apply, but the game draws with DirectX.</p>
 

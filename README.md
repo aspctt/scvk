@@ -237,9 +237,10 @@ Vulkan, the game keeps its own DirectX renderer.
 
 With [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options),
 both `Driver=DirectX` and `Driver=OpenGL` select scvk. With scd3d11 installed as
-well, `DirectX` selects scd3d11 and `OpenGL` selects scvk. `ColorDepth=32` is
-recommended: Windows 8 and later no longer report 16-bit display modes, so every
-mode scvk can enumerate is 32bpp, while SC4 defaults to 16.
+well, `DirectX` selects scd3d11 and `OpenGL` selects scvk. scvk draws in 32-bit
+whatever `ColorDepth` says. Set it to 32 for windowed play: at 16, SC4's default,
+the game switches to fullscreen whenever the desktop runs at a different depth, with
+any renderer.
 
 ```ini
 [GraphicsOptions]

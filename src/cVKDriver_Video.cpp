@@ -291,6 +291,75 @@ namespace scvk
 			LogCritical("Exception 0x%08lx at 0x%08lx (%s +0x%lx), data address 0x%08lx, thread %lu.", code, address, modulePath, address - base, target, GetCurrentThreadId());
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
+
+		// Adds a size and colour depth to the mode list, fullscreen then windowed, unless listed
+		void AppendVideoModePair(std::vector<sGDMode>& videoModes, uint32_t width, uint32_t height, uint32_t depth)
+		{
+			for (sGDMode const& existing : videoModes)
+			{
+				if (existing.width == width && existing.height == height && existing.depth == depth)
+				{
+					return;
+				}
+			}
+
+			// Describe what the device can do
+			//
+			// Without isInitialized the game reports "Could not initialize the hardware
+			// driver" and silently drops to software rendering. The capabilities are
+			// advertised against what a Vulkan implementation can do; claiming less would
+			// steer the game down fallback paths.
+			sGDMode mode{};
+			mode.isInitialized     = true;
+			mode.textureStageCount = TEXTURE_STAGE_COUNT;
+
+			mode.supportsStencilBuffer        = true;
+			mode.supportsMultitexture         = true;
+			mode.supportsTextureEnvCombine    = true;
+			mode.supportsFogCoord             = true;
+			mode.supportsDxtTextures          = true;
+			mode.supportsNvTextureEnvCombine4 = false;
+
+			// Purpose unknown; the game's own OpenGL driver sets them this way.
+			mode.__unknown2    = 1;
+			mode.__unknown5[0] = 0;
+			mode.__unknown5[1] = 0;
+			mode.__unknown5[2] = 0;
+
+			// Describe the pixel layout
+			//
+			// The 16-bit masks are the ones the game's own OpenGL driver reports on a 16-bit
+			// desktop.
+			if (depth > 16)
+			{
+				mode.alphaColorMask = 0xff000000;
+				mode.redColorMask   = 0x00ff0000;
+				mode.greenColorMask = 0x0000ff00;
+				mode.blueColorMask  = 0x000000ff;
+			}
+			else
+			{
+				mode.alphaColorMask = 0x1;
+				mode.redColorMask   = 0xf800;
+				mode.greenColorMask = 0x7c0;
+				mode.blueColorMask  = 0x3e;
+			}
+
+			mode.width  = width;
+			mode.height = height;
+			mode.depth  = depth;
+
+			// Offer it twice, fullscreen and windowed
+			//
+			// That is the shape the game expects the mode list to have.
+			mode.index        = videoModes.size();
+			mode.isFullscreen = true;
+			videoModes.push_back(mode);
+
+			mode.index        = videoModes.size();
+			mode.isFullscreen = false;
+			videoModes.push_back(mode);
+		}
 	}
 
 	void cVKDriver::BuildDriverInformation(void)
@@ -361,86 +430,40 @@ namespace scvk
 	{
 		videoModes.clear();
 
+		// List the modes Windows reports
 		DEVMODEA displayMode{};
 		displayMode.dmSize = sizeof(DEVMODEA);
 
 		for (DWORD i = 0; EnumDisplaySettingsA(nullptr, i, &displayMode) != 0; i++)
 		{
-			// Skip palettised modes and repeats of one already listed
+			// Skip palettised modes
 			uint32_t const depth = displayMode.dmBitsPerPel;
 			if (depth < 15)
 			{
 				continue;
 			}
 
-			bool isDuplicate = false;
-			for (sGDMode const& existing : videoModes)
+			AppendVideoModePair(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth);
+		}
+
+		// Offer every size at 16 bits as well
+		//
+		// Windows 8 and later report no 16-bit modes, while 16 bits is the game's own
+		// default. The game's search wants the depth exactly: finding none, it stepped the
+		// size down to 320x240, gave up and crashed at startup. scvk draws in 32 bits
+		// whatever the mode says, and the display keeps its own depth (CreateRenderWindow).
+		// They go after the reported modes, which keep their indices.
+		size_t const reportedCount = videoModes.size();
+
+		for (size_t i = 0; i < reportedCount; i += 2)
+		{
+			// A copy, since appending can move the list.
+			sGDMode const reported = videoModes[i];
+
+			if (reported.depth > 16)
 			{
-				if (existing.width == displayMode.dmPelsWidth && existing.height == displayMode.dmPelsHeight && existing.depth == depth)
-				{
-					isDuplicate = true;
-					break;
-				}
+				AppendVideoModePair(videoModes, reported.width, reported.height, 16);
 			}
-
-			if (isDuplicate)
-			{
-				continue;
-			}
-
-			// Describe what the device can do
-			//
-			// Without isInitialized the game reports "Could not initialize the hardware
-			// driver" and silently drops to software rendering. The capabilities are
-			// advertised against what a Vulkan implementation can do; claiming less would
-			// steer the game down fallback paths.
-			sGDMode mode{};
-			mode.isInitialized     = true;
-			mode.textureStageCount = TEXTURE_STAGE_COUNT;
-
-			mode.supportsStencilBuffer        = true;
-			mode.supportsMultitexture         = true;
-			mode.supportsTextureEnvCombine    = true;
-			mode.supportsFogCoord             = true;
-			mode.supportsDxtTextures          = true;
-			mode.supportsNvTextureEnvCombine4 = false;
-
-			// Purpose unknown; the game's own OpenGL driver sets them this way.
-			mode.__unknown2    = 1;
-			mode.__unknown5[0] = 0;
-			mode.__unknown5[1] = 0;
-			mode.__unknown5[2] = 0;
-
-			// Describe the pixel layout
-			if (depth > 16)
-			{
-				mode.alphaColorMask = 0xff000000;
-				mode.redColorMask   = 0x00ff0000;
-				mode.greenColorMask = 0x0000ff00;
-				mode.blueColorMask  = 0x000000ff;
-			}
-			else
-			{
-				mode.alphaColorMask = 0x1;
-				mode.redColorMask   = 0xf800;
-				mode.greenColorMask = 0x7c0;
-				mode.blueColorMask  = 0x3e;
-			}
-
-			mode.width  = displayMode.dmPelsWidth;
-			mode.height = displayMode.dmPelsHeight;
-			mode.depth  = depth;
-
-			// Offer it twice, fullscreen and windowed
-			//
-			// That is the shape the game expects the mode list to have.
-			mode.index        = videoModes.size();
-			mode.isFullscreen = true;
-			videoModes.push_back(mode);
-
-			mode.index        = videoModes.size();
-			mode.isFullscreen = false;
-			videoModes.push_back(mode);
 		}
 
 		return videoModes.size();
@@ -474,11 +497,24 @@ namespace scvk
 
 		if (mode.isFullscreen)
 		{
+			// Keep the display's own colour depth
+			//
+			// scvk draws in 32 bits whatever the mode says, and the 16-bit entries in the
+			// mode list name a depth Windows did not report.
+			DEVMODEA desktop{};
+			desktop.dmSize = sizeof(desktop);
+
+			uint32_t displayDepth = mode.depth;
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &desktop) != 0)
+			{
+				displayDepth = desktop.dmBitsPerPel;
+			}
+
 			fullscreenDisplayMode              = {};
 			fullscreenDisplayMode.dmSize       = sizeof(fullscreenDisplayMode);
 			fullscreenDisplayMode.dmPelsWidth  = mode.width;
 			fullscreenDisplayMode.dmPelsHeight = mode.height;
-			fullscreenDisplayMode.dmBitsPerPel = mode.depth;
+			fullscreenDisplayMode.dmBitsPerPel = displayDepth;
 			fullscreenDisplayMode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
 
 			isFullscreen = EnterDisplayMode();
@@ -626,9 +662,7 @@ namespace scvk
 		// Log them in full
 		//
 		// A mismatch here is a prime suspect if the game rejects the driver: it asks for
-		// a specific width, height and colour depth, and modern Windows generally only
-		// reports 32bpp modes. If the game wants 16bpp and every mode below says 32, that
-		// is the answer.
+		// a specific width and height, and needs the colour depth exactly.
 		LogInfo("Enumerated %u video modes, in windowed and fullscreen pairs.", modeCount);
 
 		for (uint32_t i = 0; i < modeCount; i += 2)
@@ -745,6 +779,11 @@ namespace scvk
 		windowHeight     = static_cast<int>(mode.height);
 
 		LogInfo("SetVideoMode: %ux%u %ubpp %s", mode.width, mode.height, mode.depth, mode.isFullscreen ? "fullscreen" : "windowed");
+
+		if (mode.depth <= 16)
+		{
+			LogInfo("SetVideoMode: the game asked for 16-bit colour, its default; scvk draws in 32-bit regardless.");
+		}
 
 		// Create the window, then attach Vulkan to it
 		//
