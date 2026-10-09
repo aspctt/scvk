@@ -107,6 +107,10 @@ the value it expects, it declines and writes the reason to the log instead of
 overwriting whatever is actually there. Running both plugins is therefore
 untidy but not dangerous.
 
+[scd3d11](https://github.com/caspervg/scd3d11) limits each frame's simulation time
+by changing the same code, and the two work together. With `UnlockRunningFPS=true`,
+only the plugin that starts first gets that change.
+
 ## Building
 
 Requires Visual Studio 2022 or later with the desktop C++ workload, and the

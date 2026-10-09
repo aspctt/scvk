@@ -73,12 +73,28 @@ namespace scvk
 		// budget, so this is the smallest that still hands each of them a whole millisecond.
 		constexpr uint8_t TICK_BUDGET_MILLISECONDS = 3;
 
-		// MOV ECX,30 on the paused path becomes PUSH 3, POP EAX and a jump past the division
-		// and the minimum to where the budget is stored (0x703EFB). A hidden pause leaves the
-		// padding loop before reading the budget, so camera movement is unchanged.
-		constexpr uintptr_t PAUSED_RATE_ADDRESS_641 = 0x703EE2;
-		constexpr uint8_t   PAUSED_RATE_ORIGINAL[]  = { 0xB9, 0x1E, 0x00, 0x00, 0x00 };
-		constexpr uint8_t   PAUSED_RATE_PATCHED[]   = { 0x6A, TICK_BUDGET_MILLISECONDS, 0x58, 0xEB, 0x14 };
+		// A relative JMP: the opcode, then a 32-bit offset counted from the end of the jump.
+		constexpr uint8_t JUMP_OPCODE = 0xE9;
+		constexpr size_t  JUMP_SIZE   = 5;
+
+		// MOV ECX,30 on the paused path becomes a jump to a few instructions of scvk's, which
+		// store the short budget where the tick keeps it ([ESI+0x70]) and rejoin the tick
+		// just after the store (0x703EFE), past the division and the minimum. A hidden pause
+		// leaves the padding loop before reading the budget, so camera movement is unchanged.
+		//
+		// The first version fit in the five bytes on its own, as PUSH 3, POP EAX and a jump to
+		// the game's own store at 0x703EFB. scd3d11's sim tick budget replaces the minimum and
+		// that store with a jump to its own code and fills the rest with no-ops, though, so
+		// with both plugins installed a paused frame stored nothing and kept the last running
+		// frame's budget. Rejoining past those bytes works whichever plugin changes them.
+		constexpr uintptr_t PAUSED_RATE_ADDRESS_641   = 0x703EE2;
+		constexpr uintptr_t PAUSED_REJOIN_ADDRESS_641 = 0x703EFE;
+		constexpr uint8_t   PAUSED_RATE_ORIGINAL[]    = { 0xB9, 0x1E, 0x00, 0x00, 0x00 };
+
+		// MOV DWORD PTR [ESI+0x70],3, then the jump back, whose offset is filled in once the
+		// code's own address is known.
+		constexpr uint8_t PAUSED_BUDGET_CODE[]      = { 0xC7, 0x46, 0x70, TICK_BUDGET_MILLISECONDS, 0x00, 0x00, 0x00, JUMP_OPCODE, 0x00, 0x00, 0x00, 0x00 };
+		constexpr size_t  PAUSED_BUDGET_JUMP_OFFSET = 7;
 
 		// CMP EAX,15, JG and MOV EAX,15 clamp the running budget to at least 15 ms, which
 		// keeps a padded frame near 60 frames a second whatever the cap. Lowering both
@@ -101,7 +117,8 @@ namespace scvk
 		constexpr uint8_t   ANIMATION_FLOOR_ORIGINAL[]  = { 0xC7, 0x46, 0x50, 0xD0, 0x07, 0x00, 0x00 };
 		constexpr uint8_t   ANIMATION_FLOOR_PATCHED[]   = { 0xC7, 0x46, 0x50, ANIMATION_FLOOR_MICROSECONDS, 0x00, 0x00, 0x00 };
 
-		static_assert(sizeof(PAUSED_RATE_ORIGINAL) == sizeof(PAUSED_RATE_PATCHED), "a patch must replace exactly the bytes it checked");
+		static_assert(sizeof(PAUSED_RATE_ORIGINAL) == JUMP_SIZE, "a patch must replace exactly the bytes it checked");
+		static_assert(sizeof(PAUSED_BUDGET_CODE) == PAUSED_BUDGET_JUMP_OFFSET + JUMP_SIZE, "the jump back must end the paused code");
 		static_assert(sizeof(MINIMUM_BUDGET_ORIGINAL) == sizeof(MINIMUM_BUDGET_PATCHED), "a patch must replace exactly the bytes it checked");
 		static_assert(sizeof(ANIMATION_FLOOR_ORIGINAL) == sizeof(ANIMATION_FLOOR_PATCHED), "a patch must replace exactly the bytes it checked");
 	}
@@ -214,6 +231,76 @@ namespace scvk
 
 			LogInfo("Changed the %s.", name);
 		}
+
+		/** Writes a relative JMP from one address to another into five bytes. */
+		void EncodeJump(uint8_t* outBytes, uintptr_t from, uintptr_t to)
+		{
+			// The offset may be negative. Addresses are 32 bits in this process, so the
+			// unsigned subtraction wraps to the same bits a signed one would give.
+			uint32_t const offset = to - (from + JUMP_SIZE);
+
+			outBytes[0] = JUMP_OPCODE;
+			memcpy(outBytes + 1, &offset, sizeof(offset));
+		}
+
+		/**
+		 * Puts the paused path's few instructions in memory of their own and returns their
+		 * address, or 0 when that fails. Built once and never freed: the game jumps there on
+		 * every paused frame until the process ends, possibly after this DLL is unloaded.
+		 */
+		uintptr_t PausedBudgetCode(void)
+		{
+			static uintptr_t codeAddress = 0;
+			if (codeAddress != 0)
+			{
+				return codeAddress;
+			}
+
+			// Write the instructions while the memory can be written but not run
+			void* const memory = VirtualAlloc(nullptr, sizeof(PAUSED_BUDGET_CODE), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+			if (memory == nullptr)
+			{
+				return 0;
+			}
+
+			// The jump back is counted from the memory's own address, which has to become a
+			// number for that.
+			uint8_t* const bytes = static_cast<uint8_t*>(memory);
+			uintptr_t const address = reinterpret_cast<uintptr_t>(memory);
+
+			memcpy(bytes, PAUSED_BUDGET_CODE, sizeof(PAUSED_BUDGET_CODE));
+			EncodeJump(bytes + PAUSED_BUDGET_JUMP_OFFSET, address + PAUSED_BUDGET_JUMP_OFFSET, PAUSED_REJOIN_ADDRESS_641);
+
+			// Then let them run, and no longer be written
+			DWORD oldProtection = 0;
+			if (!VirtualProtect(memory, sizeof(PAUSED_BUDGET_CODE), PAGE_EXECUTE_READ, &oldProtection))
+			{
+				VirtualFree(memory, 0, MEM_RELEASE);
+				return 0;
+			}
+
+			FlushInstructionCache(GetCurrentProcess(), memory, sizeof(PAUSED_BUDGET_CODE));
+			codeAddress = address;
+			return codeAddress;
+		}
+
+		/**
+		 * Sends the paused path to the code above, with the checks every patch makes. A
+		 * refused patch leaves that code built but unused, which costs one page of memory.
+		 */
+		void PatchPausedPadding(void)
+		{
+			uintptr_t const codeAddress = PausedBudgetCode();
+			if (codeAddress == 0)
+			{
+				LogError("Failed to set aside memory for the paused frame padding, error %lu.", GetLastError());
+				return;
+			}
+
+			uint8_t patched[JUMP_SIZE] = {};
+			EncodeJump(patched, PAUSED_RATE_ADDRESS_641, codeAddress);
+			PatchCode("paused frame padding", PAUSED_RATE_ADDRESS_641, PAUSED_RATE_ORIGINAL, patched, sizeof(patched));
+		}
 	}
 
 	//// Public API
@@ -247,7 +334,7 @@ namespace scvk
 		//
 		// Always, since the padding only gives the idle agents time while nothing is being
 		// simulated.
-		PatchCode("paused frame padding", PAUSED_RATE_ADDRESS_641, PAUSED_RATE_ORIGINAL, PAUSED_RATE_PATCHED, sizeof(PAUSED_RATE_ORIGINAL));
+		PatchPausedPadding();
 
 		// Let the animation clock count short frames as they are
 		//
