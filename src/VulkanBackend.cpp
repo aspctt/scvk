@@ -49,6 +49,10 @@ namespace scvk
 		// Switches on synchronisation validation, which is slow.
 		constexpr char const* SYNC_VALIDATION_MARKER = "scvk-validate-sync";
 
+		// Picks an integrated GPU over a discrete one, to test another vendor's driver on
+		// a machine that has both.
+		constexpr char const* PREFER_INTEGRATED_GPU_MARKER = "scvk-prefer-integrated-gpu";
+
 		// Both waits of a frame are bounded rather than UINT64_MAX. See EnsureFrame.
 		constexpr uint64_t WAIT_TIMEOUT_NANOSECONDS = 1000ull * 1000ull * 1000ull;
 
@@ -302,7 +306,14 @@ namespace scvk
 		// Prefer a discrete GPU
 		//
 		// This machine class often has an integrated adapter listed first, and picking it
-		// would work but would be a poor default for a game.
+		// would work but would be a poor default for a game. The marker turns the order
+		// around for testing.
+		bool const shouldPreferIntegrated = HasMarkerFile(PREFER_INTEGRATED_GPU_MARKER);
+		if (shouldPreferIntegrated)
+		{
+			LogInfo("Diagnostic: preferring an integrated GPU.");
+		}
+
 		VkPhysicalDevice best = VK_NULL_HANDLE;
 		int bestScore = -1;
 
@@ -318,7 +329,7 @@ namespace scvk
 			}
 			else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
 			{
-				score = 2;
+				score = shouldPreferIntegrated ? 4 : 2;
 			}
 			else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
 			{

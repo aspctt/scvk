@@ -192,6 +192,8 @@ To see a debug view, put an empty file with one of these names next to
   (`scvk-key-N-draws.bin`), which `tools/draw-records.py` reads (slow)
 - `scvk-small-texture-pools`: makes room for only 64 textures at a time before
   scvk has to set aside more, so an ordinary session tests that it does
+- `scvk-prefer-integrated-gpu`: runs on the processor's built-in graphics instead
+  of the graphics card, to test another maker's driver on the same machine
 
 ## Installing
 
