@@ -448,9 +448,11 @@ namespace scvk
 
 		// Offer every size at 16 bits as well
 		//
-		// Windows 8 and later report no 16-bit modes, while 16 bits is the game's own
-		// default. The game's search wants the depth exactly: finding none, it stepped the
-		// size down to 320x240, gave up and crashed at startup. scvk draws in 32 bits
+		// Windows 8 and later report no 16-bit modes, while the game asks for 16 bits when
+		// its colour depth is set to 16, from its options (0x78ffc0), a -r launch option
+		// (0x44eed0) or sc4-graphics-options. Left alone it takes the desktop's depth
+		// (0x44ce40). The game's search wants the depth exactly: finding none, it stepped
+		// the size down to 320x240, gave up and crashed at startup. scvk draws in 32 bits
 		// whatever the mode says, and the display keeps its own depth (CreateRenderWindow).
 		// They go after the reported modes, which keep their indices.
 		size_t const reportedCount = videoModes.size();
@@ -782,7 +784,7 @@ namespace scvk
 
 		if (mode.depth <= 16)
 		{
-			LogInfo("SetVideoMode: the game asked for 16-bit colour, its default; scvk draws in 32-bit regardless.");
+			LogInfo("SetVideoMode: the game asked for 16-bit colour; scvk draws in 32-bit regardless.");
 		}
 
 		// Create the window, then attach Vulkan to it
