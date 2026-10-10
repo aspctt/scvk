@@ -28,13 +28,13 @@ few visual bugs left.
 | Loading screens | Working |
 | Fog | Working, though the game never turns it on |
 | In-game photos | Working |
+| Performance | Faster than DirectX 7 in every [benchmark](#benchmark) scene, most of all zoomed out |
 
 Known issues:
 
 - The interface sometimes flickers for a single frame.
-- Scrolling while zoomed out is slower than DirectX, by roughly 40% on average in a
-  large city. The occasional frame of a tenth of a second or more there is the game's
-  own: DirectX has them just as often.
+- On one AMD RX 570, thin lines can appear around ground lights after scrolling
+  slowly, until a zoom redraws the scene. Other graphics cards have not shown them.
 - PrintScreen did not capture the game in exclusive fullscreen on at least one AMD
   graphics card. 0.1.2 should fix it, but that is not confirmed yet.
 - On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes

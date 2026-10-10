@@ -16,15 +16,17 @@ Arts Inc. or Maxis.</p>
 <h2 id="status">Status</h2>
 <p><strong>Early preview.</strong> The region view, cities, menus and loading
 screens all draw, windowed, full screen or borderless, with lighting that matches
-the DirectX renderer. Players have run it on NVIDIA and AMD graphics cards, on
-Windows and on Linux, but expect problems on other hardware, and save often.</p>
+the DirectX renderer, and it is faster than DirectX, most of all zoomed out.
+Players have run it on NVIDIA and AMD graphics cards, on Windows and on Linux, but
+expect problems on other hardware, and save often.</p>
 <p>Known issues:</p>
 <ul>
 <li>The interface sometimes flickers for a single frame.</li>
-<li>Scrolling while zoomed out is slower than DirectX, by roughly 40% on average
-in a large city.</li>
+<li>On one AMD RX 570, thin lines can appear around ground lights after scrolling
+slowly, until a zoom redraws the scene. Other graphics cards have not shown
+them.</li>
 <li>PrintScreen did not capture the game in exclusive fullscreen on at least one
-AMD graphics card. This version should fix it, but that is not confirmed yet.</li>
+AMD graphics card. 0.1.2 should fix it, but that is not confirmed yet.</li>
 <li>On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so
 takes the game out of exclusive fullscreen. Win+PrintScreen captures the
 game.</li>
@@ -37,8 +39,6 @@ Tutorial. It has not happened again since.</li>
 <li>SimCity 4 Deluxe, game version 641. Older versions are untested.</li>
 <li>Windows 10 or 11.</li>
 <li>A graphics card and driver with Vulkan support.</li>
-<li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
-to choose the renderer.</li>
 </ul>
 
 <h2 id="installation">Installation</h2>
@@ -46,19 +46,20 @@ to choose the renderer.</li>
 <li>Close SimCity 4.</li>
 <li>Copy <code>scvk.dll</code> and <code>scvk.ini</code> into the Plugins folder in
 the SimCity 4 installation directory.</li>
-<li>Open <code>SC4GraphicsOptions.ini</code> and set:
-<pre><code>Driver=OpenGL
-ColorDepth=32</code></pre></li>
 <li>Start the game. A <code>scvk.log</code> file appears beside
 <code>scvk.dll</code>.</li>
 </ol>
-<p><code>Driver=OpenGL</code> does not start the game's own unfinished OpenGL
-renderer. The game picks its renderer by an ID, and scvk registers under the
-OpenGL one with a higher version, so the game gets scvk instead.</p>
-<p>scvk draws in 32-bit whatever <code>ColorDepth</code> says. Keep it at 32 for
-windowed play: at 16, the game's default, the game switches to fullscreen.</p>
-<p>To go back to DirectX, set <code>Driver=DirectX</code>. scvk still loads and
-its frame rate changes still apply, but the game draws with DirectX.</p>
+<p>That is all: the game picks scvk by default. On a machine without Vulkan, the
+game keeps its own DirectX renderer.</p>
+<p>With <a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
+both <code>Driver=DirectX</code> and <code>Driver=OpenGL</code> select scvk.
+<code>Driver=OpenGL</code> does not start the game's own unfinished OpenGL
+renderer, since scvk registers under that ID with a higher version. scvk draws in
+32-bit whatever <code>ColorDepth</code> says. Set it to 32 for windowed play: at
+16, the game's default, the game switches to fullscreen whenever the desktop runs
+at a different depth.</p>
+<p>To go back to DirectX, set <code>Enabled=false</code> under <code>[Admin]</code>
+in <code>scvk.ini</code>.</p>
 
 <h2 id="configuring-the-plugin">Configuring the plugin</h2>
 <p>Open <code>scvk.ini</code> in a text editor (e.g. Notepad). Each setting is
@@ -72,8 +73,12 @@ slowly. Off by default.</p>
 <p><code>LogLevel</code> sets how much goes into <code>scvk.log</code>, from
 <code>trace</code> to <code>off</code>. <code>info</code> by default.</p>
 <p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading
-scvk at all. Set <code>Driver=DirectX</code> as well, or the game falls back to
-its own OpenGL renderer, which does not work.</p>
+scvk at all, which brings back the DirectX renderer. If
+<code>SC4GraphicsOptions.ini</code> says <code>Driver=OpenGL</code>, set it to
+<code>DirectX</code> as well, or the game falls back to its own OpenGL renderer,
+which does not work.</p>
+<p>The <code>[Benchmark]</code> section compares scvk with the DirectX renderer
+and is off by default.</p>
 <p>The frame rate changes only apply to game version 641, and scvk checks the
 game's code holds what it expects before changing anything.</p>
 
@@ -84,7 +89,10 @@ same time. Both register as the OpenGL renderer, so install one or the
 other.</li>
 <li><a href="https://github.com/nsgomez/sc4fix">SC4Fix</a> is fully compatible.</li>
 <li><a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>
-is fully compatible, and is how you choose scvk as the renderer.</li>
+is fully compatible, though no longer needed to choose scvk.</li>
+<li><a href="https://github.com/caspervg/scd3d11">scd3d11</a> can be installed
+alongside. It keeps the DirectX slot, so <code>Driver=DirectX</code> selects
+scd3d11 and <code>Driver=OpenGL</code> selects scvk.</li>
 <li><a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
 works alongside scvk. If you use it, leave <code>MaxFPS</code> at 0.</li>
 <li>DirectX wrappers such as dgVoodoo 2 only affect the DirectX renderer. scvk
