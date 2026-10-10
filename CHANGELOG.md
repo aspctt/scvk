@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The game crashed at startup, or showed an empty region view, at 16-bit colour, its default
+- The game crashed at startup, or showed an empty region view, at 16-bit colour
 - A paused city's frame rate was not unlocked when scd3d11 was installed too
 
 ## [0.1.2] - 2026-10-08
