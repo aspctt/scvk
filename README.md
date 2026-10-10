@@ -32,7 +32,6 @@ few visual bugs left.
 
 Known issues:
 
-- The interface sometimes flickers for a single frame.
 - On one AMD RX 570, thin lines can appear around ground lights after scrolling
   slowly, until a zoom redraws the scene. Other graphics cards have not shown them.
 - PrintScreen did not capture the game in exclusive fullscreen on at least one AMD
