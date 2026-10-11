@@ -88,6 +88,12 @@ namespace scvk
 		constexpr uint32_t GD_FOG_MODE_LINEAR = 2;
 		constexpr float    FOG_MODE_OFF       = 0.0f;
 
+		// The game's less-or-equal depth test, and how far a draw that tests depth with it
+		// without writing is moved towards the camera, in steps of the depth buffer's
+		// precision at the draw's depth. See GetPipeline.
+		constexpr uint32_t GD_COMPARISON_LEQUAL = 3;
+		constexpr float    DEPTH_TEST_ONLY_BIAS = -16.0f;
+
 		// Where a stage's coordinates come from, in the draw record.
 		constexpr float STAGE_SOURCE_FIRST_SET  = 0.0f;
 		constexpr float STAGE_SOURCE_SECOND_SET = 1.0f;
@@ -498,6 +504,22 @@ namespace scvk
 		rasterisation.cullMode    = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
 		rasterisation.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		rasterisation.lineWidth   = 1.0f;
+
+		// Let draws that only test depth win near ties
+		//
+		// While scrolling, the game redraws only the strips the scroll uncovers, each under
+		// its own viewport, and saves them into the scene. Ground lights and other overlays
+		// are then drawn over the whole window every frame, testing against that saved
+		// depth without writing it. The same ground drawn under two viewports can land a
+		// few float steps apart: on an AMD RX 570 the strips came out one to three steps of
+		// 2^-24 nearer, so the lights failed the test along them and left lines until a
+		// zoom redrew everything. DirectX keeps the first depth format the card lists (the
+		// callback at 0x88bdc0), and a 16 or 24-bit buffer mostly rounds such a difference
+		// away. The bias covers it and is far too small to bring anything visible through.
+		// Only for less-or-equal, since an equal or strict test asks for ties as they are.
+		bool const isDepthTestOnly = key.isDepthTestEnabled && !key.isDepthWriteEnabled && key.depthComparison == GD_COMPARISON_LEQUAL;
+		rasterisation.depthBiasEnable         = isDepthTestOnly ? VK_TRUE : VK_FALSE;
+		rasterisation.depthBiasConstantFactor = isDepthTestOnly ? DEPTH_TEST_ONLY_BIAS : 0.0f;
 
 		VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 		multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
