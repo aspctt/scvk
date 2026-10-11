@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-11
+
+### Fixed
+
+- Thin lines could appear around ground lights after scrolling slowly, seen on an AMD RX 570
+
 ## [0.2.0] - 2026-10-10
 
 ### Added
@@ -54,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.2.1...HEAD
+[0.2.1]: https://github.com/aspctt/scvk/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/aspctt/scvk/compare/0.1.2...0.2.0
 [0.1.2]: https://github.com/aspctt/scvk/compare/0.1.1...0.1.2
 [0.1.1]: https://github.com/aspctt/scvk/compare/0.1.0...0.1.1
