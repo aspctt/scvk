@@ -32,9 +32,9 @@ few visual bugs left.
 
 Known issues:
 
-- On one AMD RX 570, thin lines could appear around ground lights after scrolling
-  slowly, until a zoom redrew the scene. 0.2.1 should fix it, but that is not
-  confirmed yet.
+- On an AMD RX 570, ground lights that sit exactly on their model can leave thin
+  lines after scrolling slowly, until a zoom redraws the scene. Lifting the light
+  slightly off the model fixes it.
 - On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
   the game out of exclusive fullscreen. Win+PrintScreen captures the game.
 
