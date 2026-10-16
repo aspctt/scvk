@@ -52,10 +52,17 @@ namespace scvk
 	{
 		// Pick a depth format
 		//
-		// D32 first, falling back to the packed depth-stencil format. One or the other is
-		// guaranteed present, and the game only needs depth: its stencil calls are
-		// recorded but not yet honoured.
-		VkFormat const candidates[] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+		// 16-bit first, because that is what the game's DirectX renderer gets: it asks
+		// Direct3D 7 for the depth formats of its device and keeps the first one listed
+		// (the callback at 0x88bdc0, used at 0x88c2a8), and NVIDIA's driver lists 16-bit
+		// first. Content is made against that precision. Ground lights sit on their models
+		// and are drawn after them, testing less-or-equal without writing, and the same
+		// surface redrawn into a scroll strip can come out a step or two of a 32-bit float
+		// nearer, so a float buffer failed the lights along the strips and left lines. A
+		// 16-bit buffer rounds both to the same value, as on DirectX. Every device has to
+		// support it; the others stay as fallbacks. The game only needs depth: its stencil
+		// calls are recorded but not yet honoured.
+		VkFormat const candidates[] = { VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT };
 
 		depthFormat = VK_FORMAT_UNDEFINED;
 		for (VkFormat candidate : candidates)

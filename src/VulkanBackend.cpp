@@ -256,6 +256,29 @@ namespace scvk
 			return true;
 		}
 
+		/** WriteRaw's layout for a 16-bit depth buffer, each texel turned into a float from 0 to 1. */
+		bool WriteRawDepth16(char const* path, uint16_t const* texels, uint32_t width, uint32_t height)
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+			{
+				return false;
+			}
+
+			fwrite(&width, 4, 1, file);
+			fwrite(&height, 4, 1, file);
+
+			size_t const count = size_t{ width } * height;
+			for (size_t index = 0; index < count; index++)
+			{
+				float const depth = static_cast<float>(texels[index]) / 65535.0f;
+				fwrite(&depth, 4, 1, file);
+			}
+
+			fclose(file);
+			return true;
+		}
+
 		/** Writes one little-endian field of a BMP header. */
 		void WriteField(FILE* file, uint16_t value)
 		{
@@ -1671,15 +1694,17 @@ namespace scvk
 				continue;
 			}
 
-			// Four bytes a texel either way, which for depth only holds while it is
-			// 32-bit float.
-			if (region.isDepth && region.format != VK_FORMAT_D32_SFLOAT)
+			// Four bytes a texel, or two for 16-bit depth. WriteCapture turns either kind of
+			// depth into floats.
+			bool const isDepth16 = region.isDepth && region.format == VK_FORMAT_D16_UNORM;
+			if (region.isDepth && !isDepth16 && region.format != VK_FORMAT_D32_SFLOAT)
 			{
-				LogWarn("Vulkan: the depth region is format %d, not D32_SFLOAT; not capturing it.", region.format);
+				LogWarn("Vulkan: the depth region is format %d, not D16_UNORM or D32_SFLOAT; not capturing it.", region.format);
 				return false;
 			}
 
-			if (!EnsureReadbackBuffer(VkDeviceSize{ region.width } * region.height * 4u))
+			uint32_t const texelBytes = isDepth16 ? 2u : 4u;
+			if (!EnsureReadbackBuffer(VkDeviceSize{ region.width } * region.height * texelBytes))
 			{
 				return false;
 			}
@@ -1742,7 +1767,21 @@ namespace scvk
 		// frame.
 		if (isRegion)
 		{
-			bool const isWritten = isRegionCaptureDepth ? WriteRaw(regionCapturePath.c_str(), readbackMapped, regionWidth, regionHeight) : WriteBmp(regionCapturePath.c_str(), pixels, regionWidth, regionHeight, regionWidth * 4u);
+			// Depth regions are made in the depth buffer's format, so it says how wide the
+			// texels are. The mapped memory holds whatever the copy wrote, here 16-bit depth.
+			bool isWritten = false;
+			if (!isRegionCaptureDepth)
+			{
+				isWritten = WriteBmp(regionCapturePath.c_str(), pixels, regionWidth, regionHeight, regionWidth * 4u);
+			}
+			else if (depthFormat == VK_FORMAT_D16_UNORM)
+			{
+				isWritten = WriteRawDepth16(regionCapturePath.c_str(), static_cast<uint16_t const*>(readbackMapped), regionWidth, regionHeight);
+			}
+			else
+			{
+				isWritten = WriteRaw(regionCapturePath.c_str(), readbackMapped, regionWidth, regionHeight);
+			}
 
 			if (isWritten)
 			{
