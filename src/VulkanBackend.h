@@ -584,6 +584,9 @@ namespace scvk
 		VkFormat       depthFormat           = VK_FORMAT_UNDEFINED;
 		bool           isDepthLayoutPending  = false;
 
+		// Use32BitDepth from scvk.ini, read once for each device. See CreateDepthResources.
+		bool           shouldUse32BitDepth   = false;
+
 		// A copy of each frame as it is presented, sized with the swapchain. The game
 		// reads the screen back between frames for a photo, expecting the frame it last
 		// showed, and a presented swapchain image cannot be read.

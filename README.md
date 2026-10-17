@@ -60,6 +60,16 @@ not a thin translation layer but a fixed function emulator, which is why the
 design centres on a packed state key selecting a cached pipeline, with an
 ubershader reproducing the combiner network in fragment code.
 
+### Depth buffer
+
+The game's DirectX renderer takes the first depth format the graphics card lists,
+which is 16-bit on NVIDIA, and custom content is made for that. Lights laid exactly
+on a model only line up with it after 16-bit rounding, so scvk uses a 16-bit depth
+buffer too, and surfaces that sit very close together band as they do on DirectX.
+
+Set `Use32BitDepth=true` in `scvk.ini` for a 32-bit depth buffer, as scvk had up to
+0.2.0. The banding goes away, but those lights can leave thin lines after scrolling.
+
 ## Compatibility with other mods
 
 - [SC4Fix](https://github.com/nsgomez/sc4fix): fully compatible.

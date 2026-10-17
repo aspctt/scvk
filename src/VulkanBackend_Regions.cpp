@@ -44,6 +44,12 @@ namespace scvk
 	{
 		// Depth attachment access, both read and written by the depth test.
 		constexpr VkAccessFlags DEPTH_ATTACHMENT_ACCESS = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+		// Depth formats in order of preference, by default and with Use32BitDepth. Every
+		// device supports D16_UNORM, so both lists end up with a format.
+		constexpr size_t   DEPTH_FORMAT_CANDIDATES = 3;
+		constexpr VkFormat SIXTEEN_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES]    = { VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT };
+		constexpr VkFormat THIRTY_TWO_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
 	}
 
 	//// Private Functions
@@ -62,11 +68,17 @@ namespace scvk
 		// 16-bit buffer rounds both to the same value, as on DirectX. Every device has to
 		// support it; the others stay as fallbacks. The game only needs depth: its stencil
 		// calls are recorded but not yet honoured.
-		VkFormat const candidates[] = { VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT };
+		//
+		// Use32BitDepth in scvk.ini puts the 32-bit float first instead, as up to 0.2.0.
+		// Surfaces that sit very close together then stop banding, but the lights above
+		// can leave lines again.
+		VkFormat const* const candidates = shouldUse32BitDepth ? THIRTY_TWO_BIT_DEPTH_FIRST : SIXTEEN_BIT_DEPTH_FIRST;
 
 		depthFormat = VK_FORMAT_UNDEFINED;
-		for (VkFormat candidate : candidates)
+		for (size_t index = 0; index < DEPTH_FORMAT_CANDIDATES; ++index)
 		{
+			VkFormat const candidate = candidates[index];
+
 			VkFormatProperties properties{};
 			vkGetPhysicalDeviceFormatProperties(physicalDevice, candidate, &properties);
 
@@ -81,6 +93,11 @@ namespace scvk
 		{
 			LogError("Vulkan: no usable depth format; depth testing will be unavailable.");
 			return false;
+		}
+
+		if (shouldUse32BitDepth && depthFormat != VK_FORMAT_D32_SFLOAT)
+		{
+			LogWarn("Vulkan: Use32BitDepth is set, but the device has no 32-bit depth format; using format %d.", depthFormat);
 		}
 
 		// Create the image

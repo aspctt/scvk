@@ -67,6 +67,10 @@ city is never held at 30 whatever this says.</p>
 <p><code>UnlockRunningFPS</code> lets <code>MaxFPS</code> go above about 60 while
 the city runs. The time comes out of the simulation, so the city simulates more
 slowly. Off by default.</p>
+<p><code>Use32BitDepth</code> gives the depth buffer 32 bits instead of the 16 the
+DirectX renderer uses. Surfaces that sit very close together stop banding, but
+lights laid exactly on a model can leave thin lines after scrolling. Off by
+default.</p>
 <p><code>LogLevel</code> sets how much goes into <code>scvk.log</code>, from
 <code>trace</code> to <code>off</code>. <code>info</code> by default.</p>
 <p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading

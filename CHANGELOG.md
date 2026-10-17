@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A `Use32BitDepth` setting in `scvk.ini` that brings back the 32-bit depth buffer of 0.2.0, off by default
+
 ### Removed
 
 - The 0.2.1 change for the lines around ground lights, which turned other lines into patches of texture. The lines come from lights sitting exactly on their model, and lifting the light slightly fixes them

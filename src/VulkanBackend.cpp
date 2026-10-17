@@ -89,6 +89,21 @@ namespace scvk
 
 	namespace
 	{
+		/** Whether Use32BitDepth in scvk.ini is true. False when it, or the file, is absent. */
+		bool IsUse32BitDepthSet(void)
+		{
+			char settingsPath[MAX_PATH] = {};
+			if (!LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
+			{
+				return false;
+			}
+
+			char value[16] = {};
+			GetPrivateProfileStringA("scvk", "Use32BitDepth", "false", value, sizeof(value), settingsPath);
+
+			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
+		}
+
 		bool HasValidationLayer(void)
 		{
 			// List the installed layers
@@ -2171,6 +2186,13 @@ namespace scvk
 		// swapchain left from it would present into nothing.
 		DestroyDevice();
 		windowHandle = newWindowHandle;
+
+		// Read the depth setting
+		//
+		// Once for each device rather than with each swapchain. The pipelines and the
+		// saved depth regions outlive a swapchain rebuild, and both have to keep the depth
+		// format they were made with.
+		shouldUse32BitDepth = IsUse32BitDepthSet();
 
 		// Create the surface for the window
 		//
