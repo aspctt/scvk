@@ -67,17 +67,20 @@ buffer too, and surfaces that sit very close together band as they do on DirectX
 Set `Use32BitDepth=true` in `scvk.ini` for a 32-bit depth buffer, as scvk had up to
 0.2.0. The banding goes away, but those lights can leave thin lines after scrolling.
 
-### Colour depth
+### Colour depth and resolution
 
 scvk draws in 32-bit colour, but in a 16-bit mode the game makes its own textures
 16-bit, and they band. Its options and the `-r` launch option can ask for 16 bits, so
 scvk sets the game's colour depth to 32 at startup and saves it in the game's
-preferences. With sc4-graphics-options installed, its `ColorDepth` setting decides
-instead.
+preferences.
 
-A fullscreen size the display does not offer still drops the game to 16 bits at a
-smaller size, with any renderer. Without `-CustomResolution:enabled`, the game also
-replaces a `-r` size with one of its own, so `-r1920x1080` asks for 1800x1440.
+scvk also uses a `-r` size as given. Without `-CustomResolution:enabled`, the game
+swaps a size it does not know for one of its own, so `-r1920x1080` became 1800x1440.
+`-CustomResolution:disabled` keeps the game's size.
+
+With sc4-graphics-options installed, its settings decide both instead. A fullscreen
+size the display does not offer still drops the game to 16 bits at a smaller size,
+with any renderer.
 
 ## Compatibility with other mods
 

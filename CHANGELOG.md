@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band. With sc4-graphics-options installed, its `ColorDepth` setting still decides
+- The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band
+- A `-r` size is used as given, without needing `-CustomResolution:enabled`. `-CustomResolution:disabled` keeps the game's own size
+- With sc4-graphics-options installed, its settings still decide both
 
 ## [0.2.2] - 2026-10-17
 

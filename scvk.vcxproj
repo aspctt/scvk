@@ -146,7 +146,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\Benchmark.cpp" />
-    <ClCompile Include="src\ColourDepth.cpp" />
     <ClCompile Include="src\cVKDriver.cpp" />
     <ClCompile Include="src\cVKDriver_Blit.cpp" />
     <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
@@ -160,6 +159,7 @@
     <ClCompile Include="src\FrameCallback.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
+    <ClCompile Include="src\VideoMode.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
     <ClCompile Include="src\VulkanBackend.cpp" />
     <ClCompile Include="src\VulkanBackend_Draw.cpp" />
@@ -194,7 +194,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Benchmark.h" />
-    <ClInclude Include="src\ColourDepth.h" />
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\FrameCallback.h" />
@@ -203,6 +202,7 @@
     <ClInclude Include="src\SCVKFrameCallback.h" />
     <ClInclude Include="src\ShaderBinaries.h" />
     <ClInclude Include="src\version.h" />
+    <ClInclude Include="src\VideoMode.h" />
     <ClInclude Include="src\VulkanApi.h" />
     <ClInclude Include="src\VulkanBackend.h" />
   </ItemGroup>

@@ -20,11 +20,11 @@
 //// Dependencies
 
 #include "Benchmark.h"
-#include "ColourDepth.h"
 #include "cVKDriver.h"
 #include "FpsLimit.h"
 #include "Logger.h"
 #include "SC4Version.h"
+#include "VideoMode.h"
 #include "VulkanBackend.h"
 #include "version.h"
 
@@ -209,7 +209,7 @@ namespace scvk
 
 			// Hear when the game starts, is up and shuts down
 			//
-			// The colour depth is set before the graphics system starts, and a benchmark
+			// The video mode is corrected before the graphics system starts, and a benchmark
 			// run starts once the game is up.
 			PrepareBenchmark();
 			com->FrameWork()->AddHook(this);
@@ -219,7 +219,7 @@ namespace scvk
 
 		bool PreFrameWorkInit(void) override
 		{
-			ApplyColourDepth();
+			ApplyVideoMode();
 			return true;
 		}
 
