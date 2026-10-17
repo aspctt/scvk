@@ -33,7 +33,8 @@ few visual bugs left.
 Known issues:
 
 - On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
-  the game out of exclusive fullscreen. Win+PrintScreen captures the game.
+  the game out of exclusive fullscreen. Win+PrintScreen captures the game, and in
+  borderless PrintScreen does too.
 - An NVIDIA profile for SimCity 4 that differs from the global settings, such as
   Monitor Technology set to Fixed Refresh while G-SYNC is on, can blank the screen for
   a moment on Alt+Tab in borderless, like a resolution change. Resetting the profile
