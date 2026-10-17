@@ -25,6 +25,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "VideoMode.h"
 #include "VulkanBackend.h"
 #include "version.h"
 
@@ -54,6 +55,12 @@ namespace scvk
 		// The fullscreen window: no frame, above every other window, as SCGL makes it.
 		constexpr DWORD FULLSCREEN_STYLE          = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_MAXIMIZE;
 		constexpr DWORD FULLSCREEN_EXTENDED_STYLE = WS_EX_APPWINDOW | WS_EX_TOPMOST;
+
+		// The borderless window: no frame and maximised, as SC4GraphicsOptions makes it,
+		// which Windows takes as fullscreen and hides the taskbar for. It is not kept
+		// above other windows, so they can be switched to over it.
+		constexpr DWORD BORDERLESS_STYLE          = WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_MAXIMIZE;
+		constexpr DWORD BORDERLESS_EXTENDED_STYLE = WS_EX_APPWINDOW;
 
 		// Diagnostics that replace every colour on screen, each enabled by dropping a
 		// marker file next to the driver. The pass marker names each pass by its blend
@@ -88,11 +95,13 @@ namespace scvk
 		// The game's window and fullscreen, for the one window there is at a time. They
 		// live here rather than on the driver because the window procedure has to reach
 		// them, and Windows hands a procedure nothing but the window.
-		HWND     gameWindow            = nullptr;
-		WNDPROC  gameWindowProcedure   = nullptr;
-		bool     isFullscreenWindow    = false;
-		DEVMODEA fullscreenDisplayMode = {};
-		bool     isDisplayModeChanged  = false;
+		HWND     gameWindow             = nullptr;
+		WNDPROC  gameWindowProcedure    = nullptr;
+		bool     isFullscreenWindow     = false;
+		DEVMODEA fullscreenDisplayMode  = {};
+		bool     isDisplayModeChanged   = false;
+		bool     isGameWindowBorderless = false;
+		RECT     borderlessBounds       = {};
 
 		// How many more focus and size messages, and faults, the log describes.
 		int  windowMessageReportsRemaining = 48;
@@ -240,6 +249,21 @@ namespace scvk
 					LeaveDisplayMode();
 					ShowWindow(window, SW_MINIMIZE);
 				}
+			}
+
+			// Keep a borderless window over the main monitor
+			//
+			// The game centres its window in the desktop's work area (0x98b8e0), which
+			// would move one the monitor's size up by half the taskbar. Every move and
+			// resize asks here first, whoever makes it. A minimised window is left to
+			// Windows. The message carries the new place as a pointer in lParam.
+			if (message == WM_WINDOWPOSCHANGING && isGameWindowBorderless && window == gameWindow && !IsIconic(window))
+			{
+				WINDOWPOS* const position = reinterpret_cast<WINDOWPOS*>(lParam);
+				position->x  = borderlessBounds.left;
+				position->y  = borderlessBounds.top;
+				position->cx = borderlessBounds.right - borderlessBounds.left;
+				position->cy = borderlessBounds.bottom - borderlessBounds.top;
 			}
 
 			// Pass everything on to the game
@@ -527,23 +551,60 @@ namespace scvk
 			}
 		}
 
-		// Size the window
-		//
-		// Fullscreen covers the main monitor, which has just taken the mode's size. A
-		// window is sized around its client area.
-		RECT  rectangle{ 0, 0, windowWidth, windowHeight };
-		DWORD style         = isFullscreen ? FULLSCREEN_STYLE : WINDOW_STYLE;
-		DWORD extendedStyle = isFullscreen ? FULLSCREEN_EXTENDED_STYLE : WINDOW_EXTENDED_STYLE;
-
+		// Find the main monitor
 		MONITORINFO monitor{};
 		monitor.cbSize = sizeof(monitor);
 
 		POINT const origin{ 0, 0 };
-		if (isFullscreen && GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) != 0)
+		bool const  hasMonitor = GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) != 0;
+
+		RECT const& monitorBounds = monitor.rcMonitor;
+		long const  monitorWidth  = monitorBounds.right - monitorBounds.left;
+		long const  monitorHeight = monitorBounds.bottom - monitorBounds.top;
+
+		// Go borderless when it was asked for
+		//
+		// The game was asked for a window the screen's size (VideoMode.cpp), so the
+		// display keeps its mode. A window of any other size keeps its frame, since a
+		// frameless one would leave part of the monitor uncovered.
+		bool isBorderless = false;
+
+		if (!isFullscreen && IsBorderlessWindow())
 		{
-			rectangle = monitor.rcMonitor;
+			isBorderless = hasMonitor && monitorWidth == windowWidth && monitorHeight == windowHeight;
+
+			if (!isBorderless)
+			{
+				LogWarn("SetVideoMode: the %dx%d window is not the main monitor's %ldx%ld, so it keeps its frame instead of going borderless.", windowWidth, windowHeight, monitorWidth, monitorHeight);
+			}
 		}
-		else if (!isFullscreen)
+
+		// Size the window
+		//
+		// Fullscreen covers the main monitor, which has just taken the mode's size, and
+		// so does a borderless window, which is already its size. A window is sized
+		// around its client area.
+		RECT  rectangle{ 0, 0, windowWidth, windowHeight };
+		DWORD style         = WINDOW_STYLE;
+		DWORD extendedStyle = WINDOW_EXTENDED_STYLE;
+
+		if (isFullscreen)
+		{
+			style         = FULLSCREEN_STYLE;
+			extendedStyle = FULLSCREEN_EXTENDED_STYLE;
+
+			if (hasMonitor)
+			{
+				rectangle = monitorBounds;
+			}
+		}
+		else if (isBorderless)
+		{
+			style         = BORDERLESS_STYLE;
+			extendedStyle = BORDERLESS_EXTENDED_STYLE;
+			rectangle     = monitorBounds;
+		}
+		else
 		{
 			AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
 			OffsetRect(&rectangle, 0, GetSystemMetrics(SM_CYCAPTION));
@@ -585,9 +646,11 @@ namespace scvk
 		//
 		// The game passes the procedure as a plain pointer, and the API stores one as an
 		// integer.
-		gameWindow          = window;
-		gameWindowProcedure = reinterpret_cast<WNDPROC>(windowProcedure);
-		isFullscreenWindow  = isFullscreen;
+		gameWindow             = window;
+		gameWindowProcedure    = reinterpret_cast<WNDPROC>(windowProcedure);
+		isFullscreenWindow     = isFullscreen;
+		isGameWindowBorderless = isBorderless;
+		borderlessBounds       = rectangle;
 		SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&GameWindowProcedure));
 
 		// Show it, whatever the game's flags say
@@ -597,8 +660,16 @@ namespace scvk
 		// 0 for it, so the window was hidden and the driver spent an entire run rendering
 		// and presenting perfectly into something nobody could see. SCGL, which works,
 		// also ignores both flags and always shows. Whatever they mean, it is not this.
-		ShowWindow(window, SW_SHOWNORMAL);
+		//
+		// A borderless window is shown maximised, as SC4GraphicsOptions shows it.
+		ShowWindow(window, isBorderless ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
 		LogWindowState(window, "shown");
+
+		if (isBorderless)
+		{
+			LogInfo("SetVideoMode: borderless, covering the main monitor at %ld,%ld.", monitorBounds.left, monitorBounds.top);
+		}
+
 		return true;
 	}
 
@@ -615,9 +686,10 @@ namespace scvk
 
 		// The interface carries the window as a plain pointer.
 		DestroyWindow(static_cast<HWND>(windowHandle));
-		windowHandle        = nullptr;
-		gameWindow          = nullptr;
-		gameWindowProcedure = nullptr;
+		windowHandle           = nullptr;
+		gameWindow             = nullptr;
+		gameWindowProcedure    = nullptr;
+		isGameWindowBorderless = false;
 	}
 
 	//// Public API

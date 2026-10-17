@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `-b` and `-borderless` launch options, which run the game in a borderless window covering the main monitor. sc4-graphics-options' borderless mode gives the same window
+
 ### Changed
 
 - The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band

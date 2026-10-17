@@ -39,6 +39,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 namespace scvk
 {
@@ -66,6 +67,15 @@ namespace scvk
 		// SC4GraphicsOptions' DLL, by the name its release ships it under.
 		constexpr char const* GRAPHICS_OPTIONS_MODULE_NAME = "SC4GraphicsOptions.dll";
 
+		// SC4GraphicsOptions' settings, which it reads from its own folder, and the one
+		// that names its window mode. It takes any value starting with Borderless, in any
+		// case, as its borderless mode.
+		constexpr wchar_t const* GRAPHICS_OPTIONS_SETTINGS_NAME = L"SC4GraphicsOptions.ini";
+		constexpr wchar_t const* GRAPHICS_OPTIONS_SECTION       = L"GraphicsOptions";
+		constexpr wchar_t const* GRAPHICS_OPTIONS_WINDOW_MODE   = L"WindowMode";
+		constexpr wchar_t const* GRAPHICS_OPTIONS_BORDERLESS    = L"Borderless";
+		constexpr DWORD          WINDOW_MODE_LENGTH             = 64;
+
 		// The launch options, as the game looks them up (0x44eed0, 0x44ba80).
 		constexpr char        RESOLUTION_SWITCH        = 'r';
 		constexpr char const* RESOLUTION_FORMAT        = "%ux%ux%u";
@@ -75,6 +85,10 @@ namespace scvk
 		// The -CustomResolution values the game takes as on (0x44ba80). It keeps its own
 		// size for any other.
 		constexpr char const* CUSTOM_RESOLUTION_ON_VALUES[] = { "on", "enabled" };
+
+		// scvk's own launch options for a borderless window. The game matches the whole
+		// name of a switch, in any case (0x914001), and reads none of these itself.
+		constexpr char const* BORDERLESS_SWITCHES[] = { "b", "borderless" };
 
 		// The service that corrects the mode. The graphics system is a service too, at
 		// priority 1500000 (0x98fdc0), and the framework starts services from the highest
@@ -90,6 +104,7 @@ namespace scvk
 	namespace
 	{
 		bool isVideoModeApplied = false;
+		bool isBorderless       = false;
 		bool isServiceInstalled = false;
 	}
 
@@ -141,6 +156,70 @@ namespace scvk
 			return true;
 		}
 
+		/** Whether a launch option asks for a borderless window. */
+		bool HasBorderlessSwitch(cIGZCmdLine const& commandLine)
+		{
+			for (char const* const name : BORDERLESS_SWITCHES)
+			{
+				if (commandLine.GetIndexOfSwitch(cRZBaseString(name), 0) >= 0)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/** Whether SC4GraphicsOptions is set to its borderless mode. */
+		bool IsGraphicsOptionsBorderless(HMODULE graphicsOptions)
+		{
+			// Find its settings next to it
+			//
+			// Read through the wide functions, since the folder can be anywhere the
+			// player keeps plugins, under any name.
+			wchar_t     path[MAX_PATH] = {};
+			DWORD const pathLength     = GetModuleFileNameW(graphicsOptions, path, MAX_PATH);
+
+			if (pathLength == 0 || pathLength >= MAX_PATH)
+			{
+				return false;
+			}
+
+			wchar_t* const separator = wcsrchr(path, L'\\');
+			if (separator == nullptr)
+			{
+				return false;
+			}
+
+			separator[1] = L'\0';
+			if (wcscat_s(path, MAX_PATH, GRAPHICS_OPTIONS_SETTINGS_NAME) != 0)
+			{
+				return false;
+			}
+
+			// Read its window mode the way it does
+			wchar_t windowMode[WINDOW_MODE_LENGTH] = {};
+			GetPrivateProfileStringW(GRAPHICS_OPTIONS_SECTION, GRAPHICS_OPTIONS_WINDOW_MODE, L"", windowMode, WINDOW_MODE_LENGTH, path);
+
+			return _wcsnicmp(windowMode, GRAPHICS_OPTIONS_BORDERLESS, wcslen(GRAPHICS_OPTIONS_BORDERLESS)) == 0;
+		}
+
+		/** Asks for a window the screen's size, at the screen's colour depth. */
+		void RequestBorderlessWindow(cIGZGraphicSystem& graphicSystem, cGZDisplayMetrics const& screen)
+		{
+			// A window has to have the screen's colour depth and fit on it, or the game
+			// makes it fullscreen (0x990a3a), so this is the largest window there is.
+			cGZDisplayMetrics request{};
+			request.width    = screen.width;
+			request.height   = screen.height;
+			request.bitDepth = screen.bitDepth;
+
+			graphicSystem.PreInitSetDesiredGameResolution(request);
+			graphicSystem.PreInitSetWindowedMode(true);
+
+			LogInfo("Borderless: the game runs in a %ux%u window that covers the main monitor.", request.width, request.height);
+		}
+
 		/** Corrects the mode the game is about to ask its graphics system for. */
 		void ApplyVideoMode(void)
 		{
@@ -150,16 +229,6 @@ namespace scvk
 			}
 
 			isVideoModeApplied = true;
-
-			// Leave the mode to SC4GraphicsOptions when it is installed
-			//
-			// The game loads every plugin before it starts any service, so
-			// SC4GraphicsOptions is in the process by now if it is installed at all.
-			if (GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME) != nullptr)
-			{
-				LogInfo("SC4GraphicsOptions is installed, so its settings decide the video mode.");
-				return;
-			}
 
 			// Find the game's preferences and its graphics system
 			cIGZApp* const application = RZGetFrameWork()->Application();
@@ -190,6 +259,42 @@ namespace scvk
 			cGZDisplayMetrics screen{};
 			graphicSystem->GetScreenMetrics(screen);
 
+			cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
+
+			// See whether a borderless window was asked for
+			//
+			// The game loads every plugin before it starts any service, so
+			// SC4GraphicsOptions is in the process by now if it is installed at all.
+			HMODULE const graphicsOptions = GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME);
+
+			if (commandLine != nullptr && HasBorderlessSwitch(*commandLine))
+			{
+				isBorderless = true;
+				LogInfo("Borderless: asked for by a launch option.");
+			}
+			else if (graphicsOptions != nullptr && IsGraphicsOptionsBorderless(graphicsOptions))
+			{
+				isBorderless = true;
+				LogInfo("Borderless: asked for by SC4GraphicsOptions' window mode.");
+			}
+
+			// Leave the size and colour depth to SC4GraphicsOptions when it is installed
+			//
+			// Borderless still takes the window it needs. SC4GraphicsOptions asks for the
+			// same window in its own borderless mode, but at its own colour depth, and a
+			// depth unlike the screen's makes the game fullscreen.
+			if (graphicsOptions != nullptr)
+			{
+				LogInfo("SC4GraphicsOptions is installed, so its settings decide the size and colour depth.");
+
+				if (isBorderless)
+				{
+					RequestBorderlessWindow(*graphicSystem, screen);
+				}
+
+				return;
+			}
+
 			bool isFullscreen = video.bFullScreen != 0;
 
 			// Use the -r size as given
@@ -198,11 +303,16 @@ namespace scvk
 			// runs before the plugins' hooks (0x87afdd), so it is read again here. A
 			// window larger than the screen becomes fullscreen, as the game would make it
 			// (0x44cf6a). With the game's size, that can also have happened to a window
-			// that fits, so -w windows it again.
-			cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
-
+			// that fits, so -w windows it again. A borderless window keeps the monitor's
+			// size.
 			LaunchSize size{};
-			bool const isSizeChanged = commandLine != nullptr && !IsCustomResolutionTurnedOff(*commandLine) && ReadLaunchSize(*commandLine, size) && (size.width != video.width || size.height != video.height);
+			bool const hasLaunchSize = commandLine != nullptr && !IsCustomResolutionTurnedOff(*commandLine) && ReadLaunchSize(*commandLine, size) && (size.width != video.width || size.height != video.height);
+			bool const isSizeChanged = hasLaunchSize && !isBorderless;
+
+			if (hasLaunchSize && isBorderless)
+			{
+				LogInfo("Borderless: leaving out the -r size %ux%u, since the window covers the main monitor.", size.width, size.height);
+			}
 
 			if (isSizeChanged)
 			{
@@ -241,6 +351,12 @@ namespace scvk
 			// graphics system for (0x44ce40), so the request is set again the way it
 			// does: a window takes the screen's depth, and so does fullscreen while the
 			// preferences hold none.
+			if (isBorderless)
+			{
+				RequestBorderlessWindow(*graphicSystem, screen);
+				return;
+			}
+
 			if (!isSizeChanged && !isDepthChanged)
 			{
 				return;
@@ -389,5 +505,10 @@ namespace scvk
 		{
 			frameWork->RemoveSystemService(&Service());
 		}
+	}
+
+	bool IsBorderlessWindow(void)
+	{
+		return isBorderless;
 	}
 }

@@ -21,7 +21,7 @@ few visual bugs left.
 
 | Area | Status |
 |---|---|
-| Startup, video modes, swapchain | Working, windowed and fullscreen |
+| Startup, video modes, swapchain | Working, windowed, fullscreen and borderless |
 | Terrain, buildings, interface | Working |
 | Textures, blending, depth | Working |
 | Day and night lighting, cloud shadows | Working |
@@ -34,6 +34,10 @@ Known issues:
 
 - On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
   the game out of exclusive fullscreen. Win+PrintScreen captures the game.
+- An NVIDIA profile for SimCity 4 that differs from the global settings, such as
+  Monitor Technology set to Fixed Refresh while G-SYNC is on, can blank the screen for
+  a moment on Alt+Tab in borderless, like a resolution change. Resetting the profile
+  to the global settings avoids it.
 
 ## How it works
 
@@ -81,6 +85,15 @@ swaps a size it does not know for one of its own, so `-r1920x1080` became 1800x1
 With sc4-graphics-options installed, its settings decide both instead. A fullscreen
 size the display does not offer still drops the game to 16 bits at a smaller size,
 with any renderer.
+
+### Borderless
+
+Launch the game with `-b` or `-borderless` and scvk runs it in a window with no frame
+that covers the main monitor, at the monitor's own size. The display keeps its mode,
+and other windows can be switched to over the game. A `-r` size is left out.
+
+sc4-graphics-options' `WindowMode=Borderless` gives the same window. The launch
+option wins over any other `WindowMode`, for that launch only.
 
 ## Compatibility with other mods
 
