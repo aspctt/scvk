@@ -146,6 +146,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\Benchmark.cpp" />
+    <ClCompile Include="src\ColourDepth.cpp" />
     <ClCompile Include="src\cVKDriver.cpp" />
     <ClCompile Include="src\cVKDriver_Blit.cpp" />
     <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
@@ -193,6 +194,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Benchmark.h" />
+    <ClInclude Include="src\ColourDepth.h" />
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\FrameCallback.h" />

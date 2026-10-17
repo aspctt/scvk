@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band. With sc4-graphics-options installed, its `ColorDepth` setting still decides
+
 ## [0.2.2] - 2026-10-17
 
 ### Added

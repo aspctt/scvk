@@ -20,6 +20,7 @@
 //// Dependencies
 
 #include "Benchmark.h"
+#include "ColourDepth.h"
 #include "cVKDriver.h"
 #include "FpsLimit.h"
 #include "Logger.h"
@@ -206,13 +207,19 @@ namespace scvk
 			// scvk.ini asking.
 			ApplyFpsLimitSettings();
 
-			// Hear when the game is up and when it shuts down, for a benchmark run
-			if (IsBenchmarkEnabled())
-			{
-				PrepareBenchmark();
-				com->FrameWork()->AddHook(this);
-			}
+			// Hear when the game starts, is up and shuts down
+			//
+			// The colour depth is set before the graphics system starts, and a benchmark
+			// run starts once the game is up.
+			PrepareBenchmark();
+			com->FrameWork()->AddHook(this);
 
+			return true;
+		}
+
+		bool PreFrameWorkInit(void) override
+		{
+			ApplyColourDepth();
 			return true;
 		}
 
