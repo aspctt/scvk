@@ -44,7 +44,10 @@ param(
 
 	# Ends the run early once a file of this name appears beside scvk.dll, such as the
 	# results a benchmark writes. The game gets a moment to quit on its own first.
-	[string]$UntilFile = ""
+	[string]$UntilFile = "",
+
+	# More of the game's own launch options, such as -r1920x1080x16 or -f.
+	[string[]]$GameArguments = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +75,7 @@ $logDirectory  = Join-Path $repositoryRoot "logs"
 $gameArguments = @(
 	"-ExceptionHandling:off",
 	"-UserDir:$userDirectory\"
-)
+) + $GameArguments
 
 $gameImageName = "SimCity 4.exe"
 
