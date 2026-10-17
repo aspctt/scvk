@@ -21,7 +21,7 @@ interface declaration.
 
 ## Provenance
 
-### gzcom-dll (51 files)
+### gzcom-dll (52 files)
 
 <https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
 (C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
@@ -49,7 +49,7 @@ interfaces.
 | `include/cIGZMessage2.h`, `include/cIGZMessageServer2.h`, `include/cIGZMessageTarget2.h`, `include/cIGZSystemService.h` | The game's messages, and a tick from its main loop |
 | `include/GZServPtrs.h`, `include/GZServDecls.h`, `include/cRZSysServPtr.h` | Typed access to the game's services |
 | `include/SC4String.h`, `src/SC4String.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
-| `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/cGZDisplayMetrics.h` | The game's saved preferences and requested video mode, for the colour depth |
+| `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/cGZDisplayMetrics.h`, `include/cIGZCmdLine.h` | The game's saved preferences, launch options and requested video mode, for correcting the video mode |
 
 > Two declarations here do not match the game. The benchmark works around both in
 > its own source rather than editing them: `cISC4Nation::SetActiveRegion` takes the
