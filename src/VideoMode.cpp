@@ -20,7 +20,9 @@
 //// Dependencies
 
 #include "VideoMode.h"
+#include "Benchmark.h"
 #include "Logger.h"
+#include "VulkanBackend.h"
 
 #include <cGZDisplayMetrics.h>
 #include <cIGZApp.h>
@@ -80,7 +82,12 @@ namespace scvk
 		constexpr char        RESOLUTION_SWITCH        = 'r';
 		constexpr char const* RESOLUTION_FORMAT        = "%ux%ux%u";
 		constexpr char const* CUSTOM_RESOLUTION_SWITCH = "CustomResolution";
-		constexpr char const* WINDOWED_SWITCH          = "w";
+
+		// The game's switches for a window and for fullscreen (0x44f310, 0x44f2a3), then
+		// scvk's longer names for them. The game reads -f before -w, so a window wins
+		// when both are given.
+		constexpr char const* WINDOWED_SWITCHES[]   = { "w", "windowed" };
+		constexpr char const* FULLSCREEN_SWITCHES[] = { "f", "fullscreen" };
 
 		// The -CustomResolution values the game takes as on (0x44ba80). It keeps its own
 		// size for any other.
@@ -89,6 +96,10 @@ namespace scvk
 		// scvk's own launch options for a borderless window. The game matches the whole
 		// name of a switch, in any case (0x914001), and reads none of these itself.
 		constexpr char const* BORDERLESS_SWITCHES[] = { "b", "borderless" };
+
+		// The preferences' renderer for the game's Software renderer, which its options
+		// and -d:soft choose (0x44d029). Any other value picks a slot scvk serves.
+		constexpr uint8_t SOFTWARE_DRIVER_TYPE = 0;
 
 		// The service that corrects the mode. The graphics system is a service too, at
 		// priority 1500000 (0x98fdc0), and the framework starts services from the highest
@@ -156,18 +167,30 @@ namespace scvk
 			return true;
 		}
 
-		/** Whether a launch option asks for a borderless window. */
-		bool HasBorderlessSwitch(cIGZCmdLine const& commandLine)
+		/** Whether the launch options include any of the named switches. */
+		template <size_t COUNT>
+		bool HasAnySwitch(cIGZCmdLine const* commandLine, char const* const (&names)[COUNT])
 		{
-			for (char const* const name : BORDERLESS_SWITCHES)
+			if (commandLine == nullptr)
 			{
-				if (commandLine.GetIndexOfSwitch(cRZBaseString(name), 0) >= 0)
+				return false;
+			}
+
+			for (char const* const name : names)
+			{
+				if (commandLine->GetIndexOfSwitch(cRZBaseString(name), 0) >= 0)
 				{
 					return true;
 				}
 			}
 
 			return false;
+		}
+
+		/** Whether scvk will be the renderer, as far as can be told this early. */
+		bool IsScvkDrawing(SC4VideoPreferences const& video)
+		{
+			return video.driverType != SOFTWARE_DRIVER_TYPE && !IsBenchmarkEnabled() && IsVulkanAvailable();
 		}
 
 		/** Whether SC4GraphicsOptions is set to its borderless mode. */
@@ -267,7 +290,7 @@ namespace scvk
 			// SC4GraphicsOptions is in the process by now if it is installed at all.
 			HMODULE const graphicsOptions = GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME);
 
-			if (commandLine != nullptr && HasBorderlessSwitch(*commandLine))
+			if (HasAnySwitch(commandLine, BORDERLESS_SWITCHES))
 			{
 				isBorderless = true;
 				LogInfo("Borderless: asked for by a launch option.");
@@ -295,19 +318,35 @@ namespace scvk
 				return;
 			}
 
-			bool isFullscreen = video.bFullScreen != 0;
+			// Go borderless unless a launch option chose the mode or the size
+			//
+			// Only while scvk draws. The game's own renderers would make a framed window
+			// the desktop's size, and a benchmark compares the renderers in the player's
+			// mode.
+			LaunchSize size{};
+			bool const hasLaunchSize      = commandLine != nullptr && ReadLaunchSize(*commandLine, size);
+			bool const isWindowWanted     = HasAnySwitch(commandLine, WINDOWED_SWITCHES);
+			bool const isFullscreenWanted = HasAnySwitch(commandLine, FULLSCREEN_SWITCHES);
+
+			if (!isBorderless && !hasLaunchSize && !isWindowWanted && !isFullscreenWanted)
+			{
+				if (IsScvkDrawing(video))
+				{
+					isBorderless = true;
+					LogInfo("Borderless: the default, since no launch option chose a window mode or size.");
+				}
+				else
+				{
+					LogInfo("Borderless: not the default, since scvk is not the renderer this time.");
+				}
+			}
 
 			// Use the -r size as given
 			//
 			// The game read -r and replaced its size in its own PreFrameWorkInit, which
 			// runs before the plugins' hooks (0x87afdd), so it is read again here. A
-			// window larger than the screen becomes fullscreen, as the game would make it
-			// (0x44cf6a). With the game's size, that can also have happened to a window
-			// that fits, so -w windows it again. A borderless window keeps the monitor's
-			// size.
-			LaunchSize size{};
-			bool const hasLaunchSize = commandLine != nullptr && !IsCustomResolutionTurnedOff(*commandLine) && ReadLaunchSize(*commandLine, size) && (size.width != video.width || size.height != video.height);
-			bool const isSizeChanged = hasLaunchSize && !isBorderless;
+			// borderless window keeps the monitor's size.
+			bool const isSizeChanged = hasLaunchSize && !isBorderless && !IsCustomResolutionTurnedOff(*commandLine) && (size.width != video.width || size.height != video.height);
 
 			if (hasLaunchSize && isBorderless)
 			{
@@ -320,16 +359,37 @@ namespace scvk
 
 				video.width  = size.width;
 				video.height = size.height;
+			}
 
-				if (size.width > screen.width || size.height > screen.height)
-				{
-					isFullscreen = true;
-				}
-				else if (commandLine->GetIndexOfSwitch(cRZBaseString(WINDOWED_SWITCH), 0) >= 0)
-				{
-					isFullscreen = false;
-				}
+			// Choose a window or fullscreen
+			//
+			// The game sets its own -w and -f in the preferences (0x44f367, 0x44f2ff) but
+			// knows nothing of the longer names, and a size its -r swap made larger than
+			// the screen was made fullscreen too, so the choice is made again here. A
+			// window larger than the screen becomes fullscreen, as the game would make it
+			// (0x44cf6a).
+			bool const wasFullscreen = video.bFullScreen != 0;
+			bool       isFullscreen  = wasFullscreen;
 
+			if (isWindowWanted)
+			{
+				isFullscreen = false;
+			}
+			else if (isFullscreenWanted)
+			{
+				isFullscreen = true;
+			}
+
+			if (video.width > screen.width || video.height > screen.height)
+			{
+				isFullscreen = true;
+			}
+
+			bool const isModeChanged = isFullscreen != wasFullscreen && !isBorderless;
+
+			if (isModeChanged)
+			{
+				LogInfo("Running %s instead of %s.", isFullscreen ? "fullscreen" : "in a window", wasFullscreen ? "fullscreen" : "in a window");
 				video.bFullScreen = isFullscreen ? 1 : 0;
 			}
 
@@ -357,7 +417,7 @@ namespace scvk
 				return;
 			}
 
-			if (!isSizeChanged && !isDepthChanged)
+			if (!isSizeChanged && !isModeChanged && !isDepthChanged)
 			{
 				return;
 			}

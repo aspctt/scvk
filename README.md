@@ -72,6 +72,21 @@ buffer too, and surfaces that sit very close together band as they do on DirectX
 Set `Use32BitDepth=true` in `scvk.ini` for a 32-bit depth buffer, as scvk had up to
 0.2.0. The banding goes away, but those lights can leave thin lines after scrolling.
 
+### Window modes
+
+scvk starts the game borderless: a window with no frame that covers the main monitor,
+at the desktop's current size. The display keeps its mode, and other windows can be
+switched to over the game.
+
+Launch options pick another mode for that launch. `-w` or `-windowed` gives a window
+and `-f` or `-fullscreen` exclusive fullscreen, both at the size in the game's
+options, and `-r` sets a size of its own. `-b` or `-borderless` asks for borderless
+outright and leaves out any `-r` size.
+
+With sc4-graphics-options installed, its `WindowMode` decides instead, and its
+`Borderless` gives the same window. `-b` still wins over its other modes. When the
+game falls back to its own renderer, it keeps the mode from its options.
+
 ### Colour depth and resolution
 
 scvk draws in 32-bit colour, but in a 16-bit mode the game makes its own textures
@@ -86,15 +101,6 @@ swaps a size it does not know for one of its own, so `-r1920x1080` became 1800x1
 With sc4-graphics-options installed, its settings decide both instead. A fullscreen
 size the display does not offer still drops the game to 16 bits at a smaller size,
 with any renderer.
-
-### Borderless
-
-Launch the game with `-b` or `-borderless` and scvk runs it in a window with no frame
-that covers the main monitor, at the monitor's own size. The display keeps its mode,
-and other windows can be switched to over the game. A `-r` size is left out.
-
-sc4-graphics-options' `WindowMode=Borderless` gives the same window. The launch
-option wins over any other `WindowMode`, for that launch only.
 
 ## Compatibility with other mods
 

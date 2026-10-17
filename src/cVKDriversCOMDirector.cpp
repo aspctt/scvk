@@ -65,16 +65,6 @@ namespace scvk
 
 	namespace
 	{
-		/**
-		 * Whether scvk's Init would get past Vulkan: the loader, an instance and a graphics
-		 * card to use. Checked once, on a backend of its own that is thrown away after.
-		 */
-		bool IsVulkanAvailable(void)
-		{
-			static bool const isAvailable = VulkanBackend().CreateInstance();
-			return isAvailable;
-		}
-
 		/** The game's DirectX 7 driver, when this is the build its factory address came from. */
 		bool CreateGameDirectXDriver(uint32_t interfaceId, void** outInterface)
 		{

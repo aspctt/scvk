@@ -26,9 +26,12 @@ namespace scvk
 	/**
 	 * Starts correcting the video mode SimCity 4 asks for at startup.
 	 *
-	 * - The -b and -borderless launch options, and SC4GraphicsOptions' borderless mode,
-	 *   ask for a window that covers the main monitor without a frame. A launch option
-	 *   wins over any SC4GraphicsOptions setting, since it is given for one launch.
+	 * - The game runs in a window that covers the main monitor without a frame, at the
+	 *   desktop's size. That is the default while scvk draws and no launch option
+	 *   chooses a window mode or size. The -b and -borderless launch options and
+	 *   SC4GraphicsOptions' borderless mode ask for it too, and a launch option wins
+	 *   over any SC4GraphicsOptions setting, since it is given for one launch.
+	 * - The -windowed and -fullscreen launch options do what the game's -w and -f do.
 	 * - The -r launch option's size is used as given. Without -CustomResolution:enabled the
 	 *   game swaps a size it does not know for one of its own (0x44cd70), so -r1920x1080
 	 *   became 1800x1440. A -CustomResolution value other than enabled or on, such as
@@ -37,11 +40,11 @@ namespace scvk
 	 *   options and -r can set to 16, and in a 16-bit mode it makes its textures 16-bit
 	 *   too, so they band whatever depth scvk draws in.
 	 *
-	 * The size and colour depth go into the preferences as SC4GraphicsOptions does, and
-	 * a changed colour depth saves them. SC4GraphicsOptions sets both from its own
-	 * settings, so scvk leaves them to it when it is installed. Borderless only changes
-	 * the mode the game asks its graphics system for, so the next launch without it gets
-	 * the game's own mode back.
+	 * The size, window mode and colour depth go into the preferences as SC4GraphicsOptions
+	 * does, and a changed colour depth saves them. SC4GraphicsOptions sets them from its
+	 * own settings, so scvk leaves them to it when it is installed. Borderless only
+	 * changes the mode the game asks its graphics system for, so the saved mode is still
+	 * there for -w or -f.
 	 *
 	 * The correction runs as a system service started just before the graphics system,
 	 * after every plugin's PreFrameWorkInit, so no plugin's request comes after it. Call

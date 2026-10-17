@@ -2042,6 +2042,12 @@ namespace scvk
 
 	//// Public API
 
+	bool IsVulkanAvailable(void)
+	{
+		static bool const isAvailable = VulkanBackend().CreateInstance();
+		return isAvailable;
+	}
+
 	VulkanBackend::VulkanBackend(void) = default;
 
 	VulkanBackend::~VulkanBackend(void)

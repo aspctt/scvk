@@ -1210,4 +1210,12 @@ namespace scvk
 		void DestroyBufferRegion(uint32_t handle);
 		void DestroyAllBufferRegions(void);
 	};
+
+	//// Public API
+
+	/**
+	 * Whether scvk would get past Vulkan: the loader, an instance and a graphics card to
+	 * use. Checked once, on a backend of its own that is thrown away after.
+	 */
+	bool IsVulkanAvailable(void);
 }

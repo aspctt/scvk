@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `-b` and `-borderless` launch options, which run the game in a borderless window covering the main monitor. sc4-graphics-options' borderless mode gives the same window
+- `-b` and `-borderless` launch options for a borderless window, which sc4-graphics-options' borderless mode gives too
+- `-windowed` and `-fullscreen` launch options, the same as `-w` and `-f`
 
 ### Changed
 
+- The game starts borderless, in a frameless window covering the main monitor at the desktop's size. `-w`, `-f` or a `-r` size pick another mode, and sc4-graphics-options' settings still decide when it is installed
 - The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band
 - A `-r` size is used as given, without needing `-CustomResolution:enabled`. `-CustomResolution:disabled` keeps the game's own size
 - With sc4-graphics-options installed, its settings still decide both
