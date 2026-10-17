@@ -24,8 +24,7 @@ namespace scvk
 	//// Public API
 
 	/**
-	 * Corrects the video mode SimCity 4 asks for at startup, unless SC4GraphicsOptions is
-	 * installed.
+	 * Starts correcting the video mode SimCity 4 asks for at startup.
 	 *
 	 * - The -r launch option's size is used as given. Without -CustomResolution:enabled the
 	 *   game swaps a size it does not know for one of its own (0x44cd70), so -r1920x1080
@@ -40,8 +39,12 @@ namespace scvk
 	 * SC4GraphicsOptions sets both from its own settings, so scvk leaves the mode to it
 	 * when it is installed.
 	 *
-	 * Call from PreFrameWorkInit, where SC4GraphicsOptions does the same, before the
-	 * graphics system starts. Calling it again changes nothing.
+	 * The correction runs as a system service started just before the graphics system,
+	 * after every plugin's PreFrameWorkInit, so no plugin's request comes after it. Call
+	 * from OnStart. Calling it again changes nothing.
 	 */
-	void ApplyVideoMode(void);
+	void InstallVideoModeService(void);
+
+	/** Removes the service once the graphics system has started. Call from PreAppInit. */
+	void RemoveVideoModeService(void);
 }

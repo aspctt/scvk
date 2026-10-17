@@ -207,19 +207,22 @@ namespace scvk
 			// scvk.ini asking.
 			ApplyFpsLimitSettings();
 
+			// Correct the video mode before the graphics system starts
+			InstallVideoModeService();
+
 			// Hear when the game starts, is up and shuts down
 			//
-			// The video mode is corrected before the graphics system starts, and a benchmark
-			// run starts once the game is up.
+			// The video mode service is done once the game starts, and a benchmark run
+			// starts once the game is up.
 			PrepareBenchmark();
 			com->FrameWork()->AddHook(this);
 
 			return true;
 		}
 
-		bool PreFrameWorkInit(void) override
+		bool PreAppInit(void) override
 		{
-			ApplyVideoMode();
+			RemoveVideoModeService();
 			return true;
 		}
 

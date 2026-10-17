@@ -27,6 +27,7 @@
 #include <cIGZCmdLine.h>
 #include <cIGZFrameWork.h>
 #include <cIGZGraphicSystem.h>
+#include <cIGZSystemService.h>
 #include <cISC4App.h>
 #include <cRZAutoRefCount.h>
 #include <cRZBaseString.h>
@@ -74,6 +75,14 @@ namespace scvk
 		// The -CustomResolution values the game takes as on (0x44ba80). It keeps its own
 		// size for any other.
 		constexpr char const* CUSTOM_RESOLUTION_ON_VALUES[] = { "on", "enabled" };
+
+		// The service that corrects the mode. The graphics system is a service too, at
+		// priority 1500000 (0x98fdc0), and the framework starts services from the highest
+		// priority down, after every plugin's PreFrameWorkInit (0x879f15). One step above
+		// it, the correction is the last change to the mode before the graphics system
+		// reads it.
+		constexpr uint32_t VIDEO_MODE_SERVICE_ID       = 0x5C4B0003;
+		constexpr int32_t  VIDEO_MODE_SERVICE_PRIORITY = 1500001;
 	}
 
 	//// State
@@ -81,6 +90,7 @@ namespace scvk
 	namespace
 	{
 		bool isVideoModeApplied = false;
+		bool isServiceInstalled = false;
 	}
 
 	//// Private Functions
@@ -130,119 +140,254 @@ namespace scvk
 			outSize = { width, height };
 			return true;
 		}
+
+		/** Corrects the mode the game is about to ask its graphics system for. */
+		void ApplyVideoMode(void)
+		{
+			if (isVideoModeApplied)
+			{
+				return;
+			}
+
+			isVideoModeApplied = true;
+
+			// Leave the mode to SC4GraphicsOptions when it is installed
+			//
+			// The game loads every plugin before it starts any service, so
+			// SC4GraphicsOptions is in the process by now if it is installed at all.
+			if (GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME) != nullptr)
+			{
+				LogInfo("SC4GraphicsOptions is installed, so its settings decide the video mode.");
+				return;
+			}
+
+			// Find the game's preferences and its graphics system
+			cIGZApp* const application = RZGetFrameWork()->Application();
+
+			cRZAutoRefCount<cISC4App> game;
+			if (application == nullptr || !application->QueryInterface(GZIID_cISC4App, game.AsPPVoid()))
+			{
+				LogWarn("Video mode: the game is not available yet, so its video mode is left alone.");
+				return;
+			}
+
+			SC4Preferences* const preferences = game->GetPreferences();
+			if (preferences == nullptr)
+			{
+				LogWarn("Video mode: the game has no preferences yet, so its video mode is left alone.");
+				return;
+			}
+
+			cIGZGraphicSystemPtr graphicSystem;
+			if (!graphicSystem)
+			{
+				LogWarn("Video mode: the graphics system is not available, so the video mode is left alone.");
+				return;
+			}
+
+			SC4VideoPreferences& video = preferences->videoPreferences;
+
+			cGZDisplayMetrics screen{};
+			graphicSystem->GetScreenMetrics(screen);
+
+			bool isFullscreen = video.bFullScreen != 0;
+
+			// Use the -r size as given
+			//
+			// The game read -r and replaced its size in its own PreFrameWorkInit, which
+			// runs before the plugins' hooks (0x87afdd), so it is read again here. A
+			// window larger than the screen becomes fullscreen, as the game would make it
+			// (0x44cf6a). With the game's size, that can also have happened to a window
+			// that fits, so -w windows it again.
+			cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
+
+			LaunchSize size{};
+			bool const isSizeChanged = commandLine != nullptr && !IsCustomResolutionTurnedOff(*commandLine) && ReadLaunchSize(*commandLine, size) && (size.width != video.width || size.height != video.height);
+
+			if (isSizeChanged)
+			{
+				LogInfo("Using the -r size %ux%u instead of the game's %ux%u.", size.width, size.height, video.width, video.height);
+
+				video.width  = size.width;
+				video.height = size.height;
+
+				if (size.width > screen.width || size.height > screen.height)
+				{
+					isFullscreen = true;
+				}
+				else if (commandLine->GetIndexOfSwitch(cRZBaseString(WINDOWED_SWITCH), 0) >= 0)
+				{
+					isFullscreen = false;
+				}
+
+				video.bFullScreen = isFullscreen ? 1 : 0;
+			}
+
+			// Use 32-bit colour
+			uint32_t const previousDepth  = video.bitDepth;
+			bool const     isDepthChanged = previousDepth != COLOUR_DEPTH && previousDepth != DESKTOP_COLOUR_DEPTH;
+
+			if (isDepthChanged)
+			{
+				video.bitDepth = COLOUR_DEPTH;
+				game->SavePreferences();
+
+				LogInfo("Changed the game's colour depth from %u to %u bits.", previousDepth, COLOUR_DEPTH);
+			}
+
+			// Ask for the mode again
+			//
+			// The game has already turned its preferences into the mode it asks the
+			// graphics system for (0x44ce40), so the request is set again the way it
+			// does: a window takes the screen's depth, and so does fullscreen while the
+			// preferences hold none.
+			if (!isSizeChanged && !isDepthChanged)
+			{
+				return;
+			}
+
+			cGZDisplayMetrics request{};
+			request.width    = video.width;
+			request.height   = video.height;
+			request.bitDepth = (isFullscreen && video.bitDepth != DESKTOP_COLOUR_DEPTH) ? video.bitDepth : screen.bitDepth;
+
+			graphicSystem->PreInitSetDesiredGameResolution(request);
+			graphicSystem->PreInitSetWindowedMode(!isFullscreen);
+		}
+
+		/**
+		 * Corrects the video mode when the framework starts it. Static, and never deleted,
+		 * so its reference count only answers the framework.
+		 */
+		class VideoModeService final : public cIGZSystemService
+		{
+		public:
+			bool QueryInterface(uint32_t riid, void** ppvObj) override
+			{
+				if (riid == GZIID_cIGZSystemService || riid == GZIID_cIGZUnknown)
+				{
+					*ppvObj = static_cast<cIGZSystemService*>(this);
+					AddRef();
+					return true;
+				}
+
+				*ppvObj = nullptr;
+				return false;
+			}
+
+			uint32_t AddRef(void) override
+			{
+				return ++referenceCount;
+			}
+
+			uint32_t Release(void) override
+			{
+				if (referenceCount > 0)
+				{
+					--referenceCount;
+				}
+
+				return referenceCount;
+			}
+
+			uint32_t GetServiceID(void) override
+			{
+				return serviceId;
+			}
+
+			cIGZSystemService* SetServiceID(uint32_t newServiceId) override
+			{
+				serviceId = newServiceId;
+				return this;
+			}
+
+			int32_t GetServicePriority(void) override
+			{
+				return VIDEO_MODE_SERVICE_PRIORITY;
+			}
+
+			bool IsServiceRunning(void) override
+			{
+				return isRunning;
+			}
+
+			cIGZSystemService* SetServiceRunning(bool shouldRun) override
+			{
+				isRunning = shouldRun;
+				return this;
+			}
+
+			bool Init(void) override
+			{
+				ApplyVideoMode();
+				return true;
+			}
+
+			bool Shutdown(void) override
+			{
+				return true;
+			}
+
+			bool OnTick([[maybe_unused]] uint32_t unknown) override
+			{
+				return true;
+			}
+
+			bool OnIdle([[maybe_unused]] uint32_t unknown) override
+			{
+				return true;
+			}
+
+			int32_t GetServiceTickPriority(void) override
+			{
+				return 0;
+			}
+
+		private:
+			uint32_t referenceCount = 0;
+			uint32_t serviceId      = VIDEO_MODE_SERVICE_ID;
+			bool     isRunning      = false;
+		};
+
+		VideoModeService& Service(void)
+		{
+			static VideoModeService service;
+			return service;
+		}
 	}
 
 	//// Public API
 
-	void ApplyVideoMode(void)
+	void InstallVideoModeService(void)
 	{
-		if (isVideoModeApplied)
+		if (isServiceInstalled)
 		{
 			return;
 		}
 
-		isVideoModeApplied = true;
-
-		// Leave the mode to SC4GraphicsOptions when it is installed
-		//
-		// The game loads every plugin before the first PreFrameWorkInit, so it is in the
-		// process by now if it is installed at all.
-		if (GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME) != nullptr)
+		cIGZFrameWork* const frameWork = RZGetFrameWork();
+		if (frameWork == nullptr || !frameWork->AddSystemService(&Service()))
 		{
-			LogInfo("SC4GraphicsOptions is installed, so its settings decide the video mode.");
+			LogWarn("Video mode: could not add the service that corrects it, so the game's video mode is left alone.");
 			return;
 		}
 
-		// Find the game's preferences and its graphics system
-		cIGZApp* const application = RZGetFrameWork()->Application();
+		isServiceInstalled = true;
+	}
 
-		cRZAutoRefCount<cISC4App> game;
-		if (application == nullptr || !application->QueryInterface(GZIID_cISC4App, game.AsPPVoid()))
-		{
-			LogWarn("Video mode: the game is not available yet, so its video mode is left alone.");
-			return;
-		}
-
-		SC4Preferences* const preferences = game->GetPreferences();
-		if (preferences == nullptr)
-		{
-			LogWarn("Video mode: the game has no preferences yet, so its video mode is left alone.");
-			return;
-		}
-
-		cIGZGraphicSystemPtr graphicSystem;
-		if (!graphicSystem)
-		{
-			LogWarn("Video mode: the graphics system is not available, so the video mode is left alone.");
-			return;
-		}
-
-		SC4VideoPreferences& video = preferences->videoPreferences;
-
-		cGZDisplayMetrics screen{};
-		graphicSystem->GetScreenMetrics(screen);
-
-		bool isFullscreen = video.bFullScreen != 0;
-
-		// Use the -r size as given
-		//
-		// The game read -r and replaced its size in its own PreFrameWorkInit, which runs
-		// before the plugins' hooks (0x87afdd), so it is read again here. A window larger
-		// than the screen becomes fullscreen, as the game would make it (0x44cf6a). With
-		// the game's size, that can also have happened to a window that fits, so -w
-		// windows it again.
-		cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
-
-		LaunchSize size{};
-		bool const isSizeChanged = commandLine != nullptr && !IsCustomResolutionTurnedOff(*commandLine) && ReadLaunchSize(*commandLine, size) && (size.width != video.width || size.height != video.height);
-
-		if (isSizeChanged)
-		{
-			LogInfo("Using the -r size %ux%u instead of the game's %ux%u.", size.width, size.height, video.width, video.height);
-
-			video.width  = size.width;
-			video.height = size.height;
-
-			if (size.width > screen.width || size.height > screen.height)
-			{
-				isFullscreen = true;
-			}
-			else if (commandLine->GetIndexOfSwitch(cRZBaseString(WINDOWED_SWITCH), 0) >= 0)
-			{
-				isFullscreen = false;
-			}
-
-			video.bFullScreen = isFullscreen ? 1 : 0;
-		}
-
-		// Use 32-bit colour
-		uint32_t const previousDepth  = video.bitDepth;
-		bool const     isDepthChanged = previousDepth != COLOUR_DEPTH && previousDepth != DESKTOP_COLOUR_DEPTH;
-
-		if (isDepthChanged)
-		{
-			video.bitDepth = COLOUR_DEPTH;
-			game->SavePreferences();
-
-			LogInfo("Changed the game's colour depth from %u to %u bits.", previousDepth, COLOUR_DEPTH);
-		}
-
-		// Ask for the mode again
-		//
-		// The game has already turned its preferences into the mode it asks the graphics
-		// system for (0x44ce40), so the request is set again the way it does: a window
-		// takes the screen's depth, and so does fullscreen while the preferences hold none.
-		if (!isSizeChanged && !isDepthChanged)
+	void RemoveVideoModeService(void)
+	{
+		if (!isServiceInstalled)
 		{
 			return;
 		}
 
-		cGZDisplayMetrics request{};
-		request.width    = video.width;
-		request.height   = video.height;
-		request.bitDepth = (isFullscreen && video.bitDepth != DESKTOP_COLOUR_DEPTH) ? video.bitDepth : screen.bitDepth;
+		isServiceInstalled = false;
 
-		graphicSystem->PreInitSetDesiredGameResolution(request);
-		graphicSystem->PreInitSetWindowedMode(!isFullscreen);
+		cIGZFrameWork* const frameWork = RZGetFrameWork();
+		if (frameWork != nullptr)
+		{
+			frameWork->RemoveSystemService(&Service());
+		}
 	}
 }
