@@ -7,13 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-17
+
 ### Added
 
 - A `Use32BitDepth` setting in `scvk.ini` that brings back the 32-bit depth buffer of 0.2.0, off by default
 
+### Changed
+
+- The depth buffer is 16-bit, as on the game's DirectX renderer. Surfaces that sit very close together now band where DirectX bands too
+
 ### Removed
 
-- The 0.2.1 change for the lines around ground lights, which turned other lines into patches of texture. The lines come from lights sitting exactly on their model, and lifting the light slightly fixes them
+- The 0.2.1 change for the lines around ground lights, which turned other lines into patches of texture
+
+### Fixed
+
+- Thin lines around ground lights that sit exactly on their model after scrolling slowly, seen on an AMD RX 570
 
 ## [0.2.1] - 2026-10-11 [YANKED]
 
@@ -68,7 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.2.1...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.2.2...HEAD
+[0.2.2]: https://github.com/aspctt/scvk/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/aspctt/scvk/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/aspctt/scvk/compare/0.1.2...0.2.0
 [0.1.2]: https://github.com/aspctt/scvk/compare/0.1.1...0.1.2
