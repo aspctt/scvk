@@ -84,11 +84,6 @@ namespace scvk
 				settings.shouldPreferHighPerformanceGpu = false;
 			}
 
-			if (HasCommandLineSwitch("-Borderless") || HasCommandLineSwitch("-FullscreenMode:Borderless"))
-			{
-				settings.isBorderlessFullscreen = true;
-			}
-
 			if (HasCommandLineSwitch("-ReShade:off"))
 			{
 				settings.isReShadeIntegrationEnabled = false;
@@ -121,7 +116,6 @@ namespace scvk
 				settings.isFlipModelPreferred = false;
 			}
 
-			settings.isGridDebugEnabled = HasCommandLineSwitch("-GridDebug");
 			return settings;
 		}
 	}

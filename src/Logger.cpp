@@ -20,6 +20,7 @@
 //// Dependencies
 
 #include "Logger.h"
+#include "Settings.h"
 #include "version.h"
 
 #include <windows.h>
@@ -82,11 +83,13 @@ namespace scvk
 		CallSite* callSites     = nullptr;
 		bool      hasEverOpened = false;
 
-		// Read from the command line on the first open, and kept for the rest of the process.
-		LogLevel  logLevel        = DEFAULT_LOG_LEVEL;
-		bool      hasReadLogLevel = false;
-		bool      isLogLevelKnown = true;
-		char      logLevelSetting[16] = {};
+		// Read from the command line or scvk.ini on the first open, and kept for the rest of
+		// the process.
+		LogLevel  logLevel                  = DEFAULT_LOG_LEVEL;
+		bool      hasReadLogLevel           = false;
+		bool      isLogLevelKnown           = true;
+		bool      isLogLevelFromCommandLine = false;
+		char      logLevelSetting[16]       = {};
 
 		// Repeat collapsing. Notes are not subject to the trace budget, because they
 		// carry the explanations rather than the call sequence. That was a mistake in the
@@ -149,27 +152,23 @@ namespace scvk
 			return true;
 		}
 
-		/** The log level from -LogLevel:<name>, or info when it is absent or unknown. */
+		/**
+		 * The log level from -LogLevel:<name> on the game's command line, as SCD3D11 takes
+		 * it, then from LogLevel in scvk.ini, or info when neither names a level.
+		 */
 		void ReadLogLevel(void)
 		{
 			hasReadLogLevel = true;
-
-			// Info unless -LogLevel:<name> on the game's command line says otherwise, as
-			// SCD3D11 takes it
 			strcpy_s(logLevelSetting, sizeof(logLevelSetting), "info");
 
-			char const* const commandLineLevel = strstr(GetCommandLineA(), "-LogLevel:");
-			if (commandLineLevel != nullptr)
+			char path[MAX_PATH];
+			if (GetCommandLineValue("-LogLevel:", logLevelSetting, sizeof(logLevelSetting)))
 			{
-				size_t length = 0;
-				char const* const value = commandLineLevel + strlen("-LogLevel:");
-				while (value[length] != '\0' && value[length] != ' ' && value[length] != '\t' && value[length] != '"' && length + 1 < sizeof(logLevelSetting))
-				{
-					length++;
-				}
-
-				memcpy(logLevelSetting, value, length);
-				logLevelSetting[length] = '\0';
+				isLogLevelFromCommandLine = true;
+			}
+			else if (LogFilePath("scvk.ini", path, sizeof(path)))
+			{
+				GetPrivateProfileStringA("scvk", "LogLevel", "info", logLevelSetting, sizeof(logLevelSetting), path);
 			}
 
 			for (LogLevelEntry const& entry : LOG_LEVEL_NAMES)
@@ -316,9 +315,13 @@ namespace scvk
 			fprintf(logFile, "scvk %s - SimCity 4 Vulkan driver\n", SCVK_VERSION_STRING);
 			fprintf(logFile, "Log level %s.\n", LogLevelName(logLevel));
 
-			if (!isLogLevelKnown)
+			if (!isLogLevelKnown && isLogLevelFromCommandLine)
 			{
 				fprintf(logFile, "-LogLevel:%s is not a level; using %s.\n", logLevelSetting, LogLevelName(logLevel));
+			}
+			else if (!isLogLevelKnown)
+			{
+				fprintf(logFile, "LogLevel=%s in scvk.ini is not a level; using %s.\n", logLevelSetting, LogLevelName(logLevel));
 			}
 
 			if (logLevel == LOG_LEVEL_TRACE)

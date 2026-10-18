@@ -572,9 +572,6 @@ namespace scvk
 		/** Recomputes projection times modelview and hands it to the backend. */
 		void UpdateTransform(void);
 
-		/** With -GridDebug, logs the texture state of the terrain grid pass once a second, as SCD3D11 does. */
-		void NoteGridDebug(void);
-
 		/** Recomputes and forwards where each stage's coordinates come from. */
 		void PushStageCoordinates(void);
 

@@ -38,12 +38,10 @@
 #include "cVKDriver.h"
 #include "Logger.h"
 #include "NativeShadowMasks.h"
-#include "Settings.h"
 #include "VulkanBackend.h"
 
 #include <VertexFormatUtils.h>
 
-#include <windows.h>
 #include <algorithm>
 
 namespace scvk
@@ -175,36 +173,6 @@ namespace scvk
 		return isTextureStageEnabled[0] && isTextureStageEnabled[1] && stage1Texture != 0 && IsGeneratingCoordinates(0) && IsGeneratingCoordinates(1);
 	}
 
-	void cVKDriver::NoteGridDebug(void)
-	{
-		// The grid pass generates its first stage's coordinates from the position
-		if (!GetSettings().isGridDebugEnabled || !isTextureStageEnabled[0] || !IsGeneratingCoordinates(0))
-		{
-			return;
-		}
-
-		static ULONGLONG lastLog = 0;
-		ULONGLONG const  now     = GetTickCount64();
-
-		if (now - lastLog < 1000)
-		{
-			return;
-		}
-
-		uint32_t width = 0, height = 0, levels = 0, uploadedLevels = 0, uploads = 0;
-		if (!vulkan->DescribeTexture(boundTexture, width, height, levels, uploadedLevels, uploads))
-		{
-			return;
-		}
-
-		uint32_t parameters[4] = {};
-		vulkan->GetStageParameters(0, parameters);
-
-		float const* const m = textureStageMatrices[0];
-		LogInfo("[grid] texture=%u size=%ux%u mips=%u uploaded=%u filter=%u/%u wrap=%u/%u matrix=[%.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g; %.4g %.4g %.4g %.4g]", boundTexture, width, height, levels, uploadedLevels, parameters[0], parameters[1], parameters[2], parameters[3], static_cast<double>(m[0]), static_cast<double>(m[1]), static_cast<double>(m[2]), static_cast<double>(m[3]), static_cast<double>(m[4]), static_cast<double>(m[5]), static_cast<double>(m[6]), static_cast<double>(m[7]), static_cast<double>(m[8]), static_cast<double>(m[9]), static_cast<double>(m[10]), static_cast<double>(m[11]), static_cast<double>(m[12]), static_cast<double>(m[13]), static_cast<double>(m[14]), static_cast<double>(m[15]));
-		lastLog = now;
-	}
-
 	//// Public API
 
 	void cVKDriver::DrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
@@ -257,7 +225,6 @@ namespace scvk
 
 		// Draw it
 		PushChangedTransforms();
-		NoteGridDebug();
 		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, firstVertex, vertexCount);
 	}
 
@@ -341,7 +308,6 @@ namespace scvk
 
 		// Draw it
 		PushChangedTransforms();
-		NoteGridDebug();
 		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, indexCount, isIndex32Bit);
 	}
 

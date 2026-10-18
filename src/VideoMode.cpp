@@ -97,6 +97,11 @@ namespace scvk
 		// name of a switch, in any case (0x914001), and reads none of these itself.
 		constexpr char const* BORDERLESS_SWITCHES[] = { "b", "borderless" };
 
+		// SCD3D11's launch option for its borderless fullscreen, -FullscreenMode:Borderless,
+		// taken as scvk's borderless window, so a launcher set up for SCD3D11 gets one.
+		constexpr char const* FULLSCREEN_MODE_SWITCH     = "FullscreenMode";
+		constexpr char const* FULLSCREEN_MODE_BORDERLESS = "Borderless";
+
 		// The preferences' renderer for the game's Software renderer, which its options
 		// and -d:soft choose (0x44d029). Any other value picks a slot scvk serves.
 		constexpr uint8_t SOFTWARE_DRIVER_TYPE = 0;
@@ -185,6 +190,13 @@ namespace scvk
 			}
 
 			return false;
+		}
+
+		/** Whether SCD3D11's -FullscreenMode:Borderless is among the launch options. */
+		bool IsFullscreenModeBorderless(cIGZCmdLine const* commandLine)
+		{
+			cRZBaseString value;
+			return commandLine != nullptr && commandLine->IsSwitchPresent(cRZBaseString(FULLSCREEN_MODE_SWITCH), value, true) && _stricmp(value.ToChar(), FULLSCREEN_MODE_BORDERLESS) == 0;
 		}
 
 		/** Whether scvk will be the renderer, as far as can be told this early. */
@@ -294,6 +306,11 @@ namespace scvk
 			{
 				isBorderless = true;
 				LogInfo("Borderless: asked for by a launch option.");
+			}
+			else if (IsFullscreenModeBorderless(commandLine))
+			{
+				isBorderless = true;
+				LogInfo("Borderless: asked for by SCD3D11's -FullscreenMode:Borderless.");
 			}
 			else if (graphicsOptions != nullptr && IsGraphicsOptionsBorderless(graphicsOptions))
 			{

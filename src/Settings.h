@@ -27,11 +27,6 @@ namespace scvk
 {
 	//// Types
 
-	/**
-	 * The renderer's settings. There is no settings file: every one has a default that
-	 * suits playing, and the game's command line can still change them with the switches
-	 * SCD3D11 takes, so a launcher set up for one renderer behaves the same with the other.
-	 */
 	/** Which of the game-side shadow modules run. See NativeShadowMasks and NativeShadowRegistry. */
 	enum class NativeShadowMode
 	{
@@ -42,6 +37,12 @@ namespace scvk
 		Replace,  // all of them, and the shadow registry and the terrain's own shadows on top
 	};
 
+	/**
+	 * The renderer's launch options. Every one has a default that suits playing, and the
+	 * game's command line can change them with the switches SCD3D11 takes, so a launcher
+	 * set up for one renderer behaves the same with the other. The few settings older
+	 * than these live in scvk.ini, which is optional.
+	 */
 	struct Settings
 	{
 		// -VSync:off. Off presents with MAILBOX, or IMMEDIATE where that is all
@@ -51,10 +52,6 @@ namespace scvk
 		// -GPU:default. Off takes the first device Vulkan lists, the way Windows
 		// picks the adapter, instead of preferring a discrete GPU.
 		bool shouldPreferHighPerformanceGpu = true;
-
-		// -Borderless, -FullscreenMode:Borderless. A fullscreen mode becomes
-		// a monitor-sized window without a display mode change, the picture scaled to it.
-		bool isBorderlessFullscreen = false;
 
 		// -ReShade:off. Registers scvk as a ReShade add-on so effects render
 		// under the interface, with the city's depth supplied.
@@ -74,9 +71,6 @@ namespace scvk
 		// terrain's own shadows; it is experimental, and in a city of dense parks and
 		// raised roads it laid blocks of shadow across the roads.
 		NativeShadowMode nativeShadowMode = NativeShadowMode::Off;
-
-		// -GridDebug. Logs the terrain grid pass's texture state once a second.
-		bool isGridDebugEnabled = false;
 	};
 
 	//// Public API
