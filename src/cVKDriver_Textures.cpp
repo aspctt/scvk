@@ -43,7 +43,6 @@
 
 #include <cGDCombiner.h>
 
-#include <algorithm>
 #include <string.h>
 
 namespace scvk
@@ -193,100 +192,16 @@ namespace scvk
 	void cVKDriver::BindTexture(uint32_t gdTextureTarget, uint32_t texture)
 	{
 		SCVK_CALL("%u, %u", gdTextureTarget, texture);
-
-		// Binds a name GenTextures handed out, or CreateTexture made, to the active stage,
-		// as SCD3D11 does
-		if (gdTextureTarget != 0 || (texture != 0 && !vulkan->IsTextureName(texture)))
-		{
-			SetLastError(DriverError::INVALID_VALUE);
-			return;
-		}
-
-		BindStageTexture(activeTextureStage, texture);
 	}
 
 	void cVKDriver::TexImage2D(uint32_t gdTextureTarget, int32_t level, int32_t gdInternalTextureFormat, int32_t width, int32_t height, int32_t border, uint32_t gdTextureFormat, uint32_t gdType, void const* pixels)
 	{
 		SCVK_CALL("%u, %d, %d, %dx%d, border %d, fmt %u, type %u, %p", gdTextureTarget, level, gdInternalTextureFormat, width, height, border, gdTextureFormat, gdType, pixels);
-
-		// Defines a level of the texture bound to the active stage, OpenGL's way of making
-		// a texture, which SCD3D11 implements alongside CreateTexture
-		uint32_t const texture = (activeTextureStage == 0) ? boundTexture : stage1Texture;
-
-		if (gdTextureTarget != 0 || level < 0 || border != 0 || width <= 0 || height <= 0 || gdInternalTextureFormat < 0 || !vulkan->IsTextureName(texture))
-		{
-			SetLastError(DriverError::INVALID_VALUE);
-			return;
-		}
-
-		// All of them are positive, checked just above.
-		uint32_t const levelIndex     = static_cast<uint32_t>(level);
-		uint32_t const levelWidth     = static_cast<uint32_t>(width);
-		uint32_t const levelHeight    = static_cast<uint32_t>(height);
-		uint32_t const internalFormat = static_cast<uint32_t>(gdInternalTextureFormat);
-
-		if (levelIndex == 0)
-		{
-			// The top level gives the texture its size and format, keeping an image that
-			// already has them
-			if (!vulkan->DefineTexture(texture, internalFormat, levelWidth, levelHeight, 1))
-			{
-				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
-				return;
-			}
-		}
-		else
-		{
-			// A smaller level has to match the top level's size halved that many times,
-			// and adds every level to the image the first time one is named
-			uint32_t topWidth = 0, topHeight = 0, levels = 0, uploadedLevels = 0, uploads = 0;
-			if (!vulkan->DescribeTexture(texture, topWidth, topHeight, levels, uploadedLevels, uploads))
-			{
-				SetLastError(DriverError::INVALID_VALUE);
-				return;
-			}
-
-			uint32_t maximumLevels = 1;
-			for (uint32_t dimension = std::max(topWidth, topHeight); dimension > 1; dimension >>= 1)
-			{
-				maximumLevels++;
-			}
-
-			if (levelIndex >= maximumLevels || levelWidth != std::max(topWidth >> levelIndex, 1u) || levelHeight != std::max(topHeight >> levelIndex, 1u))
-			{
-				SetLastError(DriverError::INVALID_VALUE);
-				return;
-			}
-
-			if (levelIndex >= levels && !vulkan->DefineTexture(texture, internalFormat, topWidth, topHeight, maximumLevels))
-			{
-				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
-				return;
-			}
-		}
-
-		// Bind the image the name now has, which a reserved name did not have before
-		BindStageTexture(activeTextureStage, texture);
-
-		if (pixels != nullptr)
-		{
-			vulkan->UploadTextureLevel(texture, levelIndex, 0, 0, levelWidth, levelHeight, gdTextureFormat, gdType, pixelStoreRowLength, pixels);
-		}
 	}
 
 	void cVKDriver::PixelStore(uint32_t gdParameter, int32_t parameter)
 	{
 		SCVK_CALL("%u, %d", gdParameter, parameter);
-
-		// The one parameter is the row length, in pixels, of what TexImage2D and the
-		// blits read
-		if (gdParameter != 0 || parameter < 0)
-		{
-			SetLastError(DriverError::INVALID_VALUE);
-			return;
-		}
-
-		pixelStoreRowLength = static_cast<uint32_t>(parameter);
 	}
 
 	void cVKDriver::TexEnv(uint32_t gdTextureEnvironmentTarget, uint32_t gdTextureEnvironmentParameterType, int32_t gdTextureEnvironmentMode)
@@ -399,20 +314,24 @@ namespace scvk
 			return;
 		}
 
-		// Names come from the same space as CreateTexture's handles, so either kind can be
-		// bound, deleted and asked about the same way
+		// Hand out no names
+		//
+		// The game makes its textures with CreateTexture and never calls this, nor the
+		// BindTexture and TexImage2D a name from here would need. Zero is the game's "no
+		// texture".
 		for (int32_t i = 0; i < count; i++)
 		{
-			textures[i] = vulkan->ReserveTexture();
+			textures[i] = 0;
 		}
+
+		SetLastError(DriverError::NOT_SUPPORTED);
 	}
 
 	void cVKDriver::DeleteTextures(int32_t count, uint32_t const* textures)
 	{
 		SCVK_CALL("%d, %p", count, textures);
 
-		// The handles CreateTexture returned and the names GenTextures handed out share
-		// one space
+		// These are the handles CreateTexture returned. GenTextures hands out none.
 		if (count < 0 || (count > 0 && textures == nullptr))
 		{
 			SetLastError(DriverError::INVALID_VALUE);

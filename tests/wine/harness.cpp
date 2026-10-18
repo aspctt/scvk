@@ -12,7 +12,6 @@
 
 #include <cIGZCOMDirector.h>
 #include <cIGZGDriver.h>
-#include <ext/cIGZGDriverLightingExtension.h>
 #include <sGDMode.h>
 #include <VertexFormatUtils.h>
 
@@ -41,33 +40,6 @@ namespace
 		float   x, y, z;
 		uint8_t colour[4];
 	};
-
-	// The upper half of the grid is drawn through the lighting extension: a directional
-	// light along the normals, with this diffuse colour, over a quarter of ambient light,
-	// both lighting the vertex colour.
-	constexpr int   LIT_FIRST_ROW   = ROWS / 2;
-	constexpr float LIT_AMBIENT     = 0.25f;
-	constexpr float LIT_DIFFUSE[3]  = { 1.0f, 0.5f, 0.25f };
-
-	struct LitVertex
-	{
-		float   x, y, z;
-		float   nx, ny, nz;
-		uint8_t colour[4];
-	};
-
-	uint8_t GreyOf(int column, int row);
-
-	// The colour Direct3D 7 lights a square with, red, green, blue
-	void ExpectedColour(int column, int row, bool isLightingTested, uint8_t out[3])
-	{
-		uint8_t const grey = GreyOf(column, row);
-		for (int channel = 0; channel < 3; channel++)
-		{
-			float const value = (isLightingTested && row >= LIT_FIRST_ROW) ? (LIT_AMBIENT + LIT_DIFFUSE[channel]) * grey / 255.0f : grey / 255.0f;
-			out[channel] = static_cast<uint8_t>(std::fmin(value, 1.0f) * 255.0f + 0.5f);
-		}
-	}
 
 	uint8_t GreyOf(int column, int row)
 	{
@@ -122,19 +94,15 @@ int main(int argc, char** argv)
 	int  frames          = 120;
 	bool isFullscreen    = false;
 	bool shouldCheckClip = false;
-	bool isLightingTested = false;
 	bool isCrashTested    = false;
 	bool isTexEnvBlendTested = false;
-	bool isPointLightTested  = false;
 
 	for (int i = 1; i < argc; i++)
 	{
 		if (std::strcmp(argv[i], "-fullscreen") == 0) isFullscreen = true;
 		else if (std::strcmp(argv[i], "-checkclipboard") == 0) shouldCheckClip = true;
-		else if (std::strcmp(argv[i], "-lighting") == 0) isLightingTested = true;
 		else if (std::strcmp(argv[i], "-crash") == 0) isCrashTested = true;
 		else if (std::strcmp(argv[i], "-texenvblend") == 0) isTexEnvBlendTested = true;
-		else if (std::strcmp(argv[i], "-pointlight") == 0) isPointLightTested = isLightingTested = true;
 		else if (argv[i][0] != '-') frames = std::atoi(argv[i]);
 	}
 
@@ -242,19 +210,6 @@ int main(int argc, char** argv)
 		}
 	}
 
-	std::vector<LitVertex> litVertices;
-	for (Vertex const& vertex : quadVertices)
-	{
-		litVertices.push_back(LitVertex{ vertex.x, vertex.y, vertex.z, 0.0f, 0.0f, 1.0f, { vertex.colour[0], vertex.colour[1], vertex.colour[2], vertex.colour[3] } });
-	}
-
-	cIGZGDriverLightingExtension* lighting = nullptr;
-	if (isLightingTested && (!driver->QueryInterface(GZIID_cIGZGDriverLightingExtension, reinterpret_cast<void**>(&lighting)) || lighting == nullptr))
-	{
-		std::printf("FAIL: no lighting extension\n");
-		return 1;
-	}
-
 	for (int cell = 0; cell < COLUMNS * ROWS; cell++)
 	{
 		uint32_t const base = uint32_t(cell * 4);
@@ -270,10 +225,8 @@ int main(int argc, char** argv)
 		-1, -1, 0, 1,
 	};
 
-	uint32_t const format    = driver->MakeVertexFormat(kGDVertexFormat_V3F_C4UB);
-	uint32_t const litFormat = driver->MakeVertexFormat(kGDVertexFormat_V3F_N3F_C4UB);
+	uint32_t const format = driver->MakeVertexFormat(kGDVertexFormat_V3F_C4UB);
 
-	// Draw the frames
 	// The texture environment's blend mode: one texel of known colour and alpha, over a
 	// blue vertex colour, with a white environment colour
 	struct TexturedVertex
@@ -289,10 +242,11 @@ int main(int argc, char** argv)
 
 	if (isTexEnvBlendTested)
 	{
+		// RGBA8, from RGBA unsigned bytes, as the game makes its textures. Handles are
+		// small positive numbers, so the result fits.
 		uint8_t const texel[4] = { 255, 128, 0, 128 };   // RGBA
-		driver->GenTextures(1, &blendTexture);
-		driver->BindTexture(0, blendTexture);
-		driver->TexImage2D(0, 0, 1, 1, 1, 0, 1, 1, texel);
+		blendTexture = static_cast<uint32_t>(driver->CreateTexture(4, 1, 1, 1, 0));
+		driver->LoadTextureLevel(blendTexture, 0, 0, 0, 1, 1, 1, 1, 0, texel);
 
 		float const w = float(width) / 2.0f, h = float(height);
 		uint8_t const blue[4] = { 255, 0, 0, 255 };     // BGRA
@@ -304,31 +258,7 @@ int main(int argc, char** argv)
 		};
 	}
 
-	// A point light over the middle of one quad the size of the window, which faces it:
-	// lit per pixel, the middle is brightest and the light falls off towards the edges;
-	// lit per vertex, the four corners are equally far and the whole quad is one colour
-	struct LitVertex
-	{
-		float   x, y, z;
-		float   nx, ny, nz;
-		uint8_t colour[4];
-	};
-
-	float const POINT_LIGHT_HEIGHT = 100.0f;
-	std::vector<LitVertex> pointLightQuad;
-
-	if (isPointLightTested)
-	{
-		float const w = float(width), h = float(height);
-		pointLightQuad = {
-			{ 0, 0, 0.5f, 0, 0, 1, { 255, 255, 255, 255 } },
-			{ w, 0, 0.5f, 0, 0, 1, { 255, 255, 255, 255 } },
-			{ w, h, 0.5f, 0, 0, 1, { 255, 255, 255, 255 } },
-			{ 0, h, 0.5f, 0, 0, 1, { 255, 255, 255, 255 } },
-		};
-	}
-
-	// Start with an empty clipboard, and keep drawing until PrintScreen fills it
+	// Draw the frames, starting with an empty clipboard, and keep drawing until PrintScreen fills it
 	if (shouldCheckClip && OpenClipboard(nullptr))
 	{
 		EmptyClipboard();
@@ -367,7 +297,7 @@ int main(int argc, char** argv)
 		if (isTexEnvBlendTested)
 		{
 			float const white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-			driver->BindTexture(0, blendTexture);
+			driver->SetTexture(blendTexture, 0);
 			driver->Enable(kGDCapability_Texture2D);
 			driver->TexEnv(0, kGDTextureEnvParamType_Color, white);
 			driver->TexEnv(0, kGDTextureEnvParamType_Mode, kGDTextureEnvParam_Blend);
@@ -382,44 +312,8 @@ int main(int argc, char** argv)
 			continue;
 		}
 
-		if (isPointLightTested && lighting != nullptr)
-		{
-			float const black[4]    = { 0.0f, 0.0f, 0.0f, 1.0f };
-			float const white[4]    = { 1.0f, 1.0f, 1.0f, 1.0f };
-			float const position[4] = { float(width) / 2.0f, float(height) / 2.0f, 0.5f + POINT_LIGHT_HEIGHT, 1.0f };
-			driver->ColorMultiplier(0.0f, 0.0f, 0.0f);
-			lighting->LightColor(0, black, white, black);
-			lighting->LightPosition(0, position);
-			lighting->EnableLight(0, true);
-			driver->InterleavedArrays(litFormat, 0, pointLightQuad.data());
-			driver->DrawArrays(PRIMITIVE_QUADS, 0, 4);
-			lighting->EnableLight(0, false);
-			driver->Flush();
-			continue;
-		}
-
 		for (int cell = 0; cell < COLUMNS * ROWS; cell++)
 		{
-			// The lit half, through the lighting extension, with normals
-			if (lighting != nullptr && cell / COLUMNS >= LIT_FIRST_ROW)
-			{
-				if (cell / COLUMNS == LIT_FIRST_ROW && cell % COLUMNS == 0)
-				{
-					float const black[4]   = { 0.0f, 0.0f, 0.0f, 1.0f };
-					float const diffuse[4] = { LIT_DIFFUSE[0], LIT_DIFFUSE[1], LIT_DIFFUSE[2], 1.0f };
-					float const along[3]   = { 0.0f, 0.0f, 1.0f };
-					driver->ColorMultiplier(LIT_AMBIENT, LIT_AMBIENT, LIT_AMBIENT);
-					lighting->LightColor(0, black, diffuse, black);
-					lighting->LightDirection(0, along);
-					lighting->EnableLight(0, true);
-				}
-
-				driver->InterleavedArrays(litFormat, 0, litVertices.data());
-				if (cell % 2 == 0) driver->DrawArrays(PRIMITIVE_QUADS, cell * 4, 4);
-				else driver->DrawElements(PRIMITIVE_QUADS, 4, INDEX_UNSIGNED_INT, intIndices.data() + cell * 4);
-				continue;
-			}
-
 			switch (cell % 4)
 			{
 			case 0:
@@ -442,11 +336,6 @@ int main(int argc, char** argv)
 				driver->DrawElements(PRIMITIVE_QUADS, 4, INDEX_UNSIGNED_INT, intIndices.data() + cell * 4);
 				break;
 			}
-		}
-
-		if (lighting != nullptr)
-		{
-			lighting->EnableLight(0, false);
 		}
 
 		driver->Flush();
@@ -515,30 +404,6 @@ int main(int argc, char** argv)
 				Fail("the texture environment's blend mode");
 			}
 		}
-		else if (isPointLightTested)
-		{
-			// N.L = height / distance to the light, along the middle row
-			int wrong = 0;
-			for (int step = 0; step <= 4; step++)
-			{
-				int const x  = (width - 1) * step / 8;           // from the left edge to the middle
-				int const yUp = height / 2;
-				int const y  = isTopDown ? (captureHeight - 1 - yUp) : yUp;
-				float const dx = float(x) + 0.5f - float(width) / 2.0f;
-				float const want = 255.0f * POINT_LIGHT_HEIGHT / std::sqrt(dx * dx + POINT_LIGHT_HEIGHT * POINT_LIGHT_HEIGHT);
-				uint8_t const* const pixel = &pixels[(size_t(y) * captureWidth + x) * 4];
-				std::printf("point light: x %4d rgb %3u,%3u,%3u (want about %.0f)\n", x, pixel[2], pixel[1], pixel[0], want);
-				if (std::fabs(float(pixel[2]) - want) > 4.0f || pixel[2] != pixel[1] || pixel[1] != pixel[0])
-				{
-					wrong++;
-				}
-			}
-
-			if (wrong != 0)
-			{
-				Fail("the point light's fall-off across one quad");
-			}
-		}
 		else
 		{
 			int wrong = 0;
@@ -556,18 +421,17 @@ int main(int argc, char** argv)
 
 					uint8_t const* const centre = &pixels[(size_t(y) * captureWidth + x) * 4];
 					uint8_t const* const gap    = &pixels[(size_t(gapY) * captureWidth + column * CELL) * 4];
-					uint8_t expected[3];
-					ExpectedColour(column, row, isLightingTested, expected);
+					uint8_t const expected = GreyOf(column, row);
 
 					// The capture is BGRA
-					bool const isCentreRight = std::abs(centre[2] - expected[0]) <= 2 && std::abs(centre[1] - expected[1]) <= 2 && std::abs(centre[0] - expected[2]) <= 2;
+					bool const isCentreRight = std::abs(centre[2] - expected) <= 2 && std::abs(centre[1] - expected) <= 2 && std::abs(centre[0] - expected) <= 2;
 					bool const isGapClear    = gap[0] == 0 && gap[1] == 0 && gap[2] == 0;
 
 					if (!isCentreRight || !isGapClear)
 					{
 						if (wrong < 5)
 						{
-							std::printf("  cell %d,%d (path %d): centre rgb %u,%u,%u want %u,%u,%u; gap %u,%u,%u\n", column, row, (row * COLUMNS + column) % 4, centre[2], centre[1], centre[0], expected[0], expected[1], expected[2], gap[0], gap[1], gap[2]);
+							std::printf("  cell %d,%d (path %d): centre rgb %u,%u,%u want %u,%u,%u; gap %u,%u,%u\n", column, row, (row * COLUMNS + column) % 4, centre[2], centre[1], centre[0], expected, expected, expected, gap[0], gap[1], gap[2]);
 						}
 
 						wrong++;

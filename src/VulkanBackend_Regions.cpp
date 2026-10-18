@@ -193,20 +193,9 @@ namespace scvk
 
 	//// Public API
 
-	void VulkanBackend::ClearDepth(bool shouldClearDepth, float depth, bool shouldClearStencil, uint32_t stencil)
+	void VulkanBackend::ClearDepth(float depth)
 	{
-		VkImageAspectFlags aspects = 0;
-		if (shouldClearDepth)
-		{
-			aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
-		}
-
-		if (shouldClearStencil && hasStencil)
-		{
-			aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
-		}
-
-		if (aspects == 0 || !EnsureFrame() || depthBuffer.image == VK_NULL_HANDLE)
+		if (!EnsureFrame() || depthBuffer.image == VK_NULL_HANDLE)
 		{
 			return;
 		}
@@ -229,9 +218,9 @@ namespace scvk
 		BeginRenderPassIfNeeded();
 
 		VkClearAttachment attachment{};
-		attachment.aspectMask = aspects;
+		attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		attachment.clearValue.depthStencil.depth   = std::clamp(depth, 0.0f, 1.0f);
-		attachment.clearValue.depthStencil.stencil = stencil & 0xffu;
+		attachment.clearValue.depthStencil.stencil = 0;
 
 		VkClearRect clearRectangle{};
 		clearRectangle.rect       = scissor;

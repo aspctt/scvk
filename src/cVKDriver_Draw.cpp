@@ -210,11 +210,7 @@ namespace scvk
 	void cVKDriver::DrawArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
 	{
 		SCVK_CALL("%u, %d, %d", gdPrimitiveType, first, count);
-		DrawClientArrays(gdPrimitiveType, first, count);
-	}
 
-	void cVKDriver::DrawClientArrays(uint32_t gdPrimitiveType, int32_t first, int32_t count)
-	{
 		if (count <= 0 || first < 0 || vertexPointer == nullptr || vertexStride == 0)
 		{
 			return;
@@ -253,24 +249,31 @@ namespace scvk
 		uint8_t const* const vertices = static_cast<uint8_t const*>(vertexPointer) + size_t{ firstVertex } * vertexStride;
 		NoteLiveShadowCandidate(gdPrimitiveType, vertices, vertexCount, nullptr, 0, false, 0);
 
+		// Remember the terrain's view, which live shadows fall back on
+		if (vertexFormat == kGDVertexFormat_V3F_C4UB_2T2F)
+		{
+			NoteLiveShadowTerrainView(vertices);
+		}
+
 		// Draw it
 		PushChangedTransforms();
 		NoteGridDebug();
-
-		// Light it on the CPU when the lighting extension asks for more than the shader
-		// does on its own
-		if (IsFixedFunctionLightingNeeded())
-		{
-			DrawLit(gdPrimitiveType, firstVertex, vertexCount, nullptr, 0, false);
-			return;
-		}
-
 		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, firstVertex, vertexCount);
 	}
 
 	void cVKDriver::DrawElements(uint32_t gdPrimitiveType, int32_t count, uint32_t gdType, void const* indices)
 	{
 		SCVK_CALL("%u, %d, %u, %p", gdPrimitiveType, count, gdType, indices);
+
+		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
+		{
+			return;
+		}
+
+		if (shouldSkipCloudShadows && IsCloudShadowDraw())
+		{
+			return;
+		}
 
 		// Read the index width
 		//
@@ -290,21 +293,6 @@ namespace scvk
 				LogWarn("  DrawElements: index type %u is not handled; skipping the draw.", gdType);
 			}
 
-			return;
-		}
-
-		DrawClientElements(gdPrimitiveType, count, indices, isIndex32Bit);
-	}
-
-	void cVKDriver::DrawClientElements(uint32_t gdPrimitiveType, int32_t count, void const* indices, bool isIndex32Bit)
-	{
-		if (count <= 0 || indices == nullptr || vertexPointer == nullptr || vertexStride == 0)
-		{
-			return;
-		}
-
-		if (shouldSkipCloudShadows && IsCloudShadowDraw())
-		{
 			return;
 		}
 
@@ -342,28 +330,18 @@ namespace scvk
 			NoteLiveShadowCandidate(gdPrimitiveType, vertices, highest - lowest + 1, indices, indexCount, isIndex32Bit, lowest);
 		}
 
+		// Remember the terrain's view, which live shadows fall back on
+		//
+		// The pointer holds indices of the width just read.
+		if (vertexFormat == kGDVertexFormat_V3F_C4UB_2T2F)
+		{
+			uint32_t const firstIndex = isIndex32Bit ? static_cast<uint32_t const*>(indices)[0] : static_cast<uint16_t const*>(indices)[0];
+			NoteLiveShadowTerrainView(static_cast<uint8_t const*>(vertexPointer) + size_t{ firstIndex } * vertexStride);
+		}
+
 		// Draw it
 		PushChangedTransforms();
 		NoteGridDebug();
-
-		// Light the range the indices read on the CPU when the lighting extension asks
-		// for more than the shader does on its own
-		if (IsFixedFunctionLightingNeeded())
-		{
-			uint32_t lowest  = UINT32_MAX;
-			uint32_t highest = 0;
-
-			for (uint32_t index = 0; index < indexCount; index++)
-			{
-				uint32_t const value = isIndex32Bit ? static_cast<uint32_t const*>(indices)[index] : static_cast<uint16_t const*>(indices)[index];
-				lowest  = std::min(lowest, value);
-				highest = std::max(highest, value);
-			}
-
-			DrawLit(gdPrimitiveType, lowest, highest - lowest + 1, indices, indexCount, isIndex32Bit);
-			return;
-		}
-
 		vulkan->DrawIndexedVertices(gdPrimitiveType, vertexFormat, vertexPointer, indices, indexCount, isIndex32Bit);
 	}
 

@@ -598,8 +598,7 @@ namespace scvk
 			return;
 		}
 
-		// Called right after the reservation was drawn from, which holds at least one
-		// vertex; its format leads with the position
+		// Called with a vertex of a terrain draw, whose format leads with the position
 		std::memcpy(liveShadowTerrainView, modelViewMatrix, sizeof(liveShadowTerrainView));
 		std::memcpy(liveShadowTerrainVertex, firstVertex, sizeof(liveShadowTerrainVertex));
 		isLiveShadowTerrainViewValid = true;

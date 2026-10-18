@@ -33,7 +33,8 @@
  * BufferRegionEnabled to ask whether it is available, so this interface has to stay safe
  * when called rather than merely consistent.
  *
- * Lighting is in cVKDriver_Lighting.cpp, which lights as SCD3D11 does.
+ * Lighting is present because the interface requires it, though SimCity 4 never asks for
+ * it: it expects a single directional light to have been set up by the driver itself.
  */
 
 //// Dependencies
@@ -46,7 +47,6 @@
 #include <cIGZFrameWork.h>
 #include <cIGZGraphicSystem.h>
 #include <cRZCOMDllDirector.h>
-#include <VertexFormatUtils.h>
 
 #include <algorithm>
 #include <string.h>
@@ -346,189 +346,106 @@ namespace scvk
 		return buffer;
 	}
 
-	// cIGZGDriverLightingExtension is in cVKDriver_Lighting.cpp.
+	// cIGZGDriverLightingExtension
+
+	void cVKDriver::EnableLighting(bool isEnabled)
+	{
+		SCVK_CALL("%d", isEnabled);
+	}
+
+	void cVKDriver::EnableLight(uint32_t light, bool isEnabled)
+	{
+		SCVK_CALL("%u, %d", light, isEnabled);
+	}
+
+	void cVKDriver::LightModelAmbient(float red, float green, float blue, float alpha)
+	{
+		SCVK_CALL("%.3f, %.3f, %.3f, %.3f", red, green, blue, alpha);
+	}
+
+	void cVKDriver::LightColor(uint32_t light, uint32_t type, float const* colour)
+	{
+		SCVK_CALL("%u, %u, %p", light, type, colour);
+	}
+
+	void cVKDriver::LightColor(uint32_t light, float const* ambient, float const* diffuse, float const* specular)
+	{
+		SCVK_CALL("%u, %p, %p, %p", light, ambient, diffuse, specular);
+	}
+
+	void cVKDriver::LightPosition(uint32_t light, float const* position)
+	{
+		SCVK_CALL("%u, %p", light, position);
+	}
+
+	void cVKDriver::LightDirection(uint32_t light, float const* direction)
+	{
+		SCVK_CALL("%u, %p", light, direction);
+	}
+
+	void cVKDriver::MaterialColor(uint32_t type, float const* colour)
+	{
+		SCVK_CALL("%u, %p", type, colour);
+	}
+
+	void cVKDriver::MaterialColor(float const* ambient, float const* diffuse, float const* specular, float const* emission, float shininess)
+	{
+		SCVK_CALL("%p, %p, %p, %p, %.3f", ambient, diffuse, specular, emission, shininess);
+	}
 
 	// cIGZGDriverVertexBufferExtension
 	//
-	// The terrain's vertex buffer, as SCD3D11 implements it. There is one buffer, named 0,
-	// of the terrain's format: the game reserves vertices in it with GetVertices, writes
-	// them, releases it, then draws from the reservation with DrawPrims or
-	// DrawPrimsIndexed. The memory is the driver's own, so a draw reads it like any client
-	// array, through the same path as DrawArrays and DrawElements.
-
-	namespace
-	{
-		// The single buffer's capacity, in vertices, and its format.
-		constexpr uint32_t EXTENSION_MAXIMUM_VERTICES = 32768;
-		constexpr uint32_t EXTENSION_VERTEX_FORMAT    = kGDVertexFormat_V3F_C4UB_2T2F;
-	}
+	// Not exposed through QueryInterface, so none of this should run. The implementations
+	// exist to satisfy the interface and to make it obvious in the trace if that
+	// assumption turns out to be wrong.
 
 	char const* cVKDriver::GetVertexBufferName(uint32_t gdVertexFormat)
 	{
-		SCVK_CALL("0x%x", gdVertexFormat);
-
-		if (gdVertexFormat != EXTENSION_VERTEX_FORMAT)
-		{
-			LogDebug("  vertex buffer format 0x%x requested; only the terrain's exists.", gdVertexFormat);
-		}
-
-		// The game takes a null name as the single terrain buffer, 0.
-		return nullptr;
+		SCVK_CALL("0x%x  [UNEXPECTED: extension not exposed]", gdVertexFormat);
+		return "scvk";
 	}
 
-	uint32_t cVKDriver::VertexBufferType(uint32_t name)
+	uint32_t cVKDriver::VertexBufferType(uint32_t unknown)
 	{
-		SCVK_CALL("%u", name);
-		return (name == 0) ? EXTENSION_VERTEX_FORMAT : UINT32_MAX;
+		SCVK_CALL("%u  [UNEXPECTED]", unknown);
+		return 0;
 	}
 
-	uint32_t cVKDriver::MaxVertices(uint32_t name)
+	uint32_t cVKDriver::MaxVertices(uint32_t unknown)
 	{
-		SCVK_CALL("%u", name);
-		return (name == 0) ? EXTENSION_MAXIMUM_VERTICES : 0;
+		SCVK_CALL("%u  [UNEXPECTED]", unknown);
+		return 0;
 	}
 
 	uint32_t cVKDriver::GetVertices(int32_t name, uint32_t count)
 	{
-		SCVK_CALL("%d, %u", name, count);
-
-		uint32_t const stride = RZVertexFormatStride(EXTENSION_VERTEX_FORMAT);
-		if (name != 0 || count == 0 || count > EXTENSION_MAXIMUM_VERTICES || areExtensionVerticesLocked)
-		{
-			return 0;
-		}
-
-		// Reserve the next stretch, starting over at the front when it does not fit
-		if (extensionVertexCursor + count > EXTENSION_MAXIMUM_VERTICES)
-		{
-			extensionVertexCursor = 0;
-		}
-
-		size_t const bytes = size_t{ EXTENSION_MAXIMUM_VERTICES } * stride;
-		if (extensionVertexData.size() != bytes)
-		{
-			extensionVertexData.resize(bytes);
-		}
-
-		extensionVertexStart        = extensionVertexCursor;
-		extensionVertexCursor      += count;
-		areExtensionVerticesLocked  = true;
-
-		// The interface hands the address back as a 32-bit word; the process is 32-bit.
-		return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(extensionVertexData.data() + size_t{ extensionVertexStart } * stride));
+		SCVK_CALL("%d, %u  [UNEXPECTED]", name, count);
+		return 0;
 	}
 
-	uint32_t cVKDriver::ContinueVertices(uint32_t name, uint32_t count)
+	uint32_t cVKDriver::ContinueVertices(uint32_t unknown, uint32_t unknown2)
 	{
-		SCVK_CALL("%u, %u", name, count);
-
-		uint32_t const stride = RZVertexFormatStride(EXTENSION_VERTEX_FORMAT);
-		if (name != 0 || !areExtensionVerticesLocked || count == 0 || count > EXTENSION_MAXIMUM_VERTICES - extensionVertexCursor)
-		{
-			return 0;
-		}
-
-		uint8_t* const address = extensionVertexData.data() + size_t{ extensionVertexCursor } * stride;
-		extensionVertexCursor += count;
-		return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(address));
+		SCVK_CALL("%u, %u  [UNEXPECTED]", unknown, unknown2);
+		return 0;
 	}
 
-	void cVKDriver::ReleaseVertices(uint32_t name)
+	void cVKDriver::ReleaseVertices(uint32_t unknown)
 	{
-		SCVK_CALL("%u", name);
-
-		if (name == 0)
-		{
-			areExtensionVerticesLocked = false;
-		}
+		SCVK_CALL("%u  [UNEXPECTED]", unknown);
 	}
 
-	bool cVKDriver::HasExtensionVertices(uint32_t bytes) const
+	void cVKDriver::DrawPrims(uint32_t unknown, uint32_t gdPrimitiveType, void* primitives, uint32_t count)
 	{
-		// Draws read only the current reservation, released, in whole vertices
-		uint32_t const stride = RZVertexFormatStride(EXTENSION_VERTEX_FORMAT);
-		return !areExtensionVerticesLocked && bytes != 0 && stride != 0 && bytes % stride == 0 && bytes / stride <= extensionVertexCursor - extensionVertexStart && !extensionVertexData.empty();
-	}
-
-	void cVKDriver::DrawPrims(uint32_t name, uint32_t gdPrimitiveType, void* primitives, uint32_t count)
-	{
-		SCVK_CALL("%u, %u, %p, %u", name, gdPrimitiveType, primitives, count);
-
-		// The last argument is the size of the vertices in bytes
-		if (name != 0 || !HasExtensionVertices(count))
-		{
-			return;
-		}
-
-		uint32_t const stride   = RZVertexFormatStride(EXTENSION_VERTEX_FORMAT);
-		uint8_t* const vertices = extensionVertexData.data() + size_t{ extensionVertexStart } * stride;
-
-		NoteLiveShadowTerrainView(vertices);
-
-		// Draw through the client array path, from the reservation
-		uint32_t const    previousFormat  = vertexFormat;
-		uint32_t const    previousStride  = vertexStride;
-		void const* const previousPointer = vertexPointer;
-
-		vertexFormat  = EXTENSION_VERTEX_FORMAT;
-		vertexStride  = stride;
-		vertexPointer = vertices;
-
-		// At most the buffer's 32768 vertices, so it fits.
-		DrawClientArrays(gdPrimitiveType, 0, static_cast<int32_t>(count / stride));
-
-		vertexFormat  = previousFormat;
-		vertexStride  = previousStride;
-		vertexPointer = previousPointer;
+		SCVK_CALL("%u, %u, %p, %u  [UNEXPECTED]", unknown, gdPrimitiveType, primitives, count);
 	}
 
 	void cVKDriver::DrawPrimsIndexed(uint32_t name, uint32_t gdPrimitiveType, uint32_t count, uint16_t* indices)
 	{
-		SCVK_CALL("%u, %u, %u, %p", name, gdPrimitiveType, count, indices);
-
-		if (name != 0 || count == 0 || indices == nullptr || count > INT32_MAX)
-		{
-			return;
-		}
-
-		// The reservation has to hold every vertex the indices name
-		uint16_t highest = 0;
-		for (uint32_t i = 0; i < count; i++)
-		{
-			highest = std::max(highest, indices[i]);
-		}
-
-		uint32_t const stride = RZVertexFormatStride(EXTENSION_VERTEX_FORMAT);
-		if (!HasExtensionVertices((uint32_t{ highest } + 1u) * stride))
-		{
-			return;
-		}
-
-		uint8_t* const vertices = extensionVertexData.data() + size_t{ extensionVertexStart } * stride;
-		NoteLiveShadowTerrainView(vertices);
-
-		uint32_t const    previousFormat  = vertexFormat;
-		uint32_t const    previousStride  = vertexStride;
-		void const* const previousPointer = vertexPointer;
-
-		vertexFormat  = EXTENSION_VERTEX_FORMAT;
-		vertexStride  = stride;
-		vertexPointer = vertices;
-
-		// Checked above to fit.
-		DrawClientElements(gdPrimitiveType, static_cast<int32_t>(count), indices, false);
-
-		vertexFormat  = previousFormat;
-		vertexStride  = previousStride;
-		vertexPointer = previousPointer;
+		SCVK_CALL("%u, %u, %u, %p  [UNEXPECTED]", name, gdPrimitiveType, count, indices);
 	}
 
 	void cVKDriver::Reset(void)
 	{
-		SCVK_CALL("");
-
-		extensionVertexCursor      = 0;
-		extensionVertexStart       = 0;
-		areExtensionVerticesLocked = false;
+		SCVK_CALL("  [UNEXPECTED]");
 	}
 }

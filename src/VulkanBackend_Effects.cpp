@@ -18,14 +18,13 @@
  */
 
 /*
- * The passes of scvk's own, beside the game's draws: the blits, the shadow map and its
- * composite, the scene depth handed to ReShade, and what ReShade and other plugins are
- * given to draw into the frame themselves.
+ * The passes of scvk's own, beside the game's draws: the shadow map and its composite,
+ * the scene depth handed to ReShade, and what ReShade and other plugins are given to draw
+ * into the frame themselves.
  *
- * The blits are drawn as SCD3D11 draws them, a textured quad over the back buffer that
- * can scale, blend and key out a colour. The shadow passes follow SCD3D11's live shadows:
- * casters drawn into a 2048 square depth map from the sun, then a full-screen pass that
- * darkens what the scene depth puts in their shadow or below the terrain's.
+ * The shadow passes follow SCD3D11's live shadows: casters drawn into a 2048 square depth
+ * map from the sun, then a full-screen pass that darkens what the scene depth puts in
+ * their shadow or below the terrain's.
  */
 
 //// Dependencies
@@ -51,16 +50,7 @@ namespace scvk
 		constexpr float SHADOW_DEPTH_BIAS_SLOPE    = 2.0f;
 		constexpr float SHADOW_DEPTH_BIAS_CONSTANT = 4.0f;
 
-		// The push constant blocks, as the shaders declare them.
-		struct BlitConstants
-		{
-			float rectangle[4];
-			float sourceExtent[4];
-			float modulate[4];
-			float colourKey[4];
-			float options[4];
-		};
-
+		// The push constant block, as the shadow shaders declare it.
 		struct ShadowPushConstants
 		{
 			float lightMatrix[16];
@@ -74,19 +64,6 @@ namespace scvk
 		static_assert(sizeof(ShadowPushConstants) <= 128, "Vulkan only promises 128 bytes of push constants");
 		static_assert(sizeof(ShadowCompositeConstants) == 288, "the composite's uniform block, laid out as std140 lays it out");
 
-		// How the full-screen and blit pipelines blend.
-		enum class EffectBlend
-		{
-			// Written over what is there.
-			None,
-
-			// Over by the source alpha, the alpha accumulating as Direct3D's blits do.
-			Alpha,
-
-			// Over by the source alpha, leaving the destination alpha alone, as SCD3D11's
-			// shadow composite blends.
-			Shadow,
-		};
 	}
 
 	//// Private Functions
@@ -109,13 +86,17 @@ namespace scvk
 			return module;
 		}
 
-		/** The blend state of one colour attachment. */
-		VkPipelineColorBlendAttachmentState MakeBlend(EffectBlend blend)
+		/**
+		 * The blend state of one colour attachment: written over what is there, or for the
+		 * shadow composite, over by the source alpha with the destination alpha left
+		 * alone, as SCD3D11's composite blends.
+		 */
+		VkPipelineColorBlendAttachmentState MakeBlend(bool isShadowBlend)
 		{
 			VkPipelineColorBlendAttachmentState attachment{};
 			attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
-			if (blend == EffectBlend::None)
+			if (!isShadowBlend)
 			{
 				return attachment;
 			}
@@ -124,33 +105,23 @@ namespace scvk
 			attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 			attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 			attachment.colorBlendOp        = VK_BLEND_OP_ADD;
+			attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+			attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
 			attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-
-			if (blend == EffectBlend::Alpha)
-			{
-				attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-				attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-			}
-			else
-			{
-				attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-				attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-			}
-
 			return attachment;
 		}
 	}
 
-	VkPipeline VulkanBackend::CreateFullscreenPipeline(VkShaderModule vertexModule, VkShaderModule fragmentModule, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isAlphaBlended, bool isShadowBlend)
+	VkPipeline VulkanBackend::CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isShadowBlend)
 	{
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
-		stages[0].module = vertexModule;
+		stages[0].module = vertexShader;
 		stages[0].pName  = "main";
 		stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-		stages[1].module = fragmentModule;
+		stages[1].module = fragmentShader;
 		stages[1].pName  = "main";
 
 		// No vertex input: the vertex stage makes its corners from the vertex index
@@ -176,8 +147,7 @@ namespace scvk
 		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
 		depthStencil.depthCompareOp = VK_COMPARE_OP_ALWAYS;
 
-		EffectBlend const blend = isShadowBlend ? EffectBlend::Shadow : (isAlphaBlended ? EffectBlend::Alpha : EffectBlend::None);
-		VkPipelineColorBlendAttachmentState const blendAttachment = MakeBlend(blend);
+		VkPipelineColorBlendAttachmentState const blendAttachment = MakeBlend(isShadowBlend);
 
 		VkPipelineColorBlendStateCreateInfo colourBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 		colourBlend.attachmentCount = 1;
@@ -217,14 +187,8 @@ namespace scvk
 
 	bool VulkanBackend::CreateEffectResources(void)
 	{
-		// The blits are part of what the game draws, so they have to work. The shadow
-		// passes and the depth for ReShade are extras: without them the picture is the
-		// game's own, so their failure is logged and the device carries on.
-		if (!CreateBlitPipelines())
-		{
-			return false;
-		}
-
+		// The shadow passes and the depth for ReShade are extras: without them the picture
+		// is the game's own, so their failure is logged and the device carries on.
 		hasShadowResources = CreateShadowResources();
 		if (!hasShadowResources)
 		{
@@ -245,26 +209,6 @@ namespace scvk
 		{
 			return;
 		}
-
-		// The blits
-		for (VkPipeline& pipeline : blitPipelines)
-		{
-			if (pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
-		}
-
-		if (blitPipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, blitPipelineLayout, nullptr); blitPipelineLayout = VK_NULL_HANDLE; }
-		if (blitVertexModule != VK_NULL_HANDLE)   { vkDestroyShaderModule(device, blitVertexModule, nullptr); blitVertexModule = VK_NULL_HANDLE; }
-		if (blitFragmentModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, blitFragmentModule, nullptr); blitFragmentModule = VK_NULL_HANDLE; }
-
-		if (blitImageSet != VK_NULL_HANDLE && blitImagePoolIndex < texturePools.size())
-		{
-			TexturePool& texturePool = texturePools[blitImagePoolIndex];
-			vkFreeDescriptorSets(device, texturePool.pool, 1, &blitImageSet);
-			texturePool.usedSets--;
-		}
-
-		blitImageSet = VK_NULL_HANDLE;
-		DestroyRenderImage(blitImage);
 
 		// The shadows
 		VkPipeline* const shadowPipelines[] = { &shadowCasterPipeline, &shadowRegistryPipeline, &shadowLinePipeline, &shadowPointPipeline, &compositePipeline, &sceneDepthPipeline };
@@ -302,44 +246,6 @@ namespace scvk
 		DestroyRenderImage(sceneDepthImage);
 
 		hasShadowResources = false;
-	}
-
-	bool VulkanBackend::CreateBlitPipelines(void)
-	{
-		blitVertexModule   = MakeModule(device, BLIT_VERTEX_SPIRV, sizeof(BLIT_VERTEX_SPIRV));
-		blitFragmentModule = MakeModule(device, BLIT_FRAGMENT_SPIRV, sizeof(BLIT_FRAGMENT_SPIRV));
-
-		if (blitVertexModule == VK_NULL_HANDLE || blitFragmentModule == VK_NULL_HANDLE)
-		{
-			LogError("Vulkan: could not create the blit shaders.");
-			return false;
-		}
-
-		// The source image and its sampler, as the geometry binds a texture
-		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, samplerSetLayout };
-
-		VkPushConstantRange range{};
-		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-		range.size       = sizeof(BlitConstants);
-
-		VkPipelineLayoutCreateInfo layoutInformation{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-		layoutInformation.setLayoutCount         = _countof(setLayouts);
-		layoutInformation.pSetLayouts            = setLayouts;
-		layoutInformation.pushConstantRangeCount = 1;
-		layoutInformation.pPushConstantRanges    = &range;
-
-		VkResult const result = vkCreatePipelineLayout(device, &layoutInformation, nullptr, &blitPipelineLayout);
-		if (result != VK_SUCCESS)
-		{
-			Fail("vkCreatePipelineLayout (blit)", result);
-			return false;
-		}
-
-		// Opaque and blended, drawn in the main pass with the depth left alone
-		blitPipelines[0] = CreateFullscreenPipeline(blitVertexModule, blitFragmentModule, blitPipelineLayout, renderPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, false, false);
-		blitPipelines[1] = CreateFullscreenPipeline(blitVertexModule, blitFragmentModule, blitPipelineLayout, renderPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, true, false);
-
-		return blitPipelines[0] != VK_NULL_HANDLE && blitPipelines[1] != VK_NULL_HANDLE;
 	}
 
 	bool VulkanBackend::CreateShadowResources(void)
@@ -582,7 +488,7 @@ namespace scvk
 			return false;
 		}
 
-		compositePipeline = CreateFullscreenPipeline(fullscreenVertexModule, compositeFragmentModule, compositePipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, true);
+		compositePipeline = CreateFullscreenPipeline(fullscreenVertexModule, compositeFragmentModule, compositePipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true);
 		if (compositePipeline == VK_NULL_HANDLE)
 		{
 			return false;
@@ -706,7 +612,7 @@ namespace scvk
 			return false;
 		}
 
-		sceneDepthPipeline = CreateFullscreenPipeline(fullscreenVertexModule, sceneDepthFragmentModule, sceneDepthPipelineLayout, sceneDepthPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, false);
+		sceneDepthPipeline = CreateFullscreenPipeline(fullscreenVertexModule, sceneDepthFragmentModule, sceneDepthPipelineLayout, sceneDepthPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false);
 		return sceneDepthPipeline != VK_NULL_HANDLE;
 	}
 
@@ -793,139 +699,6 @@ namespace scvk
 	}
 
 	//// Public API
-
-	void VulkanBackend::DrawPixels(int32_t destinationX, int32_t destinationY, int32_t destinationWidth, int32_t destinationHeight, uint32_t sourceWidth, uint32_t sourceHeight, uint8_t const* bgraPixels, float const modulate[4], float const colourKey[4], bool isSourceAlphaUsed, bool isBlended)
-	{
-		if (bgraPixels == nullptr || sourceWidth == 0 || sourceHeight == 0 || destinationWidth <= 0 || destinationHeight <= 0 || renderWidth == 0 || renderHeight == 0)
-		{
-			return;
-		}
-
-		if (!EnsureFrame() || blitPipelines[0] == VK_NULL_HANDLE)
-		{
-			return;
-		}
-
-		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
-
-		// Grow the blit image to hold the source
-		//
-		// It only grows, as SCD3D11's does. The old image and its set may still be in use
-		// by draws recorded earlier, so both are retired rather than destroyed.
-		if (blitImage.image == VK_NULL_HANDLE || blitImage.width < sourceWidth || blitImage.height < sourceHeight)
-		{
-			uint32_t const width  = std::max(sourceWidth, blitImage.width);
-			uint32_t const height = std::max(sourceHeight, blitImage.height);
-
-			if (blitImage.image != VK_NULL_HANDLE)
-			{
-				RetiredImage retired;
-				retired.image               = blitImage.image;
-				retired.memory.memory       = blitImage.memory;
-				retired.view                = blitImage.view;
-				retired.descriptor          = blitImageSet;
-				retired.descriptorPoolIndex = blitImagePoolIndex;
-
-				Retire(retired);
-				blitImage    = RenderImage{};
-				blitImageSet = VK_NULL_HANDLE;
-			}
-
-			if (!CreateRenderImage(VK_FORMAT_B8G8R8A8_UNORM, width, height, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, blitImage))
-			{
-				LogWarn("Vulkan: could not create a %ux%u blit image; skipping the blit.", width, height);
-				return;
-			}
-
-			if (!AllocateTextureSet(blitImageSet, blitImagePoolIndex))
-			{
-				DestroyRenderImage(blitImage);
-				blitImageSet = VK_NULL_HANDLE;
-				return;
-			}
-
-			VkDescriptorImageInfo imageInformation{};
-			imageInformation.imageView   = blitImage.view;
-			imageInformation.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-			VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-			write.dstSet          = blitImageSet;
-			write.descriptorCount = 1;
-			write.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-			write.pImageInfo      = &imageInformation;
-
-			vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-		}
-
-		// Stage the pixels and copy them in
-		//
-		// The image is used again by every blit, so each copy waits for the draws of the
-		// blit before it, which the layout transitions order.
-		VkDeviceSize const bytes = VkDeviceSize{ sourceWidth } * sourceHeight * 4u;
-
-		VkBuffer     buffer  = VK_NULL_HANDLE;
-		VkDeviceSize offset  = 0;
-		uint8_t*     address = nullptr;
-
-		if (!AllocateFrameStaging(bytes, buffer, offset, address))
-		{
-			LogWarn("Vulkan: no staging for a blit of %llu bytes; skipping it.", bytes);
-			return;
-		}
-
-		// A staging block or a buffer of its own fits a 32-bit size.
-		memcpy(address, bgraPixels, static_cast<size_t>(bytes));
-
-		EndRenderPassIfActive();
-		TransitionImage(blitImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-
-		VkBufferImageCopy copy{};
-		copy.bufferOffset     = offset;
-		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-		copy.imageExtent      = { sourceWidth, sourceHeight, 1 };
-
-		vkCmdCopyBufferToImage(commandBuffer, buffer, blitImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-		TransitionImage(blitImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
-
-		// Draw the quad over the destination, within the scissor of a sub-viewport
-		VkRect2D scissor{};
-		ViewportRectangle(scissor);
-
-		if (scissor.extent.width == 0 || scissor.extent.height == 0)
-		{
-			return;
-		}
-
-		BeginRenderPassIfNeeded();
-
-		// The render size is far below the range where a float loses whole pixels.
-		float const width  = static_cast<float>(renderWidth);
-		float const height = static_cast<float>(renderHeight);
-
-		BlitConstants constants{};
-		constants.rectangle[0]    = 2.0f * static_cast<float>(destinationX) / width - 1.0f;
-		constants.rectangle[1]    = 2.0f * static_cast<float>(destinationY) / height - 1.0f;
-		constants.rectangle[2]    = 2.0f * static_cast<float>(destinationX + destinationWidth) / width - 1.0f;
-		constants.rectangle[3]    = 2.0f * static_cast<float>(destinationY + destinationHeight) / height - 1.0f;
-		constants.sourceExtent[0] = static_cast<float>(sourceWidth) / static_cast<float>(blitImage.width);
-		constants.sourceExtent[1] = static_cast<float>(sourceHeight) / static_cast<float>(blitImage.height);
-		memcpy(constants.modulate, modulate, sizeof(constants.modulate));
-		memcpy(constants.colourKey, colourKey, sizeof(constants.colourKey));
-		constants.options[0]      = isSourceAlphaUsed ? 1.0f : 0.0f;
-
-		VkViewport const viewport{ 0.0f, 0.0f, width, height, 0.0f, 1.0f };
-		VkDescriptorSet const sets[] = { blitImageSet, pointClampSet };
-
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blitPipelines[isBlended ? 1 : 0]);
-		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blitPipelineLayout, 0, _countof(sets), sets, 0, nullptr);
-		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-		vkCmdPushConstants(commandBuffer, blitPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(constants), &constants);
-		vkCmdDraw(commandBuffer, 4, 1, 0, 0);
-
-		// The geometry's bindings are not what is bound any more
-		InvalidateBindings();
-	}
 
 	bool VulkanBackend::CanDrawShadows(void)
 	{

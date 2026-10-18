@@ -6,13 +6,10 @@
 # software Vulkan driver (lavapipe) unless a real one is there:
 #   1. draws 300 frames in a window at the default log level;
 #   2. draws 2001 frames at the debug level and checks every square of scvk's frame
-#      capture against the colour it was drawn with, through every draw path, the
-#      upper half lit by a directional light through the lighting extension;
+#      capture against the colour it was drawn with, through every draw path;
 #   3. draws a quad through the texture environment's blend mode and checks its colour
 #      and alpha;
-#   4. draws one large quad under a point light and checks that its light falls off per
-#      pixel, from the middle to the edge;
-#   5. draws in exclusive fullscreen, presses PrintScreen as a real key, and checks the
+#   4. draws in exclusive fullscreen, presses PrintScreen as a real key, and checks the
 #      frame scvk put on the clipboard.
 #
 # Needs: wine with 32-bit support, Xvfb, xdotool, mesa-vulkan-drivers:i386 and
@@ -55,15 +52,11 @@ wine harness.exe 300 || status=1
 
 echo "== windowed, debug log level, every square checked"
 rm -f scvk.log scvk-*.bmp
-wine harness.exe 2001 -lighting -LogLevel:debug || status=1
+wine harness.exe 2001 -LogLevel:debug || status=1
 
 echo "== texture environment blend"
 rm -f scvk.log scvk-*.bmp
 wine harness.exe 2001 -texenvblend -LogLevel:debug || status=1
-
-echo "== a point light lit per pixel"
-rm -f scvk.log scvk-*.bmp
-wine harness.exe 2001 -pointlight -LogLevel:debug || status=1
 
 echo "== exclusive fullscreen, PrintScreen to the clipboard"
 rm -f scvk.log

@@ -493,18 +493,6 @@ namespace scvk
 		// Record how far textures can go on it
 		maximumMemoryAllocations = physicalDeviceProperties.limits.maxMemoryAllocationCount;
 
-		// See whether the lit variant fits it
-		//
-		// Its vertex has 29 attributes and its vertex stage 22 outputs, above the 16 Vulkan
-		// guarantees and below what every desktop driver offers. Without them the lighting
-		// extension's lights stay per vertex.
-		VkPhysicalDeviceLimits const& limits = physicalDeviceProperties.limits;
-		isPerPixelLightingSupported = limits.maxVertexInputAttributes >= 29 && limits.maxVertexOutputComponents >= 88 && limits.maxFragmentInputComponents >= 88 && limits.maxVertexInputBindingStride >= sizeof(LitVertex) && limits.maxVertexInputAttributeOffset >= offsetof(LitVertex, lightColour[LIT_LIGHT_COUNT - 1]);
-		if (!isPerPixelLightingSupported)
-		{
-			LogInfo("Vulkan: the device takes %u vertex attributes and %u vertex outputs; the lighting extension's lights are worked out per vertex.", limits.maxVertexInputAttributes, limits.maxVertexOutputComponents);
-		}
-
 		VkPhysicalDeviceMemoryProperties memory{};
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
 
@@ -1055,14 +1043,14 @@ namespace scvk
 
 		VkAttachmentReference colourReference{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
 
-		// Describe the depth attachment, stencil included
+		// Describe the depth attachment
 		VkAttachmentDescription depth{};
 		depth.format         = depthBuffer.format;
 		depth.samples        = VK_SAMPLE_COUNT_1_BIT;
 		depth.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
 		depth.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-		depth.stencilLoadOp  = hasStencil ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		depth.stencilStoreOp = hasStencil ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -1148,7 +1136,7 @@ namespace scvk
 			return false;
 		}
 
-		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s%s.", renderWidth, renderHeight, depthBuffer.format, hasStencil ? " with stencil" : "", isDepthSampleable ? ", sampleable" : "");
+		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s.", renderWidth, renderHeight, depthBuffer.format, isDepthSampleable ? ", sampleable" : "");
 
 		// Create the passes and their framebuffers
 		if (!CreateRenderPasses())
@@ -1324,11 +1312,7 @@ namespace scvk
 				if (module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, module, nullptr); module = VK_NULL_HANDLE; }
 			}
 
-			for (VkShaderModule& module : fragmentModules)
-			{
-				if (module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, module, nullptr); module = VK_NULL_HANDLE; }
-			}
-
+			if (fragmentModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, fragmentModule, nullptr); fragmentModule = VK_NULL_HANDLE; }
 			if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
 
 			// Destroy the buffers
@@ -1413,12 +1397,6 @@ namespace scvk
 			texture = Texture{};
 
 			Texture const& previous = previousTextures[handle];
-			if (previous.isReserved)
-			{
-				texture.isReserved = true;
-				continue;
-			}
-
 			if (!previous.isLive)
 			{
 				continue;

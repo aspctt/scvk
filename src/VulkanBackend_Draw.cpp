@@ -243,19 +243,6 @@ namespace scvk
 			}
 		}
 
-		/** The game's stencil operations, the five its DirectX driver maps: keep, replace, increment and decrement clamped, invert. */
-		VkStencilOp MapStencilOperation(uint32_t gdOperation)
-		{
-			switch (gdOperation)
-			{
-			case 1:  return VK_STENCIL_OP_REPLACE;
-			case 2:  return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
-			case 3:  return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
-			case 4:  return VK_STENCIL_OP_INVERT;
-			default: return VK_STENCIL_OP_KEEP;
-			}
-		}
-
 		/** Mixes a value into a hash, FNV-1a style. */
 		size_t MixHash(size_t hash, uint32_t value)
 		{
@@ -269,8 +256,7 @@ namespace scvk
 		hash = MixHash(hash, key.format);
 		hash = MixHash(hash, static_cast<uint32_t>(key.topology));
 		hash = MixHash(hash, (key.isBlendEnabled ? 1u : 0u) | (key.sourceFactor << 1) | (key.destinationFactor << 6));
-		hash = MixHash(hash, (key.isDepthTestEnabled ? 1u : 0u) | (key.isDepthWriteEnabled ? 2u : 0u) | (key.depthComparison << 2) | (key.isColourWriteEnabled ? 64u : 0u) | (key.isFaceCullingEnabled ? 128u : 0u) | (key.isFlatShaded ? 256u : 0u));
-		hash = MixHash(hash, (key.isStencilTestEnabled ? 1u : 0u) | (key.stencilComparison << 1) | (key.stencilFailOperation << 5) | (key.stencilDepthFailOperation << 9) | (key.stencilPassOperation << 13));
+		hash = MixHash(hash, (key.isDepthTestEnabled ? 1u : 0u) | (key.isDepthWriteEnabled ? 2u : 0u) | (key.depthComparison << 2) | (key.isColourWriteEnabled ? 64u : 0u) | (key.isFaceCullingEnabled ? 128u : 0u));
 		return hash;
 	}
 
@@ -297,25 +283,15 @@ namespace scvk
 			return true;
 		}
 
-		// Indexed by flat * 6 + hasColour * 3 + textureCoordinateSets, matching the order
-		// the generated header declares them in. The flat variants hand the colour over
-		// without interpolating it, for ShadeModel(flat).
+		// Indexed by hasColour * 3 + textureCoordinateSets, matching the order the
+		// generated header declares them in.
 		return CreateShaderModule(GEOMETRY_VERTEX_SPIRV_NONE, _countof(GEOMETRY_VERTEX_SPIRV_NONE), vertexModules[0])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE), vertexModules[1])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE2), vertexModules[2])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR), vertexModules[3])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE), vertexModules[4])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2), vertexModules[5])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_NONE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_NONE), vertexModules[6])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE), vertexModules[7])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE2, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_TEXTURE2), vertexModules[8])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR), vertexModules[9])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE), vertexModules[10])
-			&& CreateShaderModule(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE2, _countof(GEOMETRY_VERTEX_FLAT_SPIRV_COLOUR_TEXTURE2), vertexModules[11])
-			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModules[0])
-			&& CreateShaderModule(GEOMETRY_FRAGMENT_FLAT_SPIRV, _countof(GEOMETRY_FRAGMENT_FLAT_SPIRV), fragmentModules[1])
-			&& CreateShaderModule(GEOMETRY_VERTEX_LIT_SPIRV, _countof(GEOMETRY_VERTEX_LIT_SPIRV), vertexModules[12])
-			&& CreateShaderModule(GEOMETRY_FRAGMENT_LIT_SPIRV, _countof(GEOMETRY_FRAGMENT_LIT_SPIRV), fragmentModules[2]);
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModule);
 	}
 
 	bool VulkanBackend::CreatePipelineLayout(void)
@@ -340,7 +316,7 @@ namespace scvk
 		// Keeping them separate is what lets a descriptor set stay a property of one
 		// texture: a single set with two bindings would need a set per pair of textures
 		// instead, and the pairs multiply. Four sets is the minimum every Vulkan device
-		// supports. The blits and the shadow casters use the same layout.
+		// supports. The shadow casters use the same layout.
 		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, imageSetLayout, samplerSetLayout, samplerSetLayout };
 
 		VkPipelineLayoutCreateInfo information{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
@@ -471,8 +447,7 @@ namespace scvk
 		// A shader may not declare an input the pipeline does not supply, so the variant
 		// has to match which attributes this format actually has.
 		VertexLayout const layout  = DecodeVertexLayout(key.format);
-		bool const         isLit   = key.format == LIT_VERTEX_FORMAT;
-		uint32_t const     variant = isLit ? 12u : (key.isFlatShaded ? 6u : 0u) + (layout.hasColour ? 3u : 0u) + layout.textureCoordinateSets;
+		uint32_t const     variant = (layout.hasColour ? 3u : 0u) + layout.textureCoordinateSets;
 
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -481,7 +456,7 @@ namespace scvk
 		stages[0].pName  = "main";
 		stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-		stages[1].module = fragmentModules[isLit ? 2 : (key.isFlatShaded ? 1 : 0)];
+		stages[1].module = fragmentModule;
 		stages[1].pName  = "main";
 
 		// Describe the vertex attributes
@@ -501,7 +476,7 @@ namespace scvk
 		bindings[1].stride    = sizeof(DrawRecord);
 		bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-		VkVertexInputAttributeDescription attributes[12 + 1 + 2 * LIT_LIGHT_COUNT]{};
+		VkVertexInputAttributeDescription attributes[12]{};
 		uint32_t attributeCount = 0;
 
 		attributes[attributeCount].location = 0;
@@ -551,31 +526,6 @@ namespace scvk
 			attributeCount++;
 		}
 
-		// The lit variant's normal, vectors to the lights and light colours
-		if (isLit)
-		{
-			attributes[attributeCount].location = 12;
-			attributes[attributeCount].binding  = 0;
-			attributes[attributeCount].format   = VK_FORMAT_R32G32B32_SFLOAT;
-			attributes[attributeCount].offset   = offsetof(LitVertex, normal);
-			attributeCount++;
-
-			for (uint32_t light = 0; light < LIT_LIGHT_COUNT; light++)
-			{
-				attributes[attributeCount].location = 13 + light;
-				attributes[attributeCount].binding  = 0;
-				attributes[attributeCount].format   = VK_FORMAT_R32G32B32_SFLOAT;
-				attributes[attributeCount].offset   = static_cast<uint32_t>(offsetof(LitVertex, toLight) + light * sizeof(LitVertex::toLight[0]));
-				attributeCount++;
-
-				attributes[attributeCount].location = 13 + LIT_LIGHT_COUNT + light;
-				attributes[attributeCount].binding  = 0;
-				attributes[attributeCount].format   = VK_FORMAT_R8G8B8A8_UNORM;
-				attributes[attributeCount].offset   = static_cast<uint32_t>(offsetof(LitVertex, lightColour) + light * sizeof(LitVertex::lightColour[0]));
-				attributeCount++;
-			}
-		}
-
 		VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 		vertexInput.vertexBindingDescriptionCount   = _countof(bindings);
 		vertexInput.pVertexBindingDescriptions      = bindings;
@@ -589,9 +539,6 @@ namespace scvk
 		// Direct3D driver culls faces that wind clockwise on screen. The clip space
 		// correction flips y and Vulkan's framebuffer y points down, so a face winding
 		// counter-clockwise on screen is front-facing here as it is under OpenGL.
-		//
-		// The depth bias is always on and set per draw from the polygon offset, which is
-		// zero for nearly every draw.
 		VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
 		assembly.topology = key.topology;
 
@@ -600,29 +547,21 @@ namespace scvk
 		viewport.scissorCount  = 1;
 
 		VkPipelineRasterizationStateCreateInfo rasterisation{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-		rasterisation.polygonMode     = VK_POLYGON_MODE_FILL;
-		rasterisation.cullMode        = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-		rasterisation.frontFace       = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		rasterisation.depthBiasEnable = VK_TRUE;
-		rasterisation.lineWidth       = 1.0f;
+		rasterisation.polygonMode = VK_POLYGON_MODE_FILL;
+		rasterisation.cullMode    = key.isFaceCullingEnabled ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+		rasterisation.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+		rasterisation.lineWidth   = 1.0f;
 
 		VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 		multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-		// Describe depth, stencil and blending from the key
+		// Describe depth and blending from the key
 		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
 		depthStencil.depthTestEnable  = key.isDepthTestEnabled ? VK_TRUE : VK_FALSE;
 		depthStencil.depthWriteEnable = key.isDepthWriteEnabled ? VK_TRUE : VK_FALSE;
 		depthStencil.depthCompareOp   = MapCompareOperation(key.depthComparison);
 		depthStencil.minDepthBounds   = 0.0f;
 		depthStencil.maxDepthBounds   = 1.0f;
-
-		depthStencil.stencilTestEnable = (key.isStencilTestEnabled && hasStencil) ? VK_TRUE : VK_FALSE;
-		depthStencil.front.failOp      = MapStencilOperation(key.stencilFailOperation);
-		depthStencil.front.depthFailOp = MapStencilOperation(key.stencilDepthFailOperation);
-		depthStencil.front.passOp      = MapStencilOperation(key.stencilPassOperation);
-		depthStencil.front.compareOp   = MapCompareOperation(key.stencilComparison);
-		depthStencil.back              = depthStencil.front;
 
 		VkPipelineColorBlendAttachmentState blendAttachment{};
 		blendAttachment.blendEnable         = key.isBlendEnabled ? VK_TRUE : VK_FALSE;
@@ -638,16 +577,8 @@ namespace scvk
 		blend.attachmentCount = 1;
 		blend.pAttachments    = &blendAttachment;
 
-		// Leave the viewport, scissor, depth bias and stencil values to each draw
-		VkDynamicState dynamicStates[] = {
-			VK_DYNAMIC_STATE_VIEWPORT,
-			VK_DYNAMIC_STATE_SCISSOR,
-			VK_DYNAMIC_STATE_DEPTH_BIAS,
-			VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-			VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
-			VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-		};
-
+		// Leave the viewport and scissor to each draw
+		VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 		VkPipelineDynamicStateCreateInfo dynamic{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
 		dynamic.dynamicStateCount = _countof(dynamicStates);
 		dynamic.pDynamicStates    = dynamicStates;
@@ -677,7 +608,7 @@ namespace scvk
 		}
 
 		unsavedPipelines++;
-		LogDebug("Vulkan: created pipeline %zu for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u), stencil %d, flat %d.", pipelines.size() + 1, key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor, key.isStencilTestEnabled ? 1 : 0, key.isFlatShaded ? 1 : 0);
+		LogDebug("Vulkan: created pipeline %zu for format 0x%x (stride %u, colour %d, texcoord sets %u), topology %d, blend %d (%u,%u).", pipelines.size() + 1, key.format, layout.stride, layout.hasColour ? 1 : 0, layout.textureCoordinateSets, key.topology, key.isBlendEnabled ? 1 : 0, key.sourceFactor, key.destinationFactor);
 		return pipeline;
 	}
 
@@ -702,18 +633,6 @@ namespace scvk
 		// table. The formats disagree about which attributes are present and where, and
 		// the packed encoding is the authority.
 		VertexLayout layout;
-
-		// The lit vertex, which is scvk's own
-		if (gdVertexFormat == LIT_VERTEX_FORMAT)
-		{
-			layout.stride                     = sizeof(LitVertex);
-			layout.hasColour                  = true;
-			layout.colourOffset               = offsetof(LitVertex, colour);
-			layout.textureCoordinateSets      = 2;
-			layout.textureCoordinateOffset[0] = offsetof(LitVertex, coordinates[0]);
-			layout.textureCoordinateOffset[1] = offsetof(LitVertex, coordinates[1]);
-			return layout;
-		}
 
 		layout.stride = RZVertexFormatStride(gdVertexFormat);
 
@@ -1037,7 +956,7 @@ namespace scvk
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout)
 	{
 		// Find the pipeline for the current state
-		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled, isStencilTestEnabled && hasStencil, stencilComparison, stencilFailOperation, stencilDepthFailOperation, stencilPassOperation, isFlatShaded };
+		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled };
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -1075,7 +994,6 @@ namespace scvk
 			bound.pipeline = pipeline;
 		}
 
-		ApplyDynamicState();
 		PushDrawConstants(isTwoStage, isCombining);
 		BindTextures(isTwoStage);
 
@@ -1127,31 +1045,6 @@ namespace scvk
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, last - first + 1, sets + first, 0, nullptr);
 		memcpy(bound.sets, sets, sizeof(bound.sets));
-	}
-
-	void VulkanBackend::ApplyDynamicState(void)
-	{
-		// The polygon offset, in units of the depth buffer's resolution, as Direct3D's
-		// depth bias takes it
-		if (bound.depthBias != polygonOffset)
-		{
-			vkCmdSetDepthBias(commandBuffer, static_cast<float>(polygonOffset), 0.0f, 0.0f);
-			bound.depthBias = polygonOffset;
-		}
-
-		// The stencil values, kept even while the test is off since every pipeline names
-		// them as dynamic state
-		if (!bound.hasStencilState || bound.stencilReference != stencilReference || bound.stencilCompareMask != stencilReadMask || bound.stencilWriteMask != stencilWriteMask)
-		{
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
-			vkCmdSetStencilCompareMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReadMask);
-			vkCmdSetStencilWriteMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilWriteMask);
-
-			bound.stencilReference   = stencilReference;
-			bound.stencilCompareMask = stencilReadMask;
-			bound.stencilWriteMask   = stencilWriteMask;
-			bound.hasStencilState    = true;
-		}
 	}
 
 	void VulkanBackend::PushDrawConstants(bool isTwoStage, bool isCombining)
@@ -1395,29 +1288,6 @@ namespace scvk
 		isDepthTestEnabled  = isTestEnabled;
 		isDepthWriteEnabled = isWriteEnabled;
 		depthComparison     = comparison;
-	}
-
-	void VulkanBackend::SetStencilState(bool isTestEnabled, uint32_t comparison, uint32_t reference, uint32_t readMask, uint32_t writeMask, uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation)
-	{
-		// The masks and reference are eight bits deep, as the stencil buffer is
-		isStencilTestEnabled      = isTestEnabled;
-		stencilComparison         = comparison;
-		stencilReference          = reference & 0xffu;
-		stencilReadMask           = readMask & 0xffu;
-		stencilWriteMask          = writeMask & 0xffu;
-		stencilFailOperation      = failOperation;
-		stencilDepthFailOperation = depthFailOperation;
-		stencilPassOperation      = passOperation;
-	}
-
-	void VulkanBackend::SetPolygonOffset(int32_t offset)
-	{
-		polygonOffset = offset;
-	}
-
-	void VulkanBackend::SetFlatShading(bool isEnabled)
-	{
-		isFlatShaded = isEnabled;
 	}
 
 	void VulkanBackend::SetFaceCulling(bool isEnabled)

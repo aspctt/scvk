@@ -100,32 +100,7 @@ layout(set = 1, binding = 0) uniform texture2D textureImage1;
 layout(set = 2, binding = 0) uniform sampler   textureSampler0;
 layout(set = 3, binding = 0) uniform sampler   textureSampler1;
 
-// Flat shading takes the colour of each primitive's first vertex, as Direct3D's
-// D3DSHADE_FLAT does, which Vulkan's default provoking vertex matches.
-#ifndef SCVK_FLAT
-#define SCVK_FLAT 0
-#endif
-
-#ifndef SCVK_LIT
-#define SCVK_LIT 0
-#endif
-
-#if SCVK_LIT
-// The lit variant takes the colour that does not depend on direction, and finishes the
-// lighting below, into the colour the rest of this stage reads. See the vertex stage.
-const int LIGHT_COUNT = 8;
-
-layout(location = 0)  in vec4 fragmentBaseColour;
-layout(location = 5)  in vec3 fragmentNormal;
-layout(location = 6)  in vec3 fragmentToLight[LIGHT_COUNT];
-layout(location = 14) in vec3 fragmentLightColour[LIGHT_COUNT];
-
-vec4 fragmentColour;
-#elif SCVK_FLAT
-layout(location = 0) flat in vec4 fragmentColour;
-#else
 layout(location = 0) in vec4 fragmentColour;
-#endif
 layout(location = 1) in vec2 fragmentTextureCoordinate0;
 layout(location = 2) in vec2 fragmentTextureCoordinate1;
 
@@ -233,35 +208,6 @@ vec3 passColour(int pass)
 
 void main()
 {
-#if SCVK_LIT
-	// Finish Direct3D 7's lighting per pixel
-	//
-	// Each light adds its diffuse colour times the diffuse material times N.L, with the
-	// normal and the vector to the light interpolated and normalised here, and the sum
-	// clamps to 0 to 1 before texturing. Per vertex, a positional light near one vertex of
-	// a long triangle was stretched across the whole triangle.
-	{
-		vec3  lit          = fragmentBaseColour.rgb;
-		float normalLength = length(fragmentNormal);
-
-		if (normalLength > 1.0e-6)
-		{
-			vec3 normal = fragmentNormal / normalLength;
-
-			for (int light = 0; light < LIGHT_COUNT; light++)
-			{
-				float distance = length(fragmentToLight[light]);
-				if (distance > 1.0e-6)
-				{
-					lit += fragmentLightColour[light] * max(dot(normal, fragmentToLight[light] / distance), 0.0);
-				}
-			}
-		}
-
-		fragmentColour = vec4(clamp(lit, 0.0, 1.0), fragmentBaseColour.a);
-	}
-#endif
-
 	// Show the pass colour
 	//
 	// Pass identification overrides everything, including the alpha test, so that a pass

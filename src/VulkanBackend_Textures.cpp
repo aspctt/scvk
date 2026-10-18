@@ -350,8 +350,8 @@ namespace scvk
 
 	bool VulkanBackend::CreateFixedSamplers(void)
 	{
-		// Point and linear, clamped, for the blits and the full-screen passes, and linear
-		// repeating for the shadow casters' alpha
+		// Point and linear, clamped, for the full-screen passes, and linear repeating for
+		// the shadow casters' alpha
 		struct FixedSampler
 		{
 			VkFilter             filter;
@@ -484,7 +484,6 @@ namespace scvk
 		}
 
 		texturePools.clear();
-		blitImageSet = VK_NULL_HANDLE;
 	}
 
 	void VulkanBackend::FlushRetired(FrameSlot& slot)
@@ -1511,7 +1510,6 @@ namespace scvk
 		vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
 		texture.isLive         = true;
-		texture.isReserved     = false;
 		texture.serial         = nextTextureSerial++;
 		texture.uploadedLevels = 0;
 		texture.uploadCount    = 0;
@@ -1602,148 +1600,9 @@ namespace scvk
 		return static_cast<uint32_t>(textures.size() - 1);
 	}
 
-	uint32_t VulkanBackend::ReserveTexture(void)
-	{
-		if (isDead || device == VK_NULL_HANDLE)
-		{
-			return 0;
-		}
-
-		Texture texture;
-		texture.isReserved = true;
-
-		textures.push_back(texture);
-		return static_cast<uint32_t>(textures.size() - 1);
-	}
-
-	bool VulkanBackend::DefineTexture(uint32_t handle, uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels)
-	{
-		if (isDead || device == VK_NULL_HANDLE || handle == 0 || handle >= textures.size() || width == 0 || height == 0)
-		{
-			return false;
-		}
-
-		Texture& texture = textures[handle];
-		if (!texture.isLive && !texture.isReserved)
-		{
-			return false;
-		}
-
-		bool isCompressed = false;
-		VkFormat const format = MapInternalFormat(gdInternalFormat, isCompressed);
-		uint32_t const levelCount = (levels == 0) ? 1 : levels;
-
-		// Keep an image that already matches, contents and all
-		if (texture.isLive && texture.format == format && texture.width == width && texture.height == height && texture.levels >= levelCount)
-		{
-			return true;
-		}
-
-		TickAccumulator const timer(textureWorkTicks);
-		PhaseScope const      defining(*this, FRAME_PHASE_TEXTURES);
-
-		// Add levels to an image of the same format and size, keeping the ones it has
-		//
-		// TexImage2D names a texture's top level first and its smaller levels after, so
-		// the image has to grow under it. The levels already uploaded are copied across
-		// in the texture batch, ahead of any frame that samples the new image.
-		if (texture.isLive && texture.format == format && texture.width == width && texture.height == height)
-		{
-			Texture grown = texture;
-			grown.levels     = levelCount;
-			grown.image      = VK_NULL_HANDLE;
-			grown.memory     = ImageMemory{};
-			grown.view       = VK_NULL_HANDLE;
-			grown.descriptor = VK_NULL_HANDLE;
-
-			if (!CreateTextureObjects(grown) || !BeginTextureBatch())
-			{
-				RetireTextureObjects(grown);
-				return false;
-			}
-
-			VkImageMemoryBarrier barriers[2]{};
-			for (VkImageMemoryBarrier& barrier : barriers)
-			{
-				barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.levels, 0, 1 };
-			}
-
-			barriers[0].image         = texture.image;
-			barriers[0].oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barriers[0].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			barriers[1].image         = grown.image;
-			barriers[1].oldLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barriers[1].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-			vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
-
-			std::vector<VkImageCopy> copies(texture.levels);
-			for (uint32_t level = 0; level < texture.levels; level++)
-			{
-				VkImageCopy& copy = copies[level];
-				copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
-				copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
-				copy.extent         = { std::max(width >> level, 1u), std::max(height >> level, 1u), 1 };
-			}
-
-			vkCmdCopyImage(textureBatchCommandBuffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, grown.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(copies.size()), copies.data());
-
-			barriers[0].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barriers[0].newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			barriers[1].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barriers[1].newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			vkCmdPipelineBarrier(textureBatchCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
-
-			// The new image takes the name; the old one goes once nothing reads it
-			grown.uploadedLevels = texture.uploadedLevels;
-			grown.uploadCount    = texture.uploadCount;
-			grown.firstByteCount = texture.firstByteCount;
-			memcpy(grown.firstBytes, texture.firstBytes, sizeof(grown.firstBytes));
-
-			RetireTextureObjects(texture);
-			texture = grown;
-			return true;
-		}
-
-		// Replace it otherwise, under the same name
-		if (texture.isLive)
-		{
-			RetireTextureObjects(texture);
-			texturesDestroyed++;
-		}
-
-		texture.format         = format;
-		texture.isCompressed   = isCompressed;
-		texture.internalFormat = gdInternalFormat;
-		texture.width          = width;
-		texture.height         = height;
-		texture.levels         = levelCount;
-
-		if (!CreateTextureObjects(texture))
-		{
-			RetireTextureObjects(texture);
-			texture.isReserved = true;
-			return false;
-		}
-
-		return true;
-	}
-
 	bool VulkanBackend::IsTextureName(uint32_t handle) const
 	{
-		return handle != 0 && handle < textures.size() && (textures[handle].isLive || textures[handle].isReserved);
+		return handle != 0 && handle < textures.size() && textures[handle].isLive;
 	}
 
 	uint32_t VulkanBackend::TextureSerial(uint32_t handle) const
@@ -1921,16 +1780,13 @@ namespace scvk
 		}
 
 		Texture& texture = textures[handle];
-		if (!texture.isLive && !texture.isReserved)
+		if (!texture.isLive)
 		{
 			return;
 		}
 
-		if (texture.isLive)
-		{
-			RetireTextureObjects(texture);
-			texturesDestroyed++;
-		}
+		RetireTextureObjects(texture);
+		texturesDestroyed++;
 
 		// Clear the slot at once, so the handle no longer resolves to anything
 		texture = Texture{};

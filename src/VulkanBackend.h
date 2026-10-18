@@ -53,36 +53,6 @@ namespace scvk
 		uint32_t         height         = 0;
 	};
 
-	/** How many lights the lighting extension has, and the lit vertex carries. */
-	constexpr uint32_t LIT_LIGHT_COUNT = 8;
-
-	/**
-	 * A vertex of a draw the lighting extension lights per pixel.
-	 *
-	 * Drawn under LIT_VERTEX_FORMAT, which stands in for the game's vertex format. The
-	 * colour holds the lighting that does not depend on direction, as BGRA like the game's;
-	 * the rest lets the fragment stage add each light's diffuse term per pixel. Disabled
-	 * lights have a black colour. See cVKDriver::LightVertices.
-	 */
-	struct LitVertex
-	{
-		float   position[3];
-		uint8_t colour[4];
-		float   coordinates[2][2];
-
-		// Eye space, normalised; zero for a vertex without a normal
-		float normal[3];
-
-		// Eye space, from the vertex to each light; the light's direction for a directional one
-		float toLight[LIT_LIGHT_COUNT][3];
-
-		// Each light's diffuse colour times the diffuse material, RGBA
-		uint8_t lightColour[LIT_LIGHT_COUNT][4];
-	};
-
-	/** The vertex format a LitVertex draw is made under, outside the game's packed ones. */
-	constexpr uint32_t LIT_VERTEX_FORMAT = 0x7f4c4954u;
-
 	/** A vertex of a shadow caster: world or model position, then its texture coordinate. */
 	struct ShadowVertex
 	{
@@ -145,9 +115,9 @@ namespace scvk
 	 * The Vulkan device, swapchain and fixed function emulation behind the driver.
 	 *
 	 * The driver turns the game's OpenGL-shaped calls into state; this turns that state
-	 * into Vulkan work: pipelines keyed on vertex format, blend, depth and stencil state,
-	 * push constants for everything that changes per draw, textures with their samplers,
-	 * and the offscreen buffer regions the city view is saved into and restored from.
+	 * into Vulkan work: pipelines keyed on vertex format, blend and depth state, push
+	 * constants for everything that changes per draw, textures with their samplers, and
+	 * the offscreen buffer regions the city view is saved into and restored from.
 	 *
 	 * The game draws into a back buffer of scvk's own, the size of the video mode, that
 	 * survives from one frame to the next as a DirectX back buffer does: the game only
@@ -161,8 +131,8 @@ namespace scvk
 	 * The source is split by concern: VulkanBackend.cpp holds the device, swapchain,
 	 * frames and captures, VulkanBackend_Draw.cpp the pipelines and draws,
 	 * VulkanBackend_Textures.cpp the textures and samplers, VulkanBackend_Regions.cpp the
-	 * depth buffer and buffer regions, and VulkanBackend_Effects.cpp the blits, the shadow
-	 * passes and what ReShade and other plugins are handed.
+	 * depth buffer and buffer regions, and VulkanBackend_Effects.cpp the shadow passes and
+	 * what ReShade and other plugins are handed.
 	 *
 	 * Every entry point is safe to call when initialisation failed. The game cannot be
 	 * allowed to crash because a machine has no Vulkan driver, so a dead backend simply
@@ -204,18 +174,6 @@ namespace scvk
 
 			// Whether back faces are culled, pipeline state as well.
 			bool     isFaceCullingEnabled;
-
-			// The stencil test and its operations, in the game's numbering. The reference
-			// and masks are dynamic state.
-			bool     isStencilTestEnabled;
-			uint32_t stencilComparison;
-			uint32_t stencilFailOperation;
-			uint32_t stencilDepthFailOperation;
-			uint32_t stencilPassOperation;
-
-			// Flat shading takes the colour of a primitive's first vertex, as Direct3D does,
-			// which needs shader variants whose colour is not interpolated.
-			bool     isFlatShaded;
 
 			bool operator==(PipelineKey const& other) const = default;
 		};
@@ -351,10 +309,6 @@ namespace scvk
 			// Made with a format that has no alpha, so it samples as opaque whatever alpha
 			// the uploads carry, as on OpenGL and DirectX.
 			bool isOpaque = false;
-
-			// A name handed out by ReserveTexture that no image backs yet. The game's
-			// GenTextures and TexImage2D path names a texture before saying its size.
-			bool            isReserved   = false;
 
 			// The game's internal format, kept so a lost device can rebuild the texture.
 			uint32_t        internalFormat = 0;
@@ -562,11 +516,6 @@ namespace scvk
 			bool            hasViewport      = false;
 			bool            hasPushConstants = false;
 			PushConstantBlock pushConstants  = {};
-			int32_t         depthBias        = INT32_MIN;
-			uint32_t        stencilReference = UINT32_MAX;
-			uint32_t        stencilCompareMask = UINT32_MAX;
-			uint32_t        stencilWriteMask = UINT32_MAX;
-			bool            hasStencilState  = false;
 		};
 
 		/** Which render pass, if any, the command buffer is inside. */
@@ -729,14 +678,11 @@ namespace scvk
 		VkDeviceMemory quadIndexMemory = VK_NULL_HANDLE;
 		uint32_t       quadCapacity    = 0;
 
-		// Shaders and pipelines. The vertex modules are indexed by flat * 6 + hasColour * 3
-		// + textureCoordinateSets, the fragment modules by flat.
-		VkShaderModule             vertexModules[13]  = {};
-		VkShaderModule             fragmentModules[3] = {};
-
-		// Whether the device takes the lit variant's 29 vertex attributes and its outputs
-		bool isPerPixelLightingSupported = false;
-		VkPipelineLayout           pipelineLayout     = VK_NULL_HANDLE;
+		// Shaders and pipelines. The vertex modules are indexed by hasColour * 3 +
+		// textureCoordinateSets.
+		VkShaderModule             vertexModules[6] = {};
+		VkShaderModule             fragmentModule   = VK_NULL_HANDLE;
+		VkPipelineLayout           pipelineLayout   = VK_NULL_HANDLE;
 		std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
 
 		// The pipeline the last draw asked for, which the next one nearly always asks for
@@ -775,19 +721,6 @@ namespace scvk
 		uint32_t blendDestinationFactor = 0;
 		bool     isColourWriteEnabled   = true;
 		bool     isFaceCullingEnabled   = false;
-		bool     isFlatShaded           = false;
-
-		// The stencil test, which the depth buffer carries when its format has room, and
-		// the polygon offset, a depth bias in the depth buffer's own units.
-		bool     isStencilTestEnabled      = false;
-		uint32_t stencilComparison         = 7;
-		uint32_t stencilReference          = 0;
-		uint32_t stencilReadMask           = 0xff;
-		uint32_t stencilWriteMask          = 0xff;
-		uint32_t stencilFailOperation      = 0;
-		uint32_t stencilDepthFailOperation = 0;
-		uint32_t stencilPassOperation      = 0;
-		int32_t  polygonOffset             = 0;
 
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
@@ -908,16 +841,6 @@ namespace scvk
 		bool        isRegionCaptureRequested = false;
 		bool        isRegionCaptureDepth     = false;
 		std::string regionCapturePath;
-
-		// The blits: an image that only grows, holding the latest one's pixels, with the
-		// pipelines that draw it as a quad, opaque or blended.
-		RenderImage     blitImage;
-		VkDescriptorSet blitImageSet         = VK_NULL_HANDLE;
-		uint32_t        blitImagePoolIndex   = 0;
-		VkShaderModule  blitVertexModule     = VK_NULL_HANDLE;
-		VkShaderModule  blitFragmentModule   = VK_NULL_HANDLE;
-		VkPipelineLayout blitPipelineLayout  = VK_NULL_HANDLE;
-		VkPipeline      blitPipelines[2]     = {};
 
 		// Fixed samplers for the passes of scvk's own: point and linear, clamped and
 		// repeating, each with the set that binds it.
@@ -1170,9 +1093,6 @@ namespace scvk
 		/** Binds the geometry pipeline layout's descriptor sets that changed. */
 		void BindDescriptorSets(VkPipelineLayout layout, VkDescriptorSet const sets[4]);
 
-		/** Sets the depth bias and the stencil state the dynamic state carries. */
-		void ApplyDynamicState(void);
-
 		/** Pushes the per-draw constants, adjusted for a disabled first stage and the diagnostics. */
 		void PushDrawConstants(bool isTwoStage, bool isCombining);
 
@@ -1278,16 +1198,15 @@ namespace scvk
 		/** Creates a region's image and memory at the render size, without giving it a handle. */
 		bool AllocateRegionImage(bool isDepth, BufferRegion& outRegion);
 
-		// Blits, shadows and what other modules are handed, in VulkanBackend_Effects.cpp
+		// Shadows and what other modules are handed, in VulkanBackend_Effects.cpp
 
 		bool CreateEffectResources(void);
 		void DestroyEffectResources(void);
-		bool CreateBlitPipelines(void);
 		bool CreateShadowResources(void);
 		bool CreateSceneDepthResources(void);
 
-		/** A simple pipeline with no vertex input, for the full-screen and blit passes. */
-		VkPipeline CreateFullscreenPipeline(VkShaderModule vertexModule, VkShaderModule fragmentModule, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isAlphaBlended, bool isShadowBlend);
+		/** A simple pipeline with no vertex input, for the full-screen passes. */
+		VkPipeline CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isShadowBlend);
 
 		/**
 		 * Staging for this frame: from the staging arena, submitting the frame so far when
@@ -1365,15 +1284,6 @@ namespace scvk
 		 * be strided by the full source width.
 		 */
 		void BlitPixels(int32_t destinationX, int32_t destinationY, uint32_t width, uint32_t height, uint32_t sourceWidth, void const* pixels);
-
-		/**
-		 * Draws tightly packed BGRA8 pixels as a quad over a rectangle of the back buffer,
-		 * scaled to it, the way the DirectX driver draws its blits. The colour is
-		 * multiplied by the modulate colour; the source alpha is used when asked for, and
-		 * texels matching the colour key, when it has one, become transparent. Sampling
-		 * is point, so a 1:1 blit stays exact.
-		 */
-		void DrawPixels(int32_t destinationX, int32_t destinationY, int32_t destinationWidth, int32_t destinationHeight, uint32_t sourceWidth, uint32_t sourceHeight, uint8_t const* bgraPixels, float const modulate[4], float const colourKey[4], bool isSourceAlphaUsed, bool isBlended);
 
 		/**
 		 * Copies a rectangle of the screen into tightly packed BGRA8 rows, top row first,
@@ -1468,23 +1378,11 @@ namespace scvk
 		/** Sets depth testing, writing and the comparison, all pipeline state. */
 		void SetDepthState(bool isTestEnabled, bool isWriteEnabled, uint32_t comparison);
 
-		/**
-		 * Sets the stencil test, in the game's numbering for the comparison and the
-		 * operations. Ignored by a depth buffer without stencil.
-		 */
-		void SetStencilState(bool isTestEnabled, uint32_t comparison, uint32_t reference, uint32_t readMask, uint32_t writeMask, uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation);
-
-		/** The polygon offset, a constant depth bias in units of the depth buffer's resolution. */
-		void SetPolygonOffset(int32_t offset);
-
-		/** Whether primitives take the colour of their first vertex instead of interpolating it. */
-		void SetFlatShading(bool isEnabled);
-
 		/** Whether back faces are culled. Pipeline state in Vulkan. */
 		void SetFaceCulling(bool isEnabled);
 
-		/** Clears the depth attachment, and the stencil with it when asked, within the scissor of a sub-viewport. */
-		void ClearDepth(bool shouldClearDepth, float depth, bool shouldClearStencil, uint32_t stencil);
+		/** Clears the depth attachment, within the scissor of a sub-viewport. */
+		void ClearDepth(float depth);
 
 		/**
 		 * The ambient light and alpha multiplier applied to every lit draw, and whether the
@@ -1567,20 +1465,9 @@ namespace scvk
 		 */
 		uint32_t CreateTexture(uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels);
 
-		/** Hands out a texture name with no image behind it yet, for the GenTextures path. */
-		uint32_t ReserveTexture(void);
-
-		/**
-		 * Gives a named texture an image of this format and size, as TexImage2D does for
-		 * its top level. An image already matching is kept, contents and all.
-		 */
-		bool DefineTexture(uint32_t handle, uint32_t gdInternalFormat, uint32_t width, uint32_t height, uint32_t levels);
-
-		/** Whether a handle names a texture, with an image behind it or reserved for one. */
+		/** Whether a handle names a texture with an image behind it. */
 		bool IsTextureName(uint32_t handle) const;
 
-		/** Whether draws under LIT_VERTEX_FORMAT can be made on this device. */
-		bool IsPerPixelLightingSupported(void) const { return isPerPixelLightingSupported; }
 
 		/** Uploads one level, or a rectangle of one level. */
 		void UploadTextureLevel(uint32_t handle, uint32_t level, int32_t offsetX, int32_t offsetY, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);

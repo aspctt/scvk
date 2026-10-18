@@ -52,28 +52,22 @@ namespace scvk
 {
 """
 
-# The vertex stage is built once per attribute combination, and again with a flat colour.
-# The names match the order the backend indexes them: flat times six, the colour flag
-# times three, plus the number of texture coordinate sets.
-STAGES = []
-for flat, prefix in ((0, "GEOMETRY_VERTEX_SPIRV"), (1, "GEOMETRY_VERTEX_FLAT_SPIRV")):
-    for colour, colourName in ((0, ""), (1, "COLOUR")):
-        for sets, setName in ((0, ""), (1, "TEXTURE"), (2, "TEXTURE2")):
-            suffix = "_".join(part for part in (colourName, setName) if part) or "NONE"
-            STAGES.append(("geometry.vert", prefix + "_" + suffix, ["SCVK_FLAT=%d" % flat, "SCVK_HAS_COLOUR=%d" % colour, "SCVK_TEXTURE_COORDINATE_SETS=%d" % sets]))
-
-STAGES += [
-    ("geometry.vert",    "GEOMETRY_VERTEX_LIT_SPIRV",    ["SCVK_FLAT=0", "SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2", "SCVK_LIT=1"]),
-    ("geometry.frag",    "GEOMETRY_FRAGMENT_SPIRV",      ["SCVK_FLAT=0"]),
-    ("geometry.frag",    "GEOMETRY_FRAGMENT_FLAT_SPIRV", ["SCVK_FLAT=1"]),
-    ("geometry.frag",    "GEOMETRY_FRAGMENT_LIT_SPIRV",  ["SCVK_FLAT=0", "SCVK_LIT=1"]),
-    ("blit.vert",        "BLIT_VERTEX_SPIRV",            []),
-    ("blit.frag",        "BLIT_FRAGMENT_SPIRV",          []),
-    ("shadow.vert",      "SHADOW_VERTEX_SPIRV",          []),
-    ("shadow.frag",      "SHADOW_FRAGMENT_SPIRV",        []),
-    ("fullscreen.vert",  "FULLSCREEN_VERTEX_SPIRV",      []),
-    ("composite.frag",   "COMPOSITE_FRAGMENT_SPIRV",     []),
-    ("scene_depth.frag", "SCENE_DEPTH_FRAGMENT_SPIRV",   []),
+# The vertex stage is built once per attribute combination. The names match the order
+# the backend indexes them: the colour flag times three, plus the number of texture
+# coordinate sets. shaders/compile.ps1 builds the same list.
+STAGES = [
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_NONE",            ["SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=0"]),
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_TEXTURE",         ["SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=1"]),
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_TEXTURE2",        ["SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=2"]),
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR",          ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=0"]),
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE",  ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=1"]),
+    ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2", ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2"]),
+    ("geometry.frag",    "GEOMETRY_FRAGMENT_SPIRV",               []),
+    ("shadow.vert",      "SHADOW_VERTEX_SPIRV",                   []),
+    ("shadow.frag",      "SHADOW_FRAGMENT_SPIRV",                 []),
+    ("fullscreen.vert",  "FULLSCREEN_VERTEX_SPIRV",               []),
+    ("composite.frag",   "COMPOSITE_FRAGMENT_SPIRV",              []),
+    ("scene_depth.frag", "SCENE_DEPTH_FRAGMENT_SPIRV",            []),
 ]
 
 

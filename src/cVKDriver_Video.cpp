@@ -941,7 +941,12 @@ namespace scvk
 		// The game may well shut this driver down as part of probing it and then come
 		// back for a second lifecycle, and that second pass is the interesting one.
 		LogSummary("driver Shutdown");
-		LogInfo("Lighting extension: %llu draws lit per pixel, %llu per vertex; %llu light or glow draws left out of the shadow map.", static_cast<unsigned long long>(litDrawsPerPixel), static_cast<unsigned long long>(litDrawsPerVertex), static_cast<unsigned long long>(liveShadowLightsLeftOut));
+
+		if (liveShadowLightsLeftOut != 0)
+		{
+			LogInfo("Live shadows: %llu light or glow draws left out of the shadow map.", static_cast<unsigned long long>(liveShadowLightsLeftOut));
+		}
+
 		return true;
 	}
 

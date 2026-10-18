@@ -156,7 +156,6 @@
     <ClCompile Include="src\cVKDriver_Diagnostics.cpp" />
     <ClCompile Include="src\cVKDriver_Draw.cpp" />
     <ClCompile Include="src\cVKDriver_Ext.cpp" />
-    <ClCompile Include="src\cVKDriver_Lighting.cpp" />
     <ClCompile Include="src\cVKDriver_LiveShadows.cpp" />
     <ClCompile Include="src\cVKDriver_ReShade.cpp" />
     <ClCompile Include="src\cVKDriver_State.cpp" />

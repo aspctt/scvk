@@ -23,8 +23,7 @@
 #include <cstdint>
 
 // The game's pixel formats and types, as SCGL's translation tables number them, read
-// into 8-bit RGBA. Used by the blits and by texture uploads in formats other than the
-// common byte ones.
+// into 8-bit RGBA. Used by texture uploads in formats other than the common byte ones.
 
 namespace scvk {
 	uint32_t TextureSourceComponents(uint32_t format);
