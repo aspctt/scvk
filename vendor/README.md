@@ -23,7 +23,7 @@ interface declaration.
 
 ## Provenance
 
-### gzcom-dll (52 files)
+### gzcom-dll (57 files)
 
 <https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
 (C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
@@ -50,6 +50,7 @@ interfaces.
 | `include/cISC4Simulator.h`, `include/cISC4View3DWin.h`, `include/cIGZWin.h` | Pausing the city and moving the camera |
 | `include/cIGZMessage2.h`, `include/cIGZMessageServer2.h`, `include/cIGZMessageTarget2.h`, `include/cIGZSystemService.h` | The game's messages, and a tick from its main loop |
 | `include/GZServPtrs.h`, `include/GZServDecls.h`, `include/cRZSysServPtr.h` | Typed access to the game's services |
+| `include/cISC4City.h`, `include/cISC4RenderProperties.h`, `include/cISTETerrain.h`, `include/cISTETerrainMap.h`, `include/SC4Rect.h` | The city, its terrain and its render properties, which the shadow modules carried over from SCD3D11 read |
 | `include/SC4String.h`, `src/SC4String.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
 | `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/cGZDisplayMetrics.h`, `include/cIGZCmdLine.h` | The game's saved preferences, launch options and requested video mode, for correcting the video mode |
 
@@ -111,17 +112,6 @@ gzcom-dll, plus the vertex format decoder.
 > notice comments removed**. scvk takes those files from gzcom-dll upstream
 > instead, so notices stay intact as the license requires. Only the five files
 > above, which are genuinely SCGL's own, are taken from SCGL.
-
-### SCD3D11 (9 headers)
-
-From SCD3D11's `vendor/framework`, its copy of gzcom-dll's headers ·
-LGPL-2.1-or-later
-
-The game interfaces the shadow modules carried over from SCD3D11 read the city,
-its terrain and its render properties through: `include/GZServDecls.h`,
-`include/GZServPtrs.h`, `include/cRZSysServPtr.h`, `include/SC4Rect.h`,
-`include/cISC4App.h`, `include/cISC4City.h`, `include/cISC4RenderProperties.h`,
-`include/cISTETerrain.h`, `include/cISTETerrainMap.h`.
 
 ### ReShade add-on API (8 headers)
 
