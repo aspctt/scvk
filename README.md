@@ -28,13 +28,12 @@ few visual bugs left.
 | Loading screens | Working |
 | Fog | Working, though the game never turns it on |
 | In-game photos | Working |
+| ReShade | Working, effects under the interface with the city's depth |
+| Live True3D shadows | Off by default, see [Live shadows](#live-shadows) |
 | Performance | Faster than DirectX 7 in every [benchmark](#benchmark) scene, most of all zoomed out |
 
 Known issues:
 
-- On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so takes
-  the game out of exclusive fullscreen. Win+PrintScreen captures the game, and in
-  borderless PrintScreen does too.
 - An NVIDIA profile for SimCity 4 that differs from the global settings, such as
   Monitor Technology set to Fixed Refresh while G-SYNC is on, can blank the screen for
   a moment on Alt+Tab in borderless, like a resolution change. Resetting the profile
@@ -61,6 +60,10 @@ two-stage texture environment combiners. Vulkan has none of that. So scvk is
 not a thin translation layer but a fixed function emulator, which is why the
 design centres on a packed state key selecting a cached pipeline, with an
 ubershader reproducing the combiner network in fragment code.
+
+The game draws into a back buffer of scvk's own, the size of its video mode, and scvk
+copies it into the window when the frame is shown. The back buffer survives from one
+frame to the next, as DirectX's does, since the game only redraws what changed.
 
 ### Depth buffer
 
@@ -102,6 +105,44 @@ With sc4-graphics-options installed, its settings decide both instead. A fullscr
 size the display does not offer still drops the game to 16 bits at a smaller size,
 with any renderer.
 
+### Live shadows
+
+SimCity 4 draws most shadows as flat pictures laid on the ground. scd3d11 added live
+shadows, which draw True3D props and network pieces into a shadow map from the sun, so
+their shadows follow slopes and fall across other buildings. scvk carries them over and
+leaves them off by default, as scd3d11 does. While they are on, every scroll, zoom and
+turn makes the game redraw the whole city instead of the strip that came into view.
+
+`-NativeShadowMasks:network`, `props` or `all` turns them on for network pieces, props
+or both. `-NativeShadowMasks:replace` adds the shadow registry, which takes over the
+game's own shadows of buildings, trees and poles, and replaces the terrain's own
+shading as well. It is experimental, and in a city of dense parks and raised roads it
+laid blocks of shadow across the roads.
+
+### ReShade
+
+Installed for Vulkan, ReShade draws its effects over the whole frame, interface
+included. With ReShade's full add-on support build, scvk registers as an add-on, as
+scd3d11 does. The effects then draw once the city view is done and before the
+interface goes over it, and effects that read depth get the city's own.
+`-ReShade:off` leaves ReShade drawing over everything.
+
+### Launch options
+
+scvk takes scd3d11's launch options, so a launcher set up for one renderer works with
+the other.
+
+| Option | Effect |
+|---|---|
+| `-VSync:off` | Lets the frame rate go past the display's refresh rate |
+| `-GPU:default` | Uses the first graphics card Vulkan lists, the way Windows picks, instead of preferring a dedicated one |
+| `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
+| `-ReShade:off` | Leaves ReShade drawing over the interface |
+| `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |
+| `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
+| `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
+| `-FullscreenMode:Borderless` | The same as `-borderless` |
+
 ## Compatibility with other mods
 
 - [SC4Fix](https://github.com/nsgomez/sc4fix): fully compatible.
@@ -122,40 +163,32 @@ camera moves.
 scvk always lifts the paused 30. A paused city can then run at hundreds of
 frames a second, where the game's animation clock rounded each frame up to 2 ms
 and sped lot animations up, so scvk also lets it count short frames as they
-are. It can also raise the speed caps itself, so
+are.
+
+The speed caps go up to the display's refresh rate, so
 [sc4-disable-fps-limits](https://github.com/caspervg/sc4-disable-fps-limits) is
-not required, though it remains compatible.
+not required, though it remains compatible, and caps it has already changed stay as
+it set them. `-MaxFPS:<n>` sets the caps to a number of your own, and `-MaxFPS:off`
+keeps the game's. `MaxFPS` in `scvk.ini` does the same, where 0 keeps the game's
+caps, as it did in 0.2.
 
-Set `MaxFPS` in `scvk.ini` to raise the caps:
-
-```ini
-[scvk]
-MaxFPS=120
-```
-
-A running city still gets at least 15 ms of simulation every frame, which keeps
-it near 60 frames a second whatever `MaxFPS` says. `UnlockRunningFPS=true`
-lowers that to 3 ms. The time comes out of the simulation, so the city
-simulates more slowly, most of all at Cheetah. It is off by default.
+A running city still gets at least 15 ms of simulation every frame, which keeps it
+near 60 frames a second whatever the cap. Raised caps take simulation time at Rhino
+and Cheetah, so a heavy city can simulate more slowly, and `-MaxFPS:off` is the way
+back.
 
 This lives in scvk because frame pacing and presentation are one concern. Once
 the swapchain exists, the present mode and this cap have to agree, and keeping
 them in separate plugins means two settings files that can contradict one
 another.
 
-`MaxFPS` is off by default because caspervg's plugin does the same job, and
-enabling both with different values would be confusing. **If you already use
-that plugin, leave `MaxFPS` at 0.**
-
 scvk is more cautious than it strictly needs to be here. It requires game
 version 641, and it reads each byte before changing it: if a byte does not hold
-the value it expects, it declines and writes the reason to the log instead of
-overwriting whatever is actually there. Running both plugins is therefore
-untidy but not dangerous.
+the value it expects, it leaves the byte alone and says so in the log instead of
+overwriting whatever is actually there, so running both plugins is safe.
 
-[scd3d11](https://github.com/caspervg/scd3d11) limits each frame's simulation time
-by changing the same code, and the two work together. With `UnlockRunningFPS=true`,
-only the plugin that starts first gets that change.
+[scd3d11](https://github.com/caspervg/scd3d11) and SC4CPUOptions limit each frame's
+simulation time by changing the code next to scvk's, and both work alongside it.
 
 ### Drawing over the game from another plugin
 
@@ -170,16 +203,17 @@ BOOL __stdcall SCVKUnregisterFrameCallback(SCVKFrameCallback callback, void* use
 
 The callback runs on the game's main thread once a frame, after the game has drawn
 everything including its interface. It gets the instance, device, queue and loader, and a
-command buffer already inside a render pass on the frame's image. It runs once more,
-with the device idle, before scvk destroys a device, which it does for every video mode
-the game sets. [`src/SCVKFrameCallback.h`](src/SCVKFrameCallback.h) is the whole contract
+command buffer already inside a render pass on scvk's back buffer, which is copied into
+the window right after. It runs once more, with the device idle, before scvk destroys a
+device, which it does for every video mode the game sets. [`src/SCVKFrameCallback.h`](src/SCVKFrameCallback.h) is the whole contract
 and depends on nothing else, so a plugin copies it as it is. There is no import library:
 find `scvk.dll` with `GetModuleHandleW` and look the functions up with `GetProcAddress`.
 
 ## Building
 
-Requires Visual Studio 2022 or later with the desktop C++ workload, and the
-Vulkan SDK for its headers.
+Requires Visual Studio 2022 or later with the desktop C++ workload. The Vulkan
+headers are in `vendor/vulkan`, so the Vulkan SDK is only needed for the validation
+layers.
 
 ```
 msbuild scvk.sln /p:Configuration=Release /p:Platform=Win32
@@ -199,7 +233,8 @@ Vulkan-specific ships with the DLL.
 
 The build looks for the SDK in this order: an explicit
 `/p:VulkanSdkDir=<root>`, then a `VULKAN_SDK_32` environment variable, then a
-local `1.3.296.0` install, then `VULKAN_SDK`.
+local `1.3.296.0` install, then `VULKAN_SDK`, and without any of them it uses the
+headers in `vendor/vulkan`.
 
 > **For validation layers, use SDK 1.3.296.0.** SimCity 4 is a 32-bit process,
 > so the layers must be 32-bit to load into it, and 1.3.296.0 is the last
@@ -219,22 +254,31 @@ GLSL lives in `shaders/`. It is compiled to SPIR-V and embedded into
 `src/ShaderBinaries.h`, which is **committed**, so building scvk needs no
 shader compiler and the DLL ships no external shader files.
 
-Regenerate only after changing a shader:
+Regenerate only after changing a shader, with PowerShell or Python:
 
 ```
 pwsh shaders/compile.ps1
+python3 shaders/compile.py
 ```
+
+### Linux
+
+`tools/build-mingw.sh` builds the same 32-bit DLL on Linux with MinGW-w64, without the
+game-side shadow modules, which hook the game with MSVC-only assembly.
+`tests/wine/run.sh` builds a harness that loads the DLL the way the game does and
+checks every draw path pixel by pixel under Wine, without the game. The harness also
+builds with Visual Studio and runs on Windows.
 
 ## Diagnostics
 
 `tools/run-sc4.ps1` deploys a build, runs the game for a set time and collects
 the log. Options are listed at the top of the script.
 
-Set `LogLevel=trace` in `scvk.ini` to see everything the game asks of the
-renderer in `scvk.log`, and `debug` for the statistics below without that. At
-either level a few screenshots (`scvk-frame-N.bmp`, `scvk-region-N.bmp`) are
-saved beside it during a session, and Scroll Lock in game saves one on demand,
-along with the saved scene and its depth (`scvk-key-N-*`).
+Launch with `-LogLevel:trace`, or set `LogLevel=trace` in `scvk.ini`, to see
+everything the game asks of the renderer in `scvk.log`, and `debug` for the statistics
+below without that. At either level a few screenshots (`scvk-frame-N.bmp`,
+`scvk-region-N.bmp`) are saved beside it during a session, and Scroll Lock in game
+saves one on demand, along with the saved scene and its depth (`scvk-key-N-*`).
 
 Every 300 frames the log also notes the frame rate, the slowest frame and how
 its time split between the game and scvk's own work (drawing, copying geometry,
@@ -243,6 +287,11 @@ how many were created, deleted or uploaded since the last note, how much
 geometry was copied, how many blocks of graphics memory the textures share, how
 many memory allocations scvk holds against the graphics driver's limit, and how
 strong the game asked the building shadows to be.
+
+When the game stops drawing for five seconds, the log says where it was. A stall while
+the game works on its own, such as a city loading, is one line, and a stall inside
+scvk is a warning with its call stack. A crash leaves the faulting address, the
+registers and the stack in the log as well.
 
 To see a debug view, put an empty file with one of these names next to
 `scvk.dll`, and delete it to go back to normal:
@@ -293,8 +342,8 @@ scvk needs Windows 10 or 11, a graphics card with Vulkan support and game versio
 641.
 
 Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
-and copy `scvk.dll` and `scvk.ini` into the `Plugins` folder of your SimCity 4
-installation. That is all: the game picks scvk by default. On a machine without
+and copy `scvk.dll` into the `Plugins` folder of your SimCity 4 installation. That
+is all: the game picks scvk by default. On a machine without
 Vulkan, the game keeps its own DirectX renderer.
 
 With [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options),
@@ -324,12 +373,16 @@ ColorDepth=32
 > exit. That is the slot the game is not using.
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
-directory if the Plugins folder is not writable. `LogLevel` in `scvk.ini` sets
-how much goes into it, from `trace` to `off`, and is `info` by default.
+directory if the Plugins folder is not writable. `-LogLevel:<level>` sets how much
+goes into it, from `trace` to `off`, and is `info` by default.
 
-To turn scvk off without removing it, keep `scvk.ini` next to the DLL and set
-`Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk
-is never loaded at all. That is also the way back to the game's DirectX renderer.
+`scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
+`MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the repository's
+[`scvk.ini`](scvk.ini) explains each. A `scvk.ini` from 0.2 keeps working.
+
+To turn scvk off without removing it, put a `scvk.ini` next to the DLL with
+`Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk is never
+loaded at all. That is also the way back to the game's DirectX renderer.
 
 ## License
 
@@ -341,13 +394,21 @@ is the entire point of the LGPL. Changes to scvk itself must be shared under
 the same terms.
 
 Third-party sources are vendored in [`vendor/`](vendor/README.md), each
-retaining its original notice, all LGPL-2.1-or-later:
+retaining its original notice:
 
 - [gzcom-dll](https://github.com/nsgomez/gzcom-dll) for the plugin ABI and
-  driver interface declarations
-- [Scion](https://github.com/nsgomez/scion) for reference counting
+  driver interface declarations, LGPL-2.1-or-later
+- [Scion](https://github.com/nsgomez/scion) for reference counting,
+  LGPL-2.1-or-later
 - [SCGL](https://github.com/nsgomez/scgl) for the driver extension interfaces
-  and vertex format decoding
+  and vertex format decoding, LGPL-2.1-or-later
+- [ReShade](https://github.com/crosire/reshade)'s add-on API headers,
+  BSD-3-Clause or MIT
+- the [Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers), Apache-2.0
+
+The live shadows, the ReShade integration, the watchdog and the thumbnail focus guard
+come from [scd3d11](https://github.com/caspervg/scd3d11), LGPL-2.1-or-later.
 
 Particular thanks to Nelson Gomez, whose SCGL is the reference implementation
-that made the shape of this interface legible at all. See [NOTICE](NOTICE).
+that made the shape of this interface legible at all, to caspervg for scd3d11, and
+to UlisseWolf, who ported its features to scvk. See [NOTICE](NOTICE).

@@ -76,7 +76,11 @@ SOFTWARE.
 License notice for SCD3D11
 --------------------------------------------------------------
 
+https://github.com/caspervg/scd3d11
 Copyright (C) 2025, 2026 Nelson Gomez (nsgomez) and the SCD3D11 authors
+
+scvk's live shadows, ReShade integration, render watchdog and thumbnail focus
+guard are carried over from this project.
 
 LGPL 2.1 or later.
 https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html

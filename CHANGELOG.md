@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Most of this release is UlisseWolf's port of scd3d11's features.
+
 ### Added
 
+- ReShade's effects draw under the interface, with the city's depth, when ReShade is installed with full add-on support. `-ReShade:off` leaves it drawing over everything
+- Live shadows for True3D props and network pieces, off by default. `-NativeShadowMasks:all` turns them on, and `-NativeShadowMasks:replace` adds the experimental shadow registry and terrain shadows
+- PrintScreen in exclusive fullscreen puts the game's own picture on the clipboard, instead of opening the Snipping Tool and dropping the game out of fullscreen
+- Region thumbnails no longer go blank when the game loses focus while saving
+- `-MaxFPS:<n>` and `-MaxFPS:off` for the speed caps, ahead of `MaxFPS` in `scvk.ini`
+- scd3d11's launch options: `-VSync:off`, `-GPU:default`, `-FlipModel:off`, `-LogLevel:<level>` and `-FullscreenMode:Borderless`
 - `-b` and `-borderless` launch options for a borderless window, which sc4-graphics-options' borderless mode gives too
 - `-windowed` and `-fullscreen` launch options, the same as `-w` and `-f`
+- A pipeline cache beside the DLL, so later sessions build their pipelines faster
+- A watchdog and fault reports in `scvk.log`, which say where a frozen or crashed game was
+- The log notes Wine and its version when the game runs on Linux
+- A MinGW build and a Wine test harness, for building and testing on Linux
 
 ### Changed
 
@@ -18,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The game runs in 32-bit colour even when its options or `-r` ask for 16, which made its textures band
 - A `-r` size is used as given, without needing `-CustomResolution:enabled`. `-CustomResolution:disabled` keeps the game's own size
 - With sc4-graphics-options installed, its settings still decide both
+- The speed caps follow the display's refresh rate. A `scvk.ini` from 0.2, which says `MaxFPS=0`, keeps the game's caps
+- Faster scrolling, with 13 to 21% more frames a second in the benchmark's close, near and far scenes
+- The zip no longer has a `scvk.ini`. scvk still reads one when it is there
+
+### Removed
+
+- `UnlockRunningFPS`, which changed the same code as SC4CPUOptions and scd3d11
 
 ## [0.2.2] - 2026-10-17
 

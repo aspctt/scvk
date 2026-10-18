@@ -32,8 +32,9 @@ THIRD-PARTY COMPONENTS
 The `vendor/` directory contains source files from the projects listed below.
 Each file retains its original copyright and license notice. All are licensed
 under the GNU Lesser General Public License, version 2.1 or (at your option) any
-later version, the same terms as scvk itself. See vendor/README.md for a
-per-file provenance record.
+later version, the same terms as scvk itself, except the ReShade and Vulkan
+headers, whose licenses are given with them. See vendor/README.md for a per-file
+provenance record.
 
   gzcom-dll: an open-source DLL Plugin SDK for SimCity 4
   https://github.com/nsgomez/gzcom-dll
@@ -61,11 +62,27 @@ per-file provenance record.
       that informed scvk's understanding of how SimCity 4 drives this
       interface; scvk gratefully acknowledges that prior work.
 
+  ReShade: the add-on API headers
+  https://github.com/crosire/reshade
+  ReShade 6.0.0, Copyright (C) 2014 Patrick Mours
+  BSD-3-Clause OR MIT; see vendor/reshade/LICENSE.md
+
+      Used header-only to register scvk as an add-on of a ReShade that is
+      already loaded. ReShade itself is not part of scvk.
+
+  Vulkan-Headers: the Vulkan C headers
+  https://github.com/KhronosGroup/Vulkan-Headers
+  Tag v1.3.296, Copyright 2015-2024 The Khronos Group Inc.
+  Apache-2.0; see vendor/vulkan/LICENSE.md
+
+      The headers a build uses when no Vulkan SDK is installed. scvk loads
+      vulkan-1.dll at run time and links nothing of Vulkan.
+
 
 DERIVED WORK OUTSIDE vendor/
 
-Two files under `src/` are derived from other projects rather than vendored
-verbatim. They are noted here and in their own file headers.
+These files under `src/` and `shaders/` are derived from other projects rather
+than vendored verbatim. They are noted here and in their own file headers.
 
   src/SC4Version.cpp, src/SC4Version.h
 
@@ -111,27 +128,17 @@ verbatim. They are noted here and in their own file headers.
   src/TerrainShadow*.h, src/ThumbnailFocusGuard.cpp, src/ThumbnailFocusGuard.h,
   src/TextureUploadUtils.cpp, src/TextureUploadUtils.h, src/Watchdog.cpp,
   shaders/composite.frag, shaders/shadow.vert, shaders/shadow.frag,
-  shaders/blit.frag, shaders/scene_depth.frag
+  shaders/scene_depth.frag
 
       Carried over from SCD3D11, the Direct3D 11 renderer: the game-side shadow
       modules nearly as they are, the live shadows, the ReShade integration, the
-      blits, the render watchdog and the thumbnail focus guard rewritten for
-      Vulkan, and their shaders translated from HLSL to GLSL.
+      render watchdog and the thumbnail focus guard rewritten for Vulkan, and
+      their shaders translated from HLSL to GLSL.
 
           SCD3D11
+          https://github.com/caspervg/scd3d11
           Copyright (C) 2025, 2026 Nelson Gomez (nsgomez) and the SCD3D11 authors
           LGPL-2.1-or-later
-
-  vendor/reshade/include
-
-      The ReShade add-on API headers, used header-only to register scvk as an
-      add-on of a ReShade that is already loaded. ReShade itself is not part of
-      scvk.
-
-          ReShade 6.0.0
-          https://github.com/crosire/reshade
-          Copyright (C) 2014 Patrick Mours
-          BSD-3-Clause OR MIT; see vendor/reshade/LICENSE.md
 
 No code or assets from SimCity 4, Maxis, or Electronic Arts Inc. are included in
 this repository.

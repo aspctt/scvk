@@ -17,13 +17,11 @@ Arts Inc. or Maxis.</p>
 <p><strong>Early preview.</strong> The region view, cities, menus and loading
 screens all draw, windowed, full screen or borderless, with lighting that matches
 the DirectX renderer, and it is faster than DirectX, most of all zoomed out.
-Players have run it on NVIDIA and AMD graphics cards, on Windows and on Linux, but
-expect problems on other hardware, and save often.</p>
+ReShade's effects draw under the interface, and scd3d11's live shadows can be
+turned on. Players have run it on NVIDIA and AMD graphics cards, on Windows and on
+Linux, but expect problems on other hardware, and save often.</p>
 <p>Known issues:</p>
 <ul>
-<li>On Windows 11, PrintScreen opens the Snipping Tool, which takes focus and so
-takes the game out of exclusive fullscreen. Win+PrintScreen captures the
-game.</li>
 <li>The game stopped responding once in testing, after leaving the Big City
 Tutorial. It has not happened again since.</li>
 </ul>
@@ -38,8 +36,8 @@ Tutorial. It has not happened again since.</li>
 <h2 id="installation">Installation</h2>
 <ol type="1">
 <li>Close SimCity 4.</li>
-<li>Copy <code>scvk.dll</code> and <code>scvk.ini</code> into the Plugins folder in
-the SimCity 4 installation directory.</li>
+<li>Copy <code>scvk.dll</code> into the Plugins folder in the SimCity 4
+installation directory.</li>
 <li>Start the game. A <code>scvk.log</code> file appears beside
 <code>scvk.dll</code>.</li>
 </ol>
@@ -52,31 +50,49 @@ renderer, since scvk registers under that ID with a higher version. scvk draws i
 32-bit whatever <code>ColorDepth</code> says. Set it to 32 for windowed play: at
 16, the game switches to fullscreen whenever the desktop runs at a different
 depth.</p>
-<p>To go back to DirectX, set <code>Enabled=false</code> under <code>[Admin]</code>
-in <code>scvk.ini</code>.</p>
+<p>To go back to DirectX, remove <code>scvk.dll</code>, or see <code>Enabled</code>
+below.</p>
 
-<h2 id="configuring-the-plugin">Configuring the plugin</h2>
-<p>Open <code>scvk.ini</code> in a text editor (e.g. Notepad). Each setting is
-explained in the file.</p>
-<p><code>MaxFPS</code> raises the game's frame rate caps, which are 30 at Turtle
-speed, 20 at Rhino and 15 at Cheetah. 0, the default, leaves them alone. A paused
-city is never held at 30 whatever this says.</p>
-<p><code>UnlockRunningFPS</code> lets <code>MaxFPS</code> go above about 60 while
-the city runs. The time comes out of the simulation, so the city simulates more
-slowly. Off by default.</p>
-<p><code>Use32BitDepth</code> gives the depth buffer 32 bits instead of the 16 the
-DirectX renderer uses. Surfaces that sit very close together stop banding, but
-lights laid exactly on a model can leave thin lines after scrolling. Off by
-default.</p>
-<p><code>LogLevel</code> sets how much goes into <code>scvk.log</code>, from
-<code>trace</code> to <code>off</code>. <code>info</code> by default.</p>
+<h2 id="settings">Settings</h2>
+<p>scvk needs no settings. Launch options change a few things for one launch, and
+scd3d11's options work the same way:</p>
+<ul>
+<li>scvk starts the game borderless, covering the main monitor. <code>-w</code>
+gives a window and <code>-f</code> exclusive fullscreen, at the size in the game's
+options, and <code>-r</code> sets a size of its own. With sc4-graphics-options
+installed, its <code>WindowMode</code> decides instead.</li>
+<li><code>-NativeShadowMasks:all</code> turns on live shadows for True3D props and
+network pieces. They are off by default, since while they are on every scroll,
+zoom and turn makes the game redraw the whole city.
+<code>-NativeShadowMasks:replace</code> adds the experimental shadow registry and
+terrain shadows.</li>
+<li><code>-MaxFPS:&lt;n&gt;</code> sets the game's frame rate caps, which are 30 at
+Turtle speed, 20 at Rhino and 15 at Cheetah. scvk raises them to the display's
+refresh rate by default, and <code>-MaxFPS:off</code> keeps the game's. A paused
+city is never held at 30 whatever this says.</li>
+<li><code>-VSync:off</code>, <code>-GPU:default</code>, <code>-FlipModel:off</code>
+and <code>-ReShade:off</code> work as they do in scd3d11.</li>
+<li><code>-LogLevel:&lt;level&gt;</code> sets how much goes into
+<code>scvk.log</code>, from <code>trace</code> to <code>off</code>.
+<code>info</code> by default.</li>
+</ul>
+<p>A <code>scvk.ini</code> beside <code>scvk.dll</code> is optional, and scvk reads
+it when it is there. A <code>scvk.ini</code> from 0.2 keeps working, but its
+<code>MaxFPS=0</code> keeps the game's frame rate caps; delete that line for the
+display's refresh rate.</p>
+<p><code>MaxFPS</code> under <code>[scvk]</code> does what <code>-MaxFPS</code>
+does, where 0 keeps the game's caps.</p>
+<p><code>Use32BitDepth=true</code> under <code>[scvk]</code> gives the depth buffer
+32 bits instead of the 16 the DirectX renderer uses. Surfaces that sit very close
+together stop banding, but lights laid exactly on a model can leave thin lines
+after scrolling.</p>
+<p><code>LogLevel</code> under <code>[scvk]</code> does what
+<code>-LogLevel</code> does.</p>
 <p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading
 scvk at all, which brings back the DirectX renderer. If
 <code>SC4GraphicsOptions.ini</code> says <code>Driver=OpenGL</code>, set it to
 <code>DirectX</code> as well, or the game falls back to its own OpenGL renderer,
 which does not work.</p>
-<p>The <code>[Benchmark]</code> section compares scvk with the DirectX renderer
-and is off by default.</p>
 <p>The frame rate changes only apply to game version 641, and scvk checks the
 game's code holds what it expects before changing anything.</p>
 
@@ -92,7 +108,11 @@ is fully compatible, though no longer needed to choose scvk.</li>
 alongside. It keeps the DirectX slot, so <code>Driver=DirectX</code> selects
 scd3d11 and <code>Driver=OpenGL</code> selects scvk.</li>
 <li><a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
-works alongside scvk. If you use it, leave <code>MaxFPS</code> at 0.</li>
+works alongside scvk, and the caps it sets stay.</li>
+<li><a href="https://reshade.me">ReShade</a> 6, installed for Vulkan with full
+add-on support, draws its effects under the interface, with the city's depth for
+effects that read it. Without full add-on support, its effects cover the interface
+too.</li>
 <li>DirectX wrappers such as dgVoodoo 2 only affect the DirectX renderer. scvk
 does not need one, and they can stay installed.</li>
 </ul>
@@ -125,10 +145,15 @@ License version 2.1 or later.<br />
 License version 2.1 or later.<br />
 <a href="https://github.com/caspervg/sc4-disable-fps-limits">sc4-disable-fps-limits</a>
 - GNU Lesser General Public License version 2.1 or later.<br />
+<a href="https://github.com/caspervg/scd3d11">scd3d11</a> - GNU Lesser General
+Public License version 2.1 or later.<br />
+<a href="https://github.com/crosire/reshade">ReShade</a>'s add-on API headers -
+BSD 3-Clause License.<br />
 <a href="https://github.com/nsgomez/sc4fix">SC4Fix</a> - MIT License.</p>
 <p>See <a href="Third%20Party%20Notices.txt">Third Party Notices.txt</a> for
 details.</p>
 <p>Particular thanks to Nelson Gomez, whose SCGL is the reference implementation
-that made the shape of the game's renderer interface legible at all.</p>
+that made the shape of the game's renderer interface legible at all, to caspervg
+for scd3d11, and to UlisseWolf, who ported its features to scvk.</p>
 </body>
 </html>
