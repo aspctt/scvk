@@ -65,14 +65,15 @@ namespace scvk
 		// instead of one more for the flip model. See VulkanBackend::CreateSwapchain.
 		bool isFlipModelPreferred = true;
 
-		// -NativeShadowMasks:off|network|props|all|replace. All by default: every
-		// True3D prop and network piece drawn live in the shadow map, the rest of the
-		// shadows left to SC4. Replace adds the registry, which takes over the shadow
-		// records SC4 draws as flat decals, and the terrain's own shadows; it is
-		// experimental, as in SCD3D11, where it is off by default too, and in a city of
-		// dense parks and raised roads it laid blocks of shadow across the roads. Off
-		// leaves SC4's own shadows alone.
-		NativeShadowMode nativeShadowMode = NativeShadowMode::All;
+		// -NativeShadowMasks:off|network|props|all|replace. Off by default, as in
+		// SCD3D11, leaving SC4's own shadows alone: while live shadows are on, every
+		// scroll, zoom and rotation makes the game redraw the whole city view rather than
+		// the strip that came into view. All draws every True3D prop and network piece
+		// live in the shadow map, the rest of the shadows left to SC4. Replace adds the
+		// registry, which takes over the shadow records SC4 draws as flat decals, and the
+		// terrain's own shadows; it is experimental, and in a city of dense parks and
+		// raised roads it laid blocks of shadow across the roads.
+		NativeShadowMode nativeShadowMode = NativeShadowMode::Off;
 
 		// -GridDebug. Logs the terrain grid pass's texture state once a second.
 		bool isGridDebugEnabled = false;

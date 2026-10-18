@@ -94,7 +94,7 @@ namespace scvk
 				settings.isReShadeIntegrationEnabled = false;
 			}
 
-			// The shadow modules, all unless a switch names another mode
+			// The shadow modules, off unless a switch names a mode
 			if (HasCommandLineSwitch("-NativeShadowMasks:off"))
 			{
 				settings.nativeShadowMode = NativeShadowMode::Off;

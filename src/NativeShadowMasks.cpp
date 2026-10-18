@@ -759,8 +759,8 @@ namespace scvk::NativeShadowMasks {
 		}
 
 		Mode ReadMode() {
-			// scvk: from the settings, replace by default, rather than only from the
-			// command line. replace = every live path plus NativeShadowRegistry, which
+			// scvk: from the settings, which read the same switch and are off by
+			// default too. replace = every live path plus NativeShadowRegistry, which
 			// takes over the AddShadow records these paths leave to SC4.
 			switch (GetSettings().nativeShadowMode) {
 				case NativeShadowMode::All:

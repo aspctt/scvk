@@ -240,10 +240,11 @@ namespace scvk
 			InstallVideoModeService();
 
 			// Install the game-side shadow modules SCD3D11 has, each guarded by the exact
-			// bytes it patches: the True3D shadows and the registry, on by default as
-			// -NativeShadowMasks:replace unless -NativeShadowMasks:off or another mode
-			// says otherwise, and the diagnostics only when asked for. They draw through
-			// scvk, so a benchmark of the game's DirectX driver leaves them out.
+			// bytes it patches. They are opt-in, as in SCD3D11: the live True3D shadows
+			// with -NativeShadowMasks:network, props or all, the registry and the
+			// terrain's shadows on top of them with replace, and the diagnostics only when
+			// asked for. They draw through scvk, so a benchmark of the game's DirectX
+			// driver leaves them out.
 			if (!IsBenchmarkOnDirectX())
 			{
 				NativeShadowMasks::Install();
