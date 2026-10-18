@@ -21,6 +21,11 @@
 
 namespace scvk
 {
+	//// Constants
+
+	/** The phase between Flush calls, while the game works on its own. One array, so one address. */
+	inline constexpr char GAME_RENDER_PHASE[] = "game (between Flush calls)";
+
 	//// Public API
 
 	/**
@@ -32,6 +37,10 @@ namespace scvk
 	 * instruction pointer and the likely return addresses on its stack, with the state of
 	 * the window. That turns "the game froze" into a line saying where. Phases must be
 	 * string literals, since only the pointer is kept.
+	 *
+	 * A stall in GAME_RENDER_PHASE is the game's own work, such as a city loading, and is
+	 * noted at the info level with its stack at debug. A stall in any other phase is
+	 * scvk's, and a warning with its stack.
 	 */
 	void NoteRenderPhase(char const* phase);
 	void NoteRenderFrame(void);

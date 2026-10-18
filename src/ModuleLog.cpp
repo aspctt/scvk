@@ -70,6 +70,14 @@ namespace scvk
 		va_end(arguments);
 	}
 
+	void LogDebug(LogCategory category, char const* format, ...)
+	{
+		va_list arguments;
+		va_start(arguments, format);
+		Write(LOG_LEVEL_DEBUG, category, format, arguments);
+		va_end(arguments);
+	}
+
 	void LogTrace(LogCategory category, char const* format, ...)
 	{
 		va_list arguments;

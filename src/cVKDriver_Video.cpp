@@ -215,7 +215,8 @@ namespace scvk
 		}
 
 		// Everything that can move the focus, visibility or size of the game's window, for
-		// working out "the game vanished but is still running", as SCD3D11 logs it
+		// working out "the game vanished but is still running", as SCD3D11 logs it. At the
+		// debug level, since every focus change and resize would otherwise reach the log.
 		void LogWindowMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 		{
 			// The parameters are raw words, whatever the message packs in them.
@@ -226,44 +227,44 @@ namespace scvk
 			switch (message)
 			{
 			case WM_ACTIVATEAPP:
-				Log(LogCategory::Window, "%p WM_ACTIVATEAPP %s (other thread %lu)", handle, (wParam != FALSE) ? "activated" : "deactivated", static_cast<unsigned long>(lParam));
+				LogDebug(LogCategory::Window, "%p WM_ACTIVATEAPP %s (other thread %lu)", handle, (wParam != FALSE) ? "activated" : "deactivated", static_cast<unsigned long>(lParam));
 				break;
 
 			case WM_ACTIVATE:
 			{
 				WORD const state = LOWORD(wParam);
-				Log(LogCategory::Window, "%p WM_ACTIVATE %s minimized=%u other=%p", handle, (state == WA_INACTIVE) ? "WA_INACTIVE" : ((state == WA_CLICKACTIVE) ? "WA_CLICKACTIVE" : "WA_ACTIVE"), (HIWORD(wParam) != 0) ? 1u : 0u, reinterpret_cast<void*>(lParam));
+				LogDebug(LogCategory::Window, "%p WM_ACTIVATE %s minimized=%u other=%p", handle, (state == WA_INACTIVE) ? "WA_INACTIVE" : ((state == WA_CLICKACTIVE) ? "WA_CLICKACTIVE" : "WA_ACTIVE"), (HIWORD(wParam) != 0) ? 1u : 0u, reinterpret_cast<void*>(lParam));
 				break;
 			}
 
 			case WM_NCACTIVATE:
-				Log(LogCategory::Window, "%p WM_NCACTIVATE %s", handle, (wParam != FALSE) ? "active" : "inactive");
+				LogDebug(LogCategory::Window, "%p WM_NCACTIVATE %s", handle, (wParam != FALSE) ? "active" : "inactive");
 				break;
 
 			case WM_SETFOCUS:
-				Log(LogCategory::Window, "%p WM_SETFOCUS (from %p)", handle, reinterpret_cast<void*>(wParam));
+				LogDebug(LogCategory::Window, "%p WM_SETFOCUS (from %p)", handle, reinterpret_cast<void*>(wParam));
 				break;
 
 			case WM_KILLFOCUS:
-				Log(LogCategory::Window, "%p WM_KILLFOCUS (to %p)", handle, reinterpret_cast<void*>(wParam));
+				LogDebug(LogCategory::Window, "%p WM_KILLFOCUS (to %p)", handle, reinterpret_cast<void*>(wParam));
 				break;
 
 			case WM_ENABLE:
-				Log(LogCategory::Window, "%p WM_ENABLE %u", handle, (wParam != FALSE) ? 1u : 0u);
+				LogDebug(LogCategory::Window, "%p WM_ENABLE %u", handle, (wParam != FALSE) ? 1u : 0u);
 				break;
 
 			case WM_CANCELMODE:
-				Log(LogCategory::Window, "%p WM_CANCELMODE", handle);
+				LogDebug(LogCategory::Window, "%p WM_CANCELMODE", handle);
 				break;
 
 			case WM_SHOWWINDOW:
-				Log(LogCategory::Window, "%p WM_SHOWWINDOW show=%u status=%ld", handle, (wParam != FALSE) ? 1u : 0u, longParameter);
+				LogDebug(LogCategory::Window, "%p WM_SHOWWINDOW show=%u status=%ld", handle, (wParam != FALSE) ? 1u : 0u, longParameter);
 				break;
 
 			case WM_SIZE:
 			{
 				static char const* const types[] = { "restored", "minimized", "maximized", "maxshow", "maxhide" };
-				Log(LogCategory::Window, "%p WM_SIZE %s %ux%u", handle, (wParam < 5) ? types[wParam] : "unknown", LOWORD(lParam), HIWORD(lParam));
+				LogDebug(LogCategory::Window, "%p WM_SIZE %s %ux%u", handle, (wParam < 5) ? types[wParam] : "unknown", LOWORD(lParam), HIWORD(lParam));
 				break;
 			}
 
@@ -280,7 +281,7 @@ namespace scvk
 
 				if (isInteresting)
 				{
-					Log(LogCategory::Window, "%p WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%04X after=%p", handle, position->x, position->y, position->cx, position->cy, flags, static_cast<void*>(position->hwndInsertAfter));
+					LogDebug(LogCategory::Window, "%p WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%04X after=%p", handle, position->x, position->y, position->cx, position->cy, flags, static_cast<void*>(position->hwndInsertAfter));
 				}
 				else
 				{
@@ -291,39 +292,39 @@ namespace scvk
 			}
 
 			case WM_SYSCOMMAND:
-				Log(LogCategory::Window, "%p WM_SYSCOMMAND %s (0x%04lX)", handle, SystemCommandName(wParam), wordParameter);
+				LogDebug(LogCategory::Window, "%p WM_SYSCOMMAND %s (0x%04lX)", handle, SystemCommandName(wParam), wordParameter);
 				break;
 
 			case WM_ENTERSIZEMOVE:
 			case WM_EXITSIZEMOVE:
-				Log(LogCategory::Window, "%p %s", handle, (message == WM_ENTERSIZEMOVE) ? "WM_ENTERSIZEMOVE" : "WM_EXITSIZEMOVE");
+				LogDebug(LogCategory::Window, "%p %s", handle, (message == WM_ENTERSIZEMOVE) ? "WM_ENTERSIZEMOVE" : "WM_EXITSIZEMOVE");
 				break;
 
 			case WM_DISPLAYCHANGE:
-				Log(LogCategory::Window, "%p WM_DISPLAYCHANGE %ux%u %lu bpp", handle, LOWORD(lParam), HIWORD(lParam), wordParameter);
+				LogDebug(LogCategory::Window, "%p WM_DISPLAYCHANGE %ux%u %lu bpp", handle, LOWORD(lParam), HIWORD(lParam), wordParameter);
 				break;
 
 			case WM_DPICHANGED:
-				Log(LogCategory::Window, "%p WM_DPICHANGED %u", handle, HIWORD(wParam));
+				LogDebug(LogCategory::Window, "%p WM_DPICHANGED %u", handle, HIWORD(wParam));
 				break;
 
 			case WM_DWMCOMPOSITIONCHANGED:
-				Log(LogCategory::Window, "%p WM_DWMCOMPOSITIONCHANGED", handle);
+				LogDebug(LogCategory::Window, "%p WM_DWMCOMPOSITIONCHANGED", handle);
 				break;
 
 			case WM_POWERBROADCAST:
-				Log(LogCategory::Window, "%p WM_POWERBROADCAST 0x%04lX", handle, wordParameter);
+				LogDebug(LogCategory::Window, "%p WM_POWERBROADCAST 0x%04lX", handle, wordParameter);
 				break;
 
 			case WM_CLOSE:
 			case WM_DESTROY:
 			case WM_NCDESTROY:
-				Log(LogCategory::Window, "%p %s", handle, (message == WM_CLOSE) ? "WM_CLOSE" : ((message == WM_DESTROY) ? "WM_DESTROY" : "WM_NCDESTROY"));
+				LogDebug(LogCategory::Window, "%p %s", handle, (message == WM_CLOSE) ? "WM_CLOSE" : ((message == WM_DESTROY) ? "WM_DESTROY" : "WM_NCDESTROY"));
 				break;
 
 			case WM_QUERYENDSESSION:
 			case WM_ENDSESSION:
-				Log(LogCategory::Window, "%p %s 0x%lX", handle, (message == WM_ENDSESSION) ? "WM_ENDSESSION" : "WM_QUERYENDSESSION", static_cast<unsigned long>(lParam));
+				LogDebug(LogCategory::Window, "%p %s 0x%lX", handle, (message == WM_ENDSESSION) ? "WM_ENDSESSION" : "WM_QUERYENDSESSION", static_cast<unsigned long>(lParam));
 				break;
 
 			case WM_KEYDOWN:
@@ -343,7 +344,7 @@ namespace scvk
 
 				if (key != nullptr)
 				{
-					Log(LogCategory::Window, "%p key %s %s", handle, key, isUp ? "up" : "down");
+					LogDebug(LogCategory::Window, "%p key %s %s", handle, key, isUp ? "up" : "down");
 				}
 
 				break;
@@ -1105,7 +1106,7 @@ namespace scvk
 			}
 
 			NoteRenderFrame();
-			NoteRenderPhase("game (between Flush calls)");
+			NoteRenderPhase(GAME_RENDER_PHASE);
 			return;
 		}
 
@@ -1125,7 +1126,7 @@ namespace scvk
 		}
 
 		NoteRenderFrame();
-		NoteRenderPhase("game (between Flush calls)");
+		NoteRenderPhase(GAME_RENDER_PHASE);
 	}
 
 	void cVKDriver::CopyFrameToClipboard(void)

@@ -113,7 +113,16 @@ namespace scvk
 			return code[-5] == 0xE8 || code[-2] == 0xFF || code[-3] == 0xFF || code[-6] == 0xFF;
 		}
 
-		void LogRenderThreadLocation(ULONGLONG stalled)
+		/** Writes a line at a level chosen at run time. */
+		void LogAt(LogLevel level, char const* format, ...)
+		{
+			va_list arguments;
+			va_start(arguments, format);
+			LogMessage(level, format, arguments);
+			va_end(arguments);
+		}
+
+		void LogRenderThreadLocation(ULONGLONG stalled, bool isGameWork)
 		{
 			uintptr_t instruction  = 0;
 			uintptr_t stack[512]   = {};
@@ -159,8 +168,16 @@ namespace scvk
 			char location[MAX_PATH + 64] = {};
 			DescribeAddress(instruction, location, sizeof(location));
 
+			// Note the game's own work, and warn about scvk's
+			//
+			// Between Flush calls the game is busy on its own: a city takes twenty seconds or
+			// more to load, and every load warned. A stall inside one of scvk's phases is
+			// scvk's, and stays a warning.
+			LogLevel const level      = isGameWork ? LOG_LEVEL_INFO : LOG_LEVEL_WARN;
+			LogLevel const stackLevel = isGameWork ? LOG_LEVEL_DEBUG : LOG_LEVEL_WARN;
+
 			char const* const owner = (foreground == window) ? "driver window" : ((foregroundProcess == GetCurrentProcessId()) ? "this process" : "other process");
-			LogWarn("watchdog: no frame for %llu ms; phase=%s thread=%lu at %s; window=%p iconic=%d visible=%d foreground=%p (%s)", stalled, renderPhase.load(), threadId, location, static_cast<void*>(window), (window != nullptr && IsIconic(window)) ? 1 : 0, (window != nullptr && IsWindowVisible(window)) ? 1 : 0, static_cast<void*>(foreground), owner);
+			LogAt(level, "watchdog: no frame for %llu ms; phase=%s thread=%lu at %s; window=%p iconic=%d visible=%d foreground=%p (%s)", stalled, renderPhase.load(), threadId, location, static_cast<void*>(window), (window != nullptr && IsIconic(window)) ? 1 : 0, (window != nullptr && IsWindowVisible(window)) ? 1 : 0, static_cast<void*>(foreground), owner);
 
 			size_t found = 0;
 			for (size_t index = 0; index < stackBytes / sizeof(uintptr_t) && found < STACK_CANDIDATES; index++)
@@ -171,7 +188,7 @@ namespace scvk
 				}
 
 				DescribeAddress(stack[index], location, sizeof(location));
-				LogWarn("watchdog:   [esp+0x%zX] %s", index * sizeof(uintptr_t), location);
+				LogAt(stackLevel, "watchdog:   [esp+0x%zX] %s", index * sizeof(uintptr_t), location);
 				found++;
 			}
 		}
@@ -205,6 +222,7 @@ namespace scvk
 			unsigned  reports       = 0;
 			ULONGLONG previousFrame = 0;
 			unsigned  framesFlowing = 0;
+			bool      isGameStall   = false;
 
 			while (WaitForSingleObject(stop, 500) == WAIT_TIMEOUT)
 			{
@@ -226,7 +244,7 @@ namespace scvk
 
 				if (stalledFrame != 0 && frame != stalledFrame)
 				{
-					LogWarn("watchdog: frames resumed after %llu ms", frame - stalledFrame);
+					LogAt(isGameStall ? LOG_LEVEL_INFO : LOG_LEVEL_WARN, "watchdog: frames resumed after %llu ms", frame - stalledFrame);
 					stalledFrame = 0;
 				}
 
@@ -240,11 +258,12 @@ namespace scvk
 					stalledFrame = frame;
 					reports      = 0;
 					nextReport   = now;
+					isGameStall  = renderPhase.load() == GAME_RENDER_PHASE;
 				}
 
 				if (now >= nextReport && reports < STALL_REPORTS_PER_STALL)
 				{
-					LogRenderThreadLocation(now - frame);
+					LogRenderThreadLocation(now - frame, isGameStall);
 					reports++;
 					nextReport = now + STALL_REPEAT_MILLISECONDS;
 				}

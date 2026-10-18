@@ -32,7 +32,8 @@ namespace scvk
 	 *
 	 * The shadow modules and the thumbnail guard log through SCD3D11's Log and LogTrace.
 	 * Keeping those names lets them stay as they are upstream; each line goes to
-	 * scvk.log at info level, or at trace level for LogTrace, tagged with its category.
+	 * scvk.log at info level, at debug level for LogDebug or at trace level for LogTrace,
+	 * tagged with its category.
 	 */
 	enum class LogCategory
 	{
@@ -49,5 +50,6 @@ namespace scvk
 	//// Public API
 
 	void Log(LogCategory category, char const* format, ...);
+	void LogDebug(LogCategory category, char const* format, ...);
 	void LogTrace(LogCategory category, char const* format, ...);
 }
