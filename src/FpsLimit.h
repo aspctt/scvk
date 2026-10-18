@@ -32,29 +32,26 @@ namespace scvk
 	 *
 	 * The game's simulator pads every frame with simulation and idle work until it has
 	 * lasted 1000 / rate milliseconds. The rate is the speed's cap, 30 at Turtle, 20 at
-	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Four changes, each
-	 * a few bytes of the game's code:
+	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Three changes,
+	 * each a few bytes of the game's code, none of them needing a setting:
 	 *
-	 * - A paused city's frames are no longer padded, always. The padding only gives the
-	 *   idle agents time while nothing is simulated, and it held a paused city at 30
-	 *   frames a second that no setting could raise.
-	 * - The animation clock counts frames shorter than 2 ms as they are, always. It used
-	 *   to round them up, so lot animations ran fast above 500 frames a second.
-	 * - The speed caps become MaxFPS, when it is set. Each is a one-byte immediate.
-	 * - The 15 ms of padding every running frame gets becomes 3 ms, when UnlockRunningFPS
-	 *   is true, so MaxFPS can go past about 60. That time is the simulation's, so the
-	 *   city simulates more slowly. Off by default.
+	 * - A paused city's frames are no longer padded. The padding only gives the idle
+	 *   agents time while nothing is simulated, and it held a paused city at 30 frames a
+	 *   second.
+	 * - The animation clock counts frames shorter than 2 ms as they are. It used to round
+	 *   them up, so lot animations ran fast above 500 frames a second.
+	 * - The speed caps become the main display's refresh rate, when it is above 30 Hz, so
+	 *   a running city shows every frame the display can. Each is a one-byte immediate.
+	 *   The 15 ms of simulation every running frame gets is left alone, so the city
+	 *   simulates as fast as before.
 	 *
-	 * This lives in scvk because frame pacing and presentation are the same concern. Once
-	 * the swapchain exists, the present mode and the caps have to agree, and splitting
-	 * them across two plugins means two settings files that can contradict each other.
-	 * caspervg's standalone plugin raises the same caps, so MaxFPS is off by default:
-	 * running both with different values would be needlessly confusing.
+	 * This lives in scvk because frame pacing and presentation are the same concern. A cap
+	 * another plugin, such as caspervg's sc4-disable-fps-limits, has already changed is
+	 * left as that plugin set it.
 	 *
-	 * Reads MaxFPS and UnlockRunningFPS from scvk.ini beside the DLL. Only game version 641
-	 * is changed, and only after the bytes at the target addresses are confirmed to hold
-	 * what we expect. Calling it again changes nothing, since code already changed is left
-	 * alone.
+	 * Only game version 641 is changed, and only after the bytes at the target addresses
+	 * are confirmed to hold what we expect. Calling it again changes nothing, since code
+	 * already changed is left alone.
 	 */
 	void ApplyFpsLimitSettings(void);
 }

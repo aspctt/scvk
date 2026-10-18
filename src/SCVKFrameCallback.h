@@ -110,8 +110,9 @@ typedef struct SCVKFrameContext
 	VkRenderPass    renderPass;
 
 	/**
-	 * The swapchain image being drawn and its size. imageCount is how many images the
-	 * swapchain has; scvk keeps one frame in flight.
+	 * The image being drawn and its size: scvk's back buffer, the size of the video mode,
+	 * which is copied into a swapchain image as the frame is presented. imageCount is how
+	 * many images the swapchain has; scvk keeps two frames in flight.
 	 */
 	VkImage     image;
 	VkImageView imageView;

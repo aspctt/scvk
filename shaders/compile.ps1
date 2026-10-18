@@ -42,8 +42,8 @@ $header = @"
 /*
  * GENERATED FILE. Do not edit.
  *
- * Produced from the GLSL in shaders/ by shaders/compile.ps1. It is committed
- * so that building scvk requires no shader compiler; regenerate it only when
+ * Produced from the GLSL in shaders/ by shaders/compile.ps1 or shaders/compile.py. It is
+ * committed so that building scvk requires no shader compiler; regenerate it only when
  * a shader changes.
  */
 
@@ -54,20 +54,36 @@ namespace scvk
 {
 "@
 
-# The vertex stage is built once per attribute combination. A shader may not declare an
-# input the pipeline does not supply, and the game's vertex formats disagree about which
-# of colour and texture coordinate are present.
+# The vertex stage is built once per attribute combination, and again with a flat colour.
+# A shader may not declare an input the pipeline does not supply, and the game's vertex
+# formats disagree about which of colour and texture coordinate are present.
 #
-# The names match the order the backend indexes them: the colour flag times three, plus
-# the number of texture coordinate sets.
-$stages = @(
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_NONE";            defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=0") },
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_TEXTURE";         defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=1") },
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_TEXTURE2";        defines = @("SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=2") },
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR";          defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=0") },
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE";  defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=1") },
-	@{ file = "geometry.vert"; name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2"; defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2") },
-	@{ file = "geometry.frag"; name = "GEOMETRY_FRAGMENT_SPIRV";               defines = @() }
+# The names match the order the backend indexes them: flat times six, the colour flag
+# times three, plus the number of texture coordinate sets. shaders/compile.py builds the
+# same list.
+$stages = @()
+foreach ($flat in @(@{ value = 0; prefix = "GEOMETRY_VERTEX_SPIRV" }, @{ value = 1; prefix = "GEOMETRY_VERTEX_FLAT_SPIRV" })) {
+	foreach ($colour in @(@{ value = 0; name = "" }, @{ value = 1; name = "COLOUR" })) {
+		foreach ($sets in @(@{ value = 0; name = "" }, @{ value = 1; name = "TEXTURE" }, @{ value = 2; name = "TEXTURE2" })) {
+			$suffix = (@($colour.name, $sets.name) | Where-Object { $_ }) -join "_"
+			if (-not $suffix) { $suffix = "NONE" }
+			$stages += @{ file = "geometry.vert"; name = "$($flat.prefix)_$suffix"; defines = @("SCVK_FLAT=$($flat.value)", "SCVK_HAS_COLOUR=$($colour.value)", "SCVK_TEXTURE_COORDINATE_SETS=$($sets.value)") }
+		}
+	}
+}
+
+$stages += @(
+	@{ file = "geometry.vert";    name = "GEOMETRY_VERTEX_LIT_SPIRV";    defines = @("SCVK_FLAT=0", "SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2", "SCVK_LIT=1") },
+	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_SPIRV";      defines = @("SCVK_FLAT=0") },
+	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_FLAT_SPIRV"; defines = @("SCVK_FLAT=1") },
+	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_LIT_SPIRV";  defines = @("SCVK_FLAT=0", "SCVK_LIT=1") },
+	@{ file = "blit.vert";        name = "BLIT_VERTEX_SPIRV";            defines = @() },
+	@{ file = "blit.frag";        name = "BLIT_FRAGMENT_SPIRV";          defines = @() },
+	@{ file = "shadow.vert";      name = "SHADOW_VERTEX_SPIRV";          defines = @() },
+	@{ file = "shadow.frag";      name = "SHADOW_FRAGMENT_SPIRV";        defines = @() },
+	@{ file = "fullscreen.vert";  name = "FULLSCREEN_VERTEX_SPIRV";      defines = @() },
+	@{ file = "composite.frag";   name = "COMPOSITE_FRAGMENT_SPIRV";     defines = @() },
+	@{ file = "scene_depth.frag"; name = "SCENE_DEPTH_FRAGMENT_SPIRV";   defines = @() }
 )
 
 # SPIR-V words per line of the generated arrays.

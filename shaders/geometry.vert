@@ -85,11 +85,44 @@ layout(location = 9)  in vec4 inSecondStageRowS;
 layout(location = 10) in vec4 inSecondStageRowT;
 layout(location = 11) in vec4 inStageSources;
 
+// The lit variant, for draws the lighting extension lights: the vertex carries its eye-space
+// normal, the eye-space vector to each light (the light's direction for a directional
+// one), and each light's diffuse colour times the diffuse material, and the colour above
+// holds everything that does not depend on direction. The fragment stage finishes the
+// lighting per pixel, as SCD3D11 does. See cVKDriver::LightVertices.
+#ifndef SCVK_LIT
+#define SCVK_LIT 0
+#endif
+
+#if SCVK_LIT
+const int LIGHT_COUNT = 8;
+
+layout(location = 12) in vec3 inNormal;
+layout(location = 13) in vec3 inToLight[LIGHT_COUNT];
+layout(location = 21) in vec4 inLightColour[LIGHT_COUNT];
+#endif
+
+// Flat shading takes the colour of each primitive's first vertex, as Direct3D's
+// D3DSHADE_FLAT does, which Vulkan's default provoking vertex matches.
+#ifndef SCVK_FLAT
+#define SCVK_FLAT 0
+#endif
+
+#if SCVK_FLAT
+layout(location = 0) flat out vec4 fragmentColour;
+#else
 layout(location = 0) out vec4 fragmentColour;
+#endif
 layout(location = 1) out vec2 fragmentTextureCoordinate0;
 layout(location = 2) out vec2 fragmentTextureCoordinate1;
 layout(location = 3) flat out vec3 fragmentFogColour;
 layout(location = 4) out float fragmentFogFactor;
+
+#if SCVK_LIT
+layout(location = 5)  out vec3 fragmentNormal;
+layout(location = 6)  out vec3 fragmentToLight[LIGHT_COUNT];
+layout(location = 14) out vec3 fragmentLightColour[LIGHT_COUNT];
+#endif
 
 // The terrain is drawn in several passes over the same geometry, each on its own pipeline,
 // and each later pass depth tests against the first. OpenGL's fixed function transform is
@@ -158,6 +191,18 @@ void main()
 	vec3  materialColour  = ((lightingSources & COLOUR_FROM_VERTEX_FLAG) != 0) ? vertexColour.rgb : vec3(1.0);
 	float materialAlpha   = ((lightingSources & ALPHA_FROM_VERTEX_FLAG) != 0) ? vertexColour.a : push.sceneTint.a;
 	fragmentColour = clamp(vec4(materialColour * push.sceneTint.rgb, materialAlpha), 0.0, 1.0);
+
+#if SCVK_LIT
+	// The part of the lighting that does not depend on direction, already worked out
+	fragmentColour = vertexColour;
+
+	fragmentNormal = inNormal;
+	for (int light = 0; light < LIGHT_COUNT; light++)
+	{
+		fragmentToLight[light]     = inToLight[light];
+		fragmentLightColour[light] = inLightColour[light].rgb;
+	}
+#endif
 
 	// Work out each stage's coordinates
 	//

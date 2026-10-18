@@ -23,7 +23,14 @@
 #include "cVKDriver.h"
 #include "FpsLimit.h"
 #include "Logger.h"
+#include "NativeShadowDiagnostics.h"
+#include "NativeShadowExperiment.h"
+#include "NativeShadowMasks.h"
+#include "NativeShadowRegistry.h"
+#include "PrintScreen.h"
 #include "SC4Version.h"
+#include "TerrainShadows.h"
+#include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
 #include "VulkanBackend.h"
 #include "version.h"
@@ -33,6 +40,8 @@
 #include <cRZCOMDllDirector.h>
 #include <stdint.h>
 #include <string.h>
+
+#include <windows.h>
 
 namespace scvk
 {
@@ -123,6 +132,36 @@ namespace scvk
 			LogWarn("Vulkan is unavailable, so the DirectX slot goes to the game's own DirectX driver.");
 			return CreateGameDirectXDriver(interfaceId, outInterface);
 		}
+
+		// Says whether the game runs on Windows or under Wine, which Proton is built on
+		//
+		// Wine's ntdll exports its version where Windows' has nothing of the kind, so a
+		// log from Linux says so and which Wine it was.
+		void LogPlatform(void)
+		{
+			using WineVersion     = char const* (__cdecl*)(void);
+			using WineHostVersion = void (__cdecl*)(char const** system, char const** release);
+
+			HMODULE const ntdll = GetModuleHandleA("ntdll.dll");
+			WineVersion const wineVersion = (ntdll != nullptr) ? reinterpret_cast<WineVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version"))) : nullptr;
+
+			if (wineVersion == nullptr)
+			{
+				LogInfo("Running on Windows.");
+				return;
+			}
+
+			char const* system  = "an unknown system";
+			char const* release = "";
+			WineHostVersion const hostVersion = reinterpret_cast<WineHostVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_host_version")));
+
+			if (hostVersion != nullptr)
+			{
+				hostVersion(&system, &release);
+			}
+
+			LogInfo("Running under Wine %s on %s %s.", wineVersion(), system, release);
+		}
 	}
 
 	//// Types
@@ -191,19 +230,33 @@ namespace scvk
 			}
 
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
+			LogPlatform();
 
-			// Change the game's frame pacing, the only place scvk writes to game memory.
-			// Only the paused padding and the animation clock's floor change without
-			// scvk.ini asking.
+			// Change the game's frame pacing: no padding while paused, an exact animation
+			// clock, and speed caps at the display's refresh rate
 			ApplyFpsLimitSettings();
 
 			// Correct the video mode before the graphics system starts
 			InstallVideoModeService();
 
+			// Install the game-side shadow modules SCD3D11 has, each guarded by the exact
+			// bytes it patches: the True3D shadows and the registry, on by default as
+			// -NativeShadowMasks:replace unless -NativeShadowMasks:off or another mode
+			// says otherwise, and the diagnostics only when asked for. They draw through
+			// scvk, so a benchmark of the game's DirectX driver leaves them out.
+			if (!IsBenchmarkOnDirectX())
+			{
+				NativeShadowMasks::Install();
+				NativeShadowRegistry::Install();
+				TerrainShadows::Install();
+				NativeShadowDiagnostics::Install();
+				NativeShadowExperiment::Install();
+			}
+
 			// Hear when the game starts, is up and shuts down
 			//
-			// The video mode service is done once the game starts, and a benchmark run
-			// starts once the game is up.
+			// The video mode service is done once the game starts, a benchmark run starts
+			// once the game is up, and every byte patched goes back at shutdown.
 			PrepareBenchmark();
 			com->FrameWork()->AddHook(this);
 
@@ -225,6 +278,14 @@ namespace scvk
 		bool PreAppShutdown(void) override
 		{
 			StopBenchmark();
+
+			NativeShadowExperiment::Uninstall();
+			TerrainShadows::Uninstall();
+			NativeShadowRegistry::Uninstall();
+			NativeShadowMasks::Uninstall();
+			NativeShadowDiagnostics::Uninstall();
+			ThumbnailFocusGuard::Uninstall();
+			PrintScreen::Uninstall();
 			return true;
 		}
 	};

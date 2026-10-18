@@ -74,6 +74,7 @@ $logDirectory  = Join-Path $repositoryRoot "logs"
 # The game's own arguments. The trailing separator on UserDir matters to the game's parser.
 $gameArguments = @(
 	"-ExceptionHandling:off",
+	"-LogLevel:$LogLevel",
 	"-UserDir:$userDirectory\"
 ) + $GameArguments
 

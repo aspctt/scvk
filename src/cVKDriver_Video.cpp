@@ -25,11 +25,16 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "ModuleLog.h"
+#include "PrintScreen.h"
+#include "Settings.h"
+#include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
 #include "VulkanBackend.h"
+#include "Watchdog.h"
 #include "version.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <string.h>
 
 namespace scvk
@@ -103,8 +108,7 @@ namespace scvk
 		bool     isGameWindowBorderless = false;
 		RECT     borderlessBounds       = {};
 
-		// How many more focus and size messages, and faults, the log describes.
-		int  windowMessageReportsRemaining = 48;
+		// How many more faults the log describes.
 		int  exceptionReportsRemaining     = 8;
 		bool isExceptionLogInstalled       = false;
 	}
@@ -192,35 +196,182 @@ namespace scvk
 			LogDebug("Window %s: style 0x%08lx extended 0x%08lx, bounds %ld,%ld..%ld,%ld, client %ldx%ld, visible %d minimised %d maximised %d foreground %d focus %d.", moment, style, extendedStyle, bounds.left, bounds.top, bounds.right, bounds.bottom, client.right, client.bottom, IsWindowVisible(window) ? 1 : 0, IsIconic(window) ? 1 : 0, IsZoomed(window) ? 1 : 0, (GetForegroundWindow() == window) ? 1 : 0, (GetFocus() == window) ? 1 : 0);
 		}
 
-		// Names the focus and size messages worth a log line, or returns null
-		char const* DescribeWindowMessage(UINT message)
+		char const* SystemCommandName(WPARAM command)
 		{
+			switch (command & 0xFFF0)
+			{
+			case SC_MINIMIZE:     return "SC_MINIMIZE";
+			case SC_MAXIMIZE:     return "SC_MAXIMIZE";
+			case SC_RESTORE:      return "SC_RESTORE";
+			case SC_CLOSE:        return "SC_CLOSE";
+			case SC_KEYMENU:      return "SC_KEYMENU";
+			case SC_TASKLIST:     return "SC_TASKLIST";
+			case SC_SCREENSAVE:   return "SC_SCREENSAVE";
+			case SC_MONITORPOWER: return "SC_MONITORPOWER";
+			case SC_MOVE:         return "SC_MOVE";
+			case SC_SIZE:         return "SC_SIZE";
+			default:              return "other";
+			}
+		}
+
+		// Everything that can move the focus, visibility or size of the game's window, for
+		// working out "the game vanished but is still running", as SCD3D11 logs it
+		void LogWindowMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+		{
+			// The parameters are raw words, whatever the message packs in them.
+			unsigned long const wordParameter = static_cast<unsigned long>(wParam);
+			long const          longParameter = static_cast<long>(lParam);
+			void* const         handle        = static_cast<void*>(window);
+
 			switch (message)
 			{
-			case WM_ACTIVATEAPP:      return "WM_ACTIVATEAPP";
-			case WM_ACTIVATE:         return "WM_ACTIVATE";
-			case WM_SETFOCUS:         return "WM_SETFOCUS";
-			case WM_KILLFOCUS:        return "WM_KILLFOCUS";
-			case WM_SIZE:             return "WM_SIZE";
-			case WM_SHOWWINDOW:       return "WM_SHOWWINDOW";
-			case WM_DISPLAYCHANGE:    return "WM_DISPLAYCHANGE";
-			case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
-			default:                  return nullptr;
+			case WM_ACTIVATEAPP:
+				Log(LogCategory::Window, "%p WM_ACTIVATEAPP %s (other thread %lu)", handle, (wParam != FALSE) ? "activated" : "deactivated", static_cast<unsigned long>(lParam));
+				break;
+
+			case WM_ACTIVATE:
+			{
+				WORD const state = LOWORD(wParam);
+				Log(LogCategory::Window, "%p WM_ACTIVATE %s minimized=%u other=%p", handle, (state == WA_INACTIVE) ? "WA_INACTIVE" : ((state == WA_CLICKACTIVE) ? "WA_CLICKACTIVE" : "WA_ACTIVE"), (HIWORD(wParam) != 0) ? 1u : 0u, reinterpret_cast<void*>(lParam));
+				break;
+			}
+
+			case WM_NCACTIVATE:
+				Log(LogCategory::Window, "%p WM_NCACTIVATE %s", handle, (wParam != FALSE) ? "active" : "inactive");
+				break;
+
+			case WM_SETFOCUS:
+				Log(LogCategory::Window, "%p WM_SETFOCUS (from %p)", handle, reinterpret_cast<void*>(wParam));
+				break;
+
+			case WM_KILLFOCUS:
+				Log(LogCategory::Window, "%p WM_KILLFOCUS (to %p)", handle, reinterpret_cast<void*>(wParam));
+				break;
+
+			case WM_ENABLE:
+				Log(LogCategory::Window, "%p WM_ENABLE %u", handle, (wParam != FALSE) ? 1u : 0u);
+				break;
+
+			case WM_CANCELMODE:
+				Log(LogCategory::Window, "%p WM_CANCELMODE", handle);
+				break;
+
+			case WM_SHOWWINDOW:
+				Log(LogCategory::Window, "%p WM_SHOWWINDOW show=%u status=%ld", handle, (wParam != FALSE) ? 1u : 0u, longParameter);
+				break;
+
+			case WM_SIZE:
+			{
+				static char const* const types[] = { "restored", "minimized", "maximized", "maxshow", "maxhide" };
+				Log(LogCategory::Window, "%p WM_SIZE %s %ux%u", handle, (wParam < 5) ? types[wParam] : "unknown", LOWORD(lParam), HIWORD(lParam));
+				break;
+			}
+
+			case WM_WINDOWPOSCHANGED:
+			{
+				WINDOWPOS const* const position = reinterpret_cast<WINDOWPOS const*>(lParam);
+				if (position == nullptr)
+				{
+					break;
+				}
+
+				UINT const flags = position->flags;
+				bool const isInteresting = (flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW)) != 0 || (flags & SWP_NOSIZE) == 0 || (flags & SWP_NOMOVE) == 0;
+
+				if (isInteresting)
+				{
+					Log(LogCategory::Window, "%p WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%04X after=%p", handle, position->x, position->y, position->cx, position->cy, flags, static_cast<void*>(position->hwndInsertAfter));
+				}
+				else
+				{
+					LogTrace(LogCategory::Window, "%p WM_WINDOWPOSCHANGED %d,%d %dx%d flags=0x%04X after=%p", handle, position->x, position->y, position->cx, position->cy, flags, static_cast<void*>(position->hwndInsertAfter));
+				}
+
+				break;
+			}
+
+			case WM_SYSCOMMAND:
+				Log(LogCategory::Window, "%p WM_SYSCOMMAND %s (0x%04lX)", handle, SystemCommandName(wParam), wordParameter);
+				break;
+
+			case WM_ENTERSIZEMOVE:
+			case WM_EXITSIZEMOVE:
+				Log(LogCategory::Window, "%p %s", handle, (message == WM_ENTERSIZEMOVE) ? "WM_ENTERSIZEMOVE" : "WM_EXITSIZEMOVE");
+				break;
+
+			case WM_DISPLAYCHANGE:
+				Log(LogCategory::Window, "%p WM_DISPLAYCHANGE %ux%u %lu bpp", handle, LOWORD(lParam), HIWORD(lParam), wordParameter);
+				break;
+
+			case WM_DPICHANGED:
+				Log(LogCategory::Window, "%p WM_DPICHANGED %u", handle, HIWORD(wParam));
+				break;
+
+			case WM_DWMCOMPOSITIONCHANGED:
+				Log(LogCategory::Window, "%p WM_DWMCOMPOSITIONCHANGED", handle);
+				break;
+
+			case WM_POWERBROADCAST:
+				Log(LogCategory::Window, "%p WM_POWERBROADCAST 0x%04lX", handle, wordParameter);
+				break;
+
+			case WM_CLOSE:
+			case WM_DESTROY:
+			case WM_NCDESTROY:
+				Log(LogCategory::Window, "%p %s", handle, (message == WM_CLOSE) ? "WM_CLOSE" : ((message == WM_DESTROY) ? "WM_DESTROY" : "WM_NCDESTROY"));
+				break;
+
+			case WM_QUERYENDSESSION:
+			case WM_ENDSESSION:
+				Log(LogCategory::Window, "%p %s 0x%lX", handle, (message == WM_ENDSESSION) ? "WM_ENDSESSION" : "WM_QUERYENDSESSION", static_cast<unsigned long>(lParam));
+				break;
+
+			case WM_KEYDOWN:
+			case WM_KEYUP:
+			case WM_SYSKEYDOWN:
+			case WM_SYSKEYUP:
+			{
+				bool const isSystem = message == WM_SYSKEYDOWN || message == WM_SYSKEYUP;
+				bool const isUp     = message == WM_KEYUP || message == WM_SYSKEYUP;
+
+				char const* key = nullptr;
+				if (wParam == VK_LWIN)                        { key = "LWIN"; }
+				else if (wParam == VK_RWIN)                   { key = "RWIN"; }
+				else if (isSystem && wParam == VK_TAB)        { key = "Alt+Tab"; }
+				else if (isSystem && wParam == VK_F4)         { key = "Alt+F4"; }
+				else if (isSystem && wParam == VK_ESCAPE)     { key = "Alt+Esc"; }
+
+				if (key != nullptr)
+				{
+					Log(LogCategory::Window, "%p key %s %s", handle, key, isUp ? "up" : "down");
+				}
+
+				break;
+			}
+
+			case WM_CAPTURECHANGED:
+				LogTrace(LogCategory::Window, "%p WM_CAPTURECHANGED (to %p)", handle, reinterpret_cast<void*>(lParam));
+				break;
+
+			case WM_MOUSEACTIVATE:
+				LogTrace(LogCategory::Window, "%p WM_MOUSEACTIVATE", handle);
+				break;
+
+			default:
+				break;
 			}
 		}
 
 		// Sees the game window's messages before the game does
 		LRESULT CALLBACK GameWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 		{
-			// Report the first focus and size messages
-			//
-			// Both parameters are logged as raw words, whatever the message packs in them.
-			char const* const name = DescribeWindowMessage(message);
+			// Report what moves the window's focus, visibility or size, and let the
+			// thumbnail guard see the focus change it waits for
+			LogWindowMessage(window, message, wParam, lParam);
 
-			if (name != nullptr && windowMessageReportsRemaining > 0)
+			if (window == gameWindow)
 			{
-				windowMessageReportsRemaining--;
-				LogDebug("Window message %s, wParam 0x%lx, lParam 0x%lx.", name, static_cast<unsigned long>(wParam), static_cast<unsigned long>(lParam));
+				ThumbnailFocusGuard::NoteWindowMessage(message, static_cast<uintptr_t>(wParam));
 			}
 
 			// Give the desktop back while a fullscreen game is in the background
@@ -274,6 +425,7 @@ namespace scvk
 		// Stops treating the window as fullscreen and puts the desktop's mode back
 		void EndFullscreen(void)
 		{
+			PrintScreen::Uninstall();
 			isFullscreenWindow = false;
 			LeaveDisplayMode();
 		}
@@ -313,6 +465,20 @@ namespace scvk
 			unsigned long const target  = (record->NumberParameters >= 2) ? static_cast<unsigned long>(record->ExceptionInformation[1]) : 0;
 
 			LogCritical("Exception 0x%08lx at 0x%08lx (%s +0x%lx), data address 0x%08lx, thread %lu.", code, address, modulePath, address - base, target, GetCurrentThreadId());
+
+			// Say how it got there: the registers and the likely return addresses on the
+			// stack, each as module+offset, which tells a fault in scvk from one in the
+			// game or another plugin without the minidump
+#if defined(_M_IX86) || defined(__i386__)
+			// Not after a stack overflow, which leaves too little stack to copy one into
+			CONTEXT const* const registers = exception->ContextRecord;
+			if (registers != nullptr && code != EXCEPTION_STACK_OVERFLOW)
+			{
+				LogCritical("  eax %08lx ebx %08lx ecx %08lx edx %08lx esi %08lx edi %08lx ebp %08lx esp %08lx", registers->Eax, registers->Ebx, registers->Ecx, registers->Edx, registers->Esi, registers->Edi, registers->Ebp, registers->Esp);
+				LogStackFrom(registers->Esp, "  stack");
+			}
+#endif
+
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 
@@ -623,6 +789,9 @@ namespace scvk
 		windowHandle = window;
 		LogWindowState(window, "created");
 
+		// Keep the city thumbnail the game renders on save from stealing the focus
+		ThumbnailFocusGuard::Install(window);
+
 		// Start hidden, whatever made the window visible
 		//
 		// SC4GraphicsOptions' borderless mode creates the game's window visible and
@@ -652,6 +821,13 @@ namespace scvk
 		isGameWindowBorderless = isBorderless;
 		borderlessBounds       = rectangle;
 		SetWindowLongPtrA(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&GameWindowProcedure));
+
+		// Take PrintScreen in exclusive fullscreen, where Windows' own handling of it
+		// either takes the game out of fullscreen or copies the desktop
+		if (isFullscreen)
+		{
+			PrintScreen::Install(window);
+		}
 
 		// Show it, whatever the game's flags say
 		//
@@ -754,6 +930,7 @@ namespace scvk
 		SCVK_CALL("");
 
 		// Release the device and the window
+		StopRenderWatchdog();
 		vulkan->Destroy();
 
 		DestroyRenderWindow();
@@ -764,6 +941,7 @@ namespace scvk
 		// The game may well shut this driver down as part of probing it and then come
 		// back for a second lifecycle, and that second pass is the interesting one.
 		LogSummary("driver Shutdown");
+		LogInfo("Lighting extension: %llu draws lit per pixel, %llu per vertex; %llu light or glow draws left out of the shadow map.", static_cast<unsigned long long>(litDrawsPerPixel), static_cast<unsigned long long>(litDrawsPerVertex), static_cast<unsigned long long>(liveShadowLightsLeftOut));
 		return true;
 	}
 
@@ -869,6 +1047,13 @@ namespace scvk
 			return;
 		}
 
+		// ReShade makes its effect runtime with the swapchain, so the add-on registers
+		// first; the same step hooks the 3D view's draw for the live shadows
+		InstallReShadeAddon();
+
+		// The swapchain takes the flip model only where the desktop compositor shows it
+		vulkan->SetExclusiveFullscreen(isFullscreenWindow);
+
 		if (!vulkan->CreateSurfaceAndDevice(windowHandle, mode.width, mode.height))
 		{
 			LogCritical("Vulkan: could not attach to the window; nothing will be drawn.");
@@ -876,6 +1061,13 @@ namespace scvk
 			return;
 		}
 
+		// A new back buffer holds none of the effects or shadows of the last one
+		isReShadeEffectsInBackBuffer = false;
+		isReShadeEffectsThisFrame    = false;
+		liveShadowWorldCasters.clear();
+		isLiveShadowWorldValid = false;
+
+		StartRenderWatchdog(windowHandle);
 		SetViewport();
 		SetLastError(DriverError::OK);
 	}
@@ -891,9 +1083,68 @@ namespace scvk
 		// The frame boundary. The game believes this swaps buffers, and for us it submits
 		// the recorded commands and presents.
 		SCVK_CALL("");
+		NoteRenderFrame();
+
+		// A lost device is rebuilt here, whichever call noticed it, backing off between
+		// attempts that fail
+		if (vulkan->IsDeviceLost())
+		{
+			NoteRenderPhase("Flush: device recovery");
+
+			if (vulkan->TryRecoverDevice())
+			{
+				// The back buffer is new and empty, and the textures and regions with it
+				isReShadeEffectsInBackBuffer = false;
+				liveShadowWorldCasters.clear();
+				isLiveShadowWorldValid = false;
+			}
+
+			NoteRenderFrame();
+			NoteRenderPhase("game (between Flush calls)");
+			return;
+		}
 
 		EndFrameDiagnostics();
+
+		NoteRenderPhase("Flush: ReShade effects");
+		FinishReShadeFrame();
+
+		NoteRenderPhase("Flush: Present");
 		vulkan->Present();
+
+		// Copy the frame just presented for a PrintScreen
+		if (PrintScreen::TakeRequest())
+		{
+			NoteRenderPhase("Flush: PrintScreen");
+			CopyFrameToClipboard();
+		}
+
+		NoteRenderFrame();
+		NoteRenderPhase("game (between Flush calls)");
+	}
+
+	void cVKDriver::CopyFrameToClipboard(void)
+	{
+		// Read the back buffer, which still holds the frame just presented
+		uint32_t const width  = vulkan->FrameWidth();
+		uint32_t const height = vulkan->FrameHeight();
+
+		std::vector<uint8_t> pixels(size_t{ width } * height * 4u);
+
+		if (width == 0 || height == 0 || !vulkan->ReadFramePixels(0, 0, width, height, pixels.data()))
+		{
+			LogWarn("PrintScreen: could not read the frame.");
+			return;
+		}
+
+		if (PrintScreen::CopyToClipboard(windowHandle, pixels.data(), width, height))
+		{
+			LogInfo("PrintScreen: copied the frame (%ux%u) to the clipboard.", width, height);
+		}
+		else
+		{
+			LogWarn("PrintScreen: could not put the frame on the clipboard, error %lu.", GetLastError());
+		}
 	}
 
 	void cVKDriver::SetViewport(void)

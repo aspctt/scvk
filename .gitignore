@@ -11,6 +11,8 @@
 *.ipdb
 Debug/
 Release/
+Debug-mingw/
+Release-mingw/
 build/
 obj/
 logs/

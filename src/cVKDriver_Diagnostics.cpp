@@ -38,7 +38,7 @@
 
 #include <VertexFormatUtils.h>
 
-#include <Windows.h>
+#include <windows.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
