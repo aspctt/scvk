@@ -55,6 +55,7 @@
 #include "ModuleLog.h"
 #include "NativeShadowMasks.h"
 #include "NativeShadowRegistry.h"
+#include "SC4Version.h"
 #include "Settings.h"
 #include "VulkanBackend.h"
 
@@ -73,7 +74,9 @@ namespace scvk
 
 	namespace
 	{
-		constexpr uintptr_t IMAGE_BASE = 0x00400000;
+		// The build the addresses below are from, and where it loads.
+		constexpr uint16_t  SUPPORTED_GAME_VERSION = 641;
+		constexpr uintptr_t IMAGE_BASE             = 0x00400000;
 
 		// The cSC43DRender vtable slot for cSC43DRender::Draw, its only reference
 		// (SimCity 4 1.1.641).
@@ -413,6 +416,13 @@ namespace scvk
 		}
 
 		hasAttempted = true;
+
+		// Only patch the build the addresses are from
+		if (GetGameVersion() != SUPPORTED_GAME_VERSION)
+		{
+			LogInfo("Scene effects: the 3D view's draw is only known for game version %u; ReShade's effects and the live shadows stay at present.", SUPPORTED_GAME_VERSION);
+			return;
+		}
 
 		void* const executable = GetModuleHandleW(nullptr);
 		void* const draw       = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(executable) + (DRAW_ADDRESS - IMAGE_BASE));
