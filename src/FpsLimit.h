@@ -31,19 +31,23 @@ namespace scvk
 	 * Changes how SimCity 4 paces its frames.
 	 *
 	 * The game's simulator pads every frame with simulation and idle work until it has
-	 * lasted 1000 / rate milliseconds. The rate is the speed's cap, 30 at Turtle, 20 at
-	 * Rhino and 15 at Cheetah, and a fixed 30 while the city is paused. Three changes,
-	 * each a few bytes of the game's code, none of them needing a setting:
+	 * lasted 1000 / rate milliseconds, and at least 15 ms of it padding. The rate is the
+	 * speed's cap, 30 at Turtle, 20 at Rhino and 15 at Cheetah, and a fixed 30 while the
+	 * city is paused. Three changes, each a few bytes of the game's code:
 	 *
 	 * - A paused city's frames are no longer padded. The padding only gives the idle
 	 *   agents time while nothing is simulated, and it held a paused city at 30 frames a
 	 *   second.
 	 * - The animation clock counts frames shorter than 2 ms as they are. It used to round
 	 *   them up, so lot animations ran fast above 500 frames a second.
-	 * - The speed caps become the main display's refresh rate, when it is above 30 Hz, so
-	 *   a running city shows every frame the display can. Each is a one-byte immediate.
-	 *   The 15 ms of simulation every running frame gets is left alone, so the city
-	 *   simulates as fast as before.
+	 * - The speed caps become the main display's refresh rate, when it is above 30 Hz, or
+	 *   what -MaxFPS:<n> or MaxFPS in scvk.ini asks for. Off or 0 keeps the game's caps.
+	 *   Each is a one-byte immediate.
+	 *
+	 * The 15 ms minimum stays, which holds a running city near 60 frames a second whatever
+	 * the cap. A raised cap still takes simulation time: with 10 ms of drawing, a Cheetah
+	 * frame gave the simulation 56 ms of every 66, and a raised cap gives it 15 of every
+	 * 25. A city heavy enough to use that time simulates more slowly.
 	 *
 	 * This lives in scvk because frame pacing and presentation are the same concern. A cap
 	 * another plugin, such as caspervg's sc4-disable-fps-limits, has already changed is

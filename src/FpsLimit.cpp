@@ -26,10 +26,14 @@
 #include "FpsLimit.h"
 #include "Logger.h"
 #include "SC4Version.h"
+#include "Settings.h"
 
 #include <windows.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <string>
 
 namespace scvk
 {
@@ -42,6 +46,14 @@ namespace scvk
 			char const* name;
 			uintptr_t   address;
 			uint8_t     originalCap;
+		};
+
+		/** The frame rate the speed caps get, 0 keeping the game's own, and where it came from. */
+		struct CapChoice
+		{
+			int         cap        = 0;
+			bool        isExplicit = false;
+			char const* source     = "the display's refresh rate";
 		};
 	}
 
@@ -136,6 +148,82 @@ namespace scvk
 
 			// At most a few hundred, so it fits.
 			return static_cast<int>(mode.dmDisplayFrequency);
+		}
+
+		/**
+		 * Reads a MaxFPS value: off or 0 for the game's own caps, or a cap of 1 or more,
+		 * clamped to the byte the game keeps it in. False for anything else.
+		 */
+		bool ParseFrameRateCap(char const* text, int& outCap)
+		{
+			if (_stricmp(text, "off") == 0)
+			{
+				outCap = 0;
+				return true;
+			}
+
+			char* end = nullptr;
+			long const value = strtol(text, &end, 10);
+
+			if (end == text || *end != '\0' || value < 0)
+			{
+				return false;
+			}
+
+			if (value > LARGEST_CAP)
+			{
+				LogWarn("MaxFPS %ld does not fit the game's one-byte caps; using %d.", value, LARGEST_CAP);
+				outCap = LARGEST_CAP;
+				return true;
+			}
+
+			// At most 255, checked just above.
+			outCap = static_cast<int>(value);
+			return true;
+		}
+
+		/** The cap -MaxFPS: asks for, or MaxFPS in scvk.ini, or the display's refresh rate. */
+		CapChoice ChooseFrameRateCap(void)
+		{
+			CapChoice choice;
+
+			// The command line first
+			char value[16] = {};
+			if (GetCommandLineValue("-MaxFPS:", value, sizeof(value)))
+			{
+				if (ParseFrameRateCap(value, choice.cap))
+				{
+					choice.isExplicit = true;
+					choice.source     = "-MaxFPS";
+					return choice;
+				}
+
+				LogWarn("-MaxFPS:%s is neither off nor a number; ignoring it.", value);
+			}
+
+			// Then scvk.ini, where 0, the value 0.2 shipped with, still keeps the game's caps
+			char settingsPath[MAX_PATH];
+			if (LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
+			{
+				char setting[16] = {};
+				GetPrivateProfileStringA("scvk", "MaxFPS", "", setting, sizeof(setting), settingsPath);
+
+				if (setting[0] != '\0')
+				{
+					if (ParseFrameRateCap(setting, choice.cap))
+					{
+						choice.isExplicit = true;
+						choice.source     = "MaxFPS in scvk.ini";
+						return choice;
+					}
+
+					LogWarn("MaxFPS=%s in scvk.ini is neither off nor a number; ignoring it.", setting);
+				}
+			}
+
+			// Otherwise the display's refresh rate
+			choice.cap = AutomaticFrameRateCap();
+			return choice;
 		}
 
 		/** Writes bytes of the game's code, restoring the page protection after. */
@@ -271,9 +359,11 @@ namespace scvk
 
 	void ApplyFpsLimitSettings(void)
 	{
-		// Raise the speed caps to the display's refresh rate, and leave the running
-		// city's simulation time alone, which lowering would slow the city down for
-		int frameRateCap = AutomaticFrameRateCap();
+		// Pick the speed caps
+		//
+		// The running city's 15 ms minimum of simulation stays, since lowering it would
+		// slow the city down.
+		CapChoice const choice = ChooseFrameRateCap();
 
 		// Only patch the build the addresses came from
 		uint16_t const gameVersion = GetGameVersion();
@@ -296,52 +386,67 @@ namespace scvk
 		// scvk starts, so they all get the new floor.
 		PatchCode("animation clock floor", ANIMATION_FLOOR_ADDRESS_641, ANIMATION_FLOOR_ORIGINAL, ANIMATION_FLOOR_PATCHED, sizeof(ANIMATION_FLOOR_ORIGINAL));
 
-		// Raise the speed caps, when the display refreshes faster than they allow
-		if (frameRateCap <= 0)
+		// Keep the game's caps when asked to, or when the display refreshes no faster
+		if (choice.cap <= 0)
 		{
+			if (choice.isExplicit)
+			{
+				LogInfo("Speed caps left as the game has them, as %s asks.", choice.source);
+			}
+
 			return;
 		}
 
-		if (frameRateCap > LARGEST_CAP)
-		{
-			LogWarn("A frame rate cap of %d exceeds the one-byte field; clamping to 255.", frameRateCap);
-			frameRateCap = LARGEST_CAP;
-		}
+		LogInfo("Speed caps to %d, from %s.", choice.cap, choice.source);
 
 		// Check each byte before writing it
 		//
-		// If a byte does not hold the value we expect, something is wrong: the wrong
-		// build, or another plugin has already patched it. Blind-writing in that
-		// situation could corrupt an unrelated instruction, so it refuses instead and
-		// says why. The cap was clamped to one byte above, so its conversion loses
-		// nothing.
-		uint8_t const newCap = static_cast<uint8_t>(frameRateCap);
+		// A byte that does not hold the game's own cap was changed by another plugin, such
+		// as caspervg's sc4-disable-fps-limits, and keeps that plugin's value. Writing
+		// over it would fight the other plugin, or on another build corrupt an unrelated
+		// instruction. The cap was clamped to one byte when it was read, so its conversion
+		// loses nothing.
+		uint8_t const newCap = static_cast<uint8_t>(choice.cap);
+
+		std::string leftAlone;
+		bool        isDifferentCapKept = false;
 
 		for (SpeedLimit const& limit : SPEED_LIMITS_641)
 		{
 			// The table holds plain addresses, which have to become pointers to be read.
 			uint8_t const currentCap = *reinterpret_cast<uint8_t const*>(limit.address);
 
-			if (currentCap == newCap)
-			{
-				LogInfo("%s speed cap is already %d; nothing to do. Another plugin has probably set it.", limit.name, frameRateCap);
-				continue;
-			}
-
 			if (currentCap != limit.originalCap)
 			{
-				LogWarn("REFUSING to patch the %s speed cap at %08X: expected %u, found %u. Another plugin may already have changed it, or this is not the build these addresses came from.", limit.name, limit.address, limit.originalCap, currentCap);
+				leftAlone += leftAlone.empty() ? "" : ", ";
+				leftAlone += limit.name;
+				leftAlone += " " + std::to_string(currentCap);
+				isDifferentCapKept = isDifferentCapKept || currentCap != newCap;
 				continue;
 			}
 
 			if (WriteBytes(limit.address, &newCap, sizeof(newCap)))
 			{
-				LogInfo("%s speed cap raised from %u to %d.", limit.name, limit.originalCap, frameRateCap);
+				LogInfo("%s speed cap changed from %u to %d.", limit.name, limit.originalCap, choice.cap);
 			}
 			else
 			{
 				LogError("Failed to write the %s speed cap at %08X, error %lu.", limit.name, limit.address, GetLastError());
 			}
 		}
+
+		// Say once which caps another plugin already had, louder when they are not what was asked for
+		if (leftAlone.empty())
+		{
+			return;
+		}
+
+		if (choice.isExplicit && isDifferentCapKept)
+		{
+			LogWarn("%s asks for %d, but another plugin has already changed these speed caps, which stay as they are: %s.", choice.source, choice.cap, leftAlone.c_str());
+			return;
+		}
+
+		LogInfo("Another plugin has already changed these speed caps, which stay as they are: %s.", leftAlone.c_str());
 	}
 }
