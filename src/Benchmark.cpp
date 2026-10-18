@@ -43,7 +43,7 @@
 #include <cRZAutoRefCount.h>
 #include <cRZCOMDllDirector.h>
 
-#include <Windows.h>
+#include <windows.h>
 #include <algorithm>
 #include <functional>
 #include <iterator>

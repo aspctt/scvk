@@ -37,7 +37,7 @@
 #include <GZServPtrs.h>
 #include <SC4Preferences.h>
 
-#include <Windows.h>
+#include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
