@@ -23,8 +23,10 @@
 #include "cIGZAllocatorService.h"
 #include "GZServPtrs.h"
 #include <algorithm>
+#include <cstring> // scvk: for memcmp, which GCC does not bring in through the others
 #include <stdexcept>
 #include <string>
+#include <utility> // scvk: for std::exchange, likewise
 #include <stdarg.h>
 
 namespace

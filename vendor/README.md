@@ -144,7 +144,12 @@ scvk now corrects the same way, each marked `scvk:` where it changed:
   word for its count, and `DrawPrimsIndexed` takes four arguments. scvk used to
   decline this interface, which hid both.
 
-One ReShade header changed too, so GCC builds it as well as MSVC:
+One source gained two includes, so GCC builds it as well as MSVC, whose headers bring
+them in on their own:
+
+- `src/SC4String.cpp`: `<cstring>` for `memcmp` and `<utility>` for `std::exchange`.
+
+One ReShade header changed too, for the same reason:
 
 - `reshade/include/reshade.hpp`: the four casts of an event callback to `void *`
   are `reinterpret_cast` rather than `static_cast`, which only MSVC accepts for a
