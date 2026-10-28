@@ -1,0 +1,42 @@
+# Builds scvk.dll on Linux with MinGW-w64, through tools/build-mingw.sh.
+#
+# The release is built with Visual Studio on Windows, whose file system ignores case and
+# whose compiler takes MSVC-only code, so a change can build there and still break the
+# Linux build. This catches that on every push instead of on someone's Linux machine.
+
+name: MinGW build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The build only reads the repository
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.configuration }})
+    runs-on: ubuntu-24.04
+
+    # Debug as well, since it compiles code behind _DEBUG that Release leaves out
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release, Debug]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The i686 cross compiler named in the script. It brings the POSIX threads flavour
+      # the script picks when it is there.
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends g++-mingw-w64-i686
+
+      # Through bash, since the script is not stored as executable
+      - name: Build scvk.dll
+        run: bash tools/build-mingw.sh ${{ matrix.configuration }}

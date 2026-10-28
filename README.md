@@ -264,7 +264,8 @@ python3 shaders/compile.py
 ### Linux
 
 `tools/build-mingw.sh` builds the same 32-bit DLL on Linux with MinGW-w64, without the
-game-side shadow modules, which hook the game with MSVC-only assembly.
+game-side shadow modules, which hook the game with MSVC-only assembly. GitHub runs it
+in both configurations on every push (`.github/workflows/mingw.yml`).
 `tests/wine/run.sh` builds a harness that loads the DLL the way the game does and
 checks every draw path pixel by pixel under Wine, without the game. The harness also
 builds with Visual Studio and runs on Windows.
