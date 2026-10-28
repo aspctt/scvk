@@ -57,7 +57,14 @@ mkdir -p "$repository/obj/mingw/compat"
 echo '#include <windows.h>' > "$repository/obj/mingw/compat/Windows.h"
 
 includes="-I$repository/obj/mingw/compat -I$repository/vendor/include -I$repository/vendor/reshade/include -I$repository/src -I$vulkanInclude"
-flags="-std=c++20 $optimisation $defines $includes -Wall -Wno-unknown-pragmas -Wno-unused-function -Wno-unused-variable -Wno-cast-function-type -Wno-attributes -Wno-ignored-qualifiers -Wno-missing-field-initializers -Wno-unused-parameter"
+
+# SSE2 for floats and vectors, which Visual Studio's 32-bit compiler uses unless told
+# otherwise. The index range scan uses SSE2 intrinsics, which GCC's i686 target refuses
+# without it. MinGW's GCC realigns the stack wherever SSE needs it, since 32-bit Windows
+# only keeps it 4-byte aligned.
+instructions="-msse2 -mfpmath=sse"
+
+flags="-std=c++20 $optimisation $instructions $defines $includes -Wall -Wno-unknown-pragmas -Wno-unused-function -Wno-unused-variable -Wno-cast-function-type -Wno-attributes -Wno-ignored-qualifiers -Wno-missing-field-initializers -Wno-unused-parameter"
 
 mkdir -p "$objects" "$output"
 
