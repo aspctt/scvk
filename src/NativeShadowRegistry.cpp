@@ -769,6 +769,10 @@ namespace scvk::NativeShadowRegistry {
 	// ----------------------------------------------------------------------
 
 	namespace {
+#if defined(_MSC_VER) && defined(_M_IX86)
+		// Only Install's MSVC path puts this hook in. _AddressOfReturnAddress is an MSVC
+		// intrinsic that GCC declares but never defines, so a GCC Debug build, which keeps
+		// the unused function, failed to link.
 		int32_t __fastcall AddShadowHook(void *manager, void *, void const *binding, int32_t count,
 		                                 void const *positions, void const *uvs, void const *box,
 		                                 void const *transform) {
@@ -791,6 +795,7 @@ namespace scvk::NativeShadowRegistry {
 			}
 			return id;
 		}
+#endif
 
 		void __fastcall RemoveOverlayHook(void *manager, void *, int32_t id) {
 			gOriginalRemoveOverlay(manager, id);
