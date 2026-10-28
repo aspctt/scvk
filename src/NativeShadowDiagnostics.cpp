@@ -488,8 +488,12 @@ namespace scvk::NativeShadowDiagnostics {
 			               ShadowQuality());
 			builder.Append(" w130=0x%08X w134=0x%08X w138=0x%08X w13c=0x%08X", classification0,
 			               classification1, classification2, classification3);
+			// The three words read as floats. Copied from one array rather than from
+			// classification0's address, which only reached the next two words where the
+			// compiler happened to lay the locals out side by side.
+			uint32_t const positionWords[3]{classification0, classification1, classification2};
 			float position[3]{};
-			std::memcpy(position, &classification0, sizeof(position));
+			std::memcpy(position, positionWords, sizeof(position));
 			builder.Append(" at=[%g,%g,%g]", position[0], position[1], position[2]);
 			builder.Append(" decal0=%d->%d decal1=%d->%d", firstBefore, firstAfter, secondBefore, secondAfter);
 			WriteRecord(kNetworkShadow,
