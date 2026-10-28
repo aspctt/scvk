@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The i686 cross compiler named in the script. It brings the POSIX threads flavour
       # the script picks when it is there.
