@@ -327,6 +327,33 @@ namespace scvk
 			return true;
 		}
 
+		/**
+		 * Writes a 24-bit depth region as WriteRawDepth16 does. The depth sits in the low 24
+		 * bits of each word, which is how a copy lays out the depth of D24_UNORM_S8_UINT,
+		 * and the top 8 are undefined.
+		 */
+		bool WriteRawDepth24(char const* path, uint32_t const* texels, uint32_t width, uint32_t height)
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, path, "wb") != 0 || file == nullptr)
+			{
+				return false;
+			}
+
+			fwrite(&width, 4, 1, file);
+			fwrite(&height, 4, 1, file);
+
+			size_t const count = size_t{ width } * height;
+			for (size_t index = 0; index < count; index++)
+			{
+				float const depth = static_cast<float>(texels[index] & 0xffffffu) / 16777215.0f;
+				fwrite(&depth, 4, 1, file);
+			}
+
+			fclose(file);
+			return true;
+		}
+
 		/** Writes one little-endian field of a BMP header. */
 		void WriteField(FILE* file, uint16_t value)
 		{
@@ -1044,13 +1071,19 @@ namespace scvk
 		VkAttachmentReference colourReference{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
 
 		// Describe the depth attachment
+		//
+		// The stencil is loaded and stored like the depth. A pass ends at every copy and
+		// blit, and one of those can fall between a stencil being marked and being read.
+		VkAttachmentLoadOp const  stencilLoad  = hasStencil ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		VkAttachmentStoreOp const stencilStore = hasStencil ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
 		VkAttachmentDescription depth{};
 		depth.format         = depthBuffer.format;
 		depth.samples        = VK_SAMPLE_COUNT_1_BIT;
 		depth.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
 		depth.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-		depth.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth.stencilLoadOp  = stencilLoad;
+		depth.stencilStoreOp = stencilStore;
 		depth.initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		depth.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -1136,7 +1169,7 @@ namespace scvk
 			return false;
 		}
 
-		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s.", renderWidth, renderHeight, depthBuffer.format, isDepthSampleable ? ", sampleable" : "");
+		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s%s%s.", renderWidth, renderHeight, depthBuffer.format, hasStencil ? ", stencil" : "", isDepthQuantised ? ", rounded to 16 bits" : "", isDepthSampleable ? ", sampleable" : "");
 
 		// Create the passes and their framebuffers
 		if (!CreateRenderPasses())
@@ -1313,6 +1346,7 @@ namespace scvk
 			}
 
 			if (fragmentModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, fragmentModule, nullptr); fragmentModule = VK_NULL_HANDLE; }
+			if (quantisedFragmentModule != VK_NULL_HANDLE) { vkDestroyShaderModule(device, quantisedFragmentModule, nullptr); quantisedFragmentModule = VK_NULL_HANDLE; }
 			if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
 
 			// Destroy the buffers
@@ -2514,14 +2548,10 @@ namespace scvk
 				continue;
 			}
 
-			// Four bytes a texel, or two for 16-bit depth. WriteCapture turns either kind of
-			// depth into floats.
-			bool const isDepth16 = region.isDepth && region.format == VK_FORMAT_D16_UNORM;
-			if (region.isDepth && !isDepth16 && region.format != VK_FORMAT_D32_SFLOAT)
-			{
-				LogWarn("Vulkan: the depth region is format %d, not D16_UNORM or D32_SFLOAT; not capturing it.", region.format);
-				return false;
-			}
+			// Four bytes a texel, or two for 16-bit depth. The depth of a format with a
+			// stencil copies out without it, as the same format would without one, and
+			// WriteCapture turns every kind of depth into floats.
+			bool const isDepth16 = region.isDepth && (region.format == VK_FORMAT_D16_UNORM || region.format == VK_FORMAT_D16_UNORM_S8_UINT);
 
 			uint32_t const texelBytes = isDepth16 ? 2u : 4u;
 			if (!EnsureReadbackBuffer(VkDeviceSize{ region.width } * region.height * texelBytes))
@@ -2593,9 +2623,13 @@ namespace scvk
 			{
 				isWritten = WriteBmp(regionCapturePath.c_str(), pixels, regionWidth, regionHeight, regionWidth * 4u);
 			}
-			else if (depthBuffer.format == VK_FORMAT_D16_UNORM)
+			else if (depthBuffer.format == VK_FORMAT_D16_UNORM || depthBuffer.format == VK_FORMAT_D16_UNORM_S8_UINT)
 			{
 				isWritten = WriteRawDepth16(regionCapturePath.c_str(), static_cast<uint16_t const*>(readbackMapped), regionWidth, regionHeight);
+			}
+			else if (depthBuffer.format == VK_FORMAT_D24_UNORM_S8_UINT)
+			{
+				isWritten = WriteRawDepth24(regionCapturePath.c_str(), static_cast<uint32_t const*>(readbackMapped), regionWidth, regionHeight);
 			}
 			else
 			{

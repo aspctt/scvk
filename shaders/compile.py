@@ -54,7 +54,8 @@ namespace scvk
 
 # The vertex stage is built once per attribute combination. The names match the order
 # the backend indexes them: the colour flag times three, plus the number of texture
-# coordinate sets. shaders/compile.ps1 builds the same list.
+# coordinate sets. The fragment stage is built twice, the second time rounding the depth
+# for a depth buffer with more than 16 bits. shaders/compile.ps1 builds the same list.
 STAGES = [
     ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_NONE",            ["SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=0"]),
     ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_TEXTURE",         ["SCVK_HAS_COLOUR=0", "SCVK_TEXTURE_COORDINATE_SETS=1"]),
@@ -62,7 +63,8 @@ STAGES = [
     ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR",          ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=0"]),
     ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE",  ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=1"]),
     ("geometry.vert",    "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2", ["SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2"]),
-    ("geometry.frag",    "GEOMETRY_FRAGMENT_SPIRV",               []),
+    ("geometry.frag",    "GEOMETRY_FRAGMENT_SPIRV",               ["SCVK_QUANTISE_DEPTH=0"]),
+    ("geometry.frag",    "GEOMETRY_FRAGMENT_SPIRV_QUANTISED",     ["SCVK_QUANTISE_DEPTH=1"]),
     ("shadow.vert",      "SHADOW_VERTEX_SPIRV",                   []),
     ("shadow.frag",      "SHADOW_FRAGMENT_SPIRV",                 []),
     ("fullscreen.vert",  "FULLSCREEN_VERTEX_SPIRV",               []),

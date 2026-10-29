@@ -28,9 +28,19 @@
  *
  * Draws with no texture bound sample a 1x1 white texture, so the multiply is a no-op and
  * no shader variant is needed for them.
+ *
+ * Built twice: with SCVK_QUANTISE_DEPTH set, it also rounds each fragment's depth onto a
+ * 16-bit grid, for a depth buffer with more bits than that. See ChooseDepthFormat.
  */
 
 #version 450
+
+// Round the depth up, never down, which lets the GPU still reject a fragment by its depth
+// before running the shader: the depth written is never nearer than the one rasterised.
+// Without the promise every fragment would be shaded first.
+#if SCVK_QUANTISE_DEPTH
+layout(depth_greater) out float gl_FragDepth;
+#endif
 
 //// Constants
 
@@ -46,6 +56,14 @@ const float CHANNELS_MINIMUM        = 19.5;
 // The bits of fragmentState.z that hold the texture environment mode. The bits above are
 // lighting flags for the vertex stage.
 const int ENVIRONMENT_MODE_BITS = 7;
+
+// Steps of the depth grid. A power of two, so scaling by it and back is exact in floating
+// point and every step is a float of its own. 65535, a 16-bit buffer's own step, would
+// round on the way back and land beside the backend's quantised clear value. Only in the
+// variant that uses it, which leaves the other one's SPIR-V as it was.
+#if SCVK_QUANTISE_DEPTH
+const float DEPTH_STEPS = 65536.0;
+#endif
 
 //// References
 
@@ -208,6 +226,16 @@ vec3 passColour(int pass)
 
 void main()
 {
+	// Round the depth onto the 16-bit grid
+	//
+	// First, because a shader that writes the depth has to write it on every path that
+	// does not discard, and the diagnostic paths below return early. The game's content is
+	// made against the 16-bit buffer its DirectX renderer gets: ground lights drawn over
+	// their models only pass the depth test where both round to the same step.
+#if SCVK_QUANTISE_DEPTH
+	gl_FragDepth = ceil(gl_FragCoord.z * DEPTH_STEPS) * (1.0 / DEPTH_STEPS);
+#endif
+
 	// Show the pass colour
 	//
 	// Pass identification overrides everything, including the alpha test, so that a pass

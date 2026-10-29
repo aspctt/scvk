@@ -56,7 +56,8 @@ namespace scvk
 
 # The vertex stage is built once per attribute combination. A shader may not declare an
 # input the pipeline does not supply, and the game's vertex formats disagree about which
-# of colour and texture coordinate are present.
+# of colour and texture coordinate are present. The fragment stage is built twice, the
+# second time rounding the depth for a depth buffer with more than 16 bits.
 #
 # The names match the order the backend indexes them: the colour flag times three, plus
 # the number of texture coordinate sets. shaders/compile.py builds the same list.
@@ -67,7 +68,8 @@ $stages = @(
 	@{ file = "geometry.vert";    name = "GEOMETRY_VERTEX_SPIRV_COLOUR";          defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=0") },
 	@{ file = "geometry.vert";    name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE";  defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=1") },
 	@{ file = "geometry.vert";    name = "GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2"; defines = @("SCVK_HAS_COLOUR=1", "SCVK_TEXTURE_COORDINATE_SETS=2") },
-	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_SPIRV";               defines = @() },
+	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_SPIRV";               defines = @("SCVK_QUANTISE_DEPTH=0") },
+	@{ file = "geometry.frag";    name = "GEOMETRY_FRAGMENT_SPIRV_QUANTISED";     defines = @("SCVK_QUANTISE_DEPTH=1") },
 	@{ file = "shadow.vert";      name = "SHADOW_VERTEX_SPIRV";                   defines = @() },
 	@{ file = "shadow.frag";      name = "SHADOW_FRAGMENT_SPIRV";                 defines = @() },
 	@{ file = "fullscreen.vert";  name = "FULLSCREEN_VERTEX_SPIRV";               defines = @() },

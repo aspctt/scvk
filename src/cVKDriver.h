@@ -326,8 +326,9 @@ namespace scvk
 
 		// Held from ClearColor and ClearDepth until the next Clear, because the interface
 		// splits what Vulkan takes as a single call.
-		float clearColour[4]  = { 0.0f, 0.0f, 0.0f, 1.0f };
-		float clearDepthValue = 1.0f;
+		float    clearColour[4]    = { 0.0f, 0.0f, 0.0f, 1.0f };
+		float    clearDepthValue   = 1.0f;
+		uint32_t clearStencilValue = 0;
 
 		// Blend, alpha test, depth and colour write state, in the game's own
 		// enumerations. All of it is pipeline or shader state in Vulkan rather than
@@ -339,6 +340,17 @@ namespace scvk
 		uint32_t depthComparison        = 1;
 		bool     isDepthWriteEnabled    = true;
 		bool     isColourWriteEnabled   = true;
+
+		// The stencil state, as OpenGL starts it: always passing, every bit compared and
+		// written, and the buffer kept. The reference is kept as given and clamped when it
+		// is forwarded, the way OpenGL clamps it when it compares.
+		uint32_t stencilComparison         = 7;
+		int32_t  stencilReference          = 0;
+		uint32_t stencilCompareMask        = UINT32_MAX;
+		uint32_t stencilWriteMask          = UINT32_MAX;
+		uint32_t stencilFailOperation      = 1;
+		uint32_t stencilDepthFailOperation = 1;
+		uint32_t stencilPassOperation      = 1;
 
 		// The fixed function matrix stack, reduced to what the game uses: it only ever
 		// loads whole matrices into the modelview and projection slots, never pushes,
@@ -551,6 +563,9 @@ namespace scvk
 
 		/** Forwards depth test, write and comparison. */
 		void PushDepthState(void);
+
+		/** Forwards the stencil test, its comparison, reference and mask, cut to the stencil's bits. */
+		void PushStencilTest(void);
 
 		/** Forwards the alpha comparison, disabled when the capability is off. */
 		void PushAlphaTest(void);

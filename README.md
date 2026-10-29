@@ -72,6 +72,11 @@ which is 16-bit on NVIDIA, and custom content is made for that. Lights laid exac
 on a model only line up with it after 16-bit rounding, so scvk uses a 16-bit depth
 buffer too, and surfaces that sit very close together band as they do on DirectX.
 
+The depth buffer has an 8-bit stencil as well, which the game never uses but
+SC4RenderServices does, to draw terrain decals back over shadows once per pixel. Not
+every card pairs 16-bit depth with a stencil, and on those scvk takes a 24-bit or
+32-bit one and rounds every depth to 16 bits itself.
+
 Set `Use32BitDepth=true` in `scvk.ini` for a 32-bit depth buffer, as scvk had up to
 0.2.0. The banding goes away, but those lights can leave thin lines after scrolling.
 

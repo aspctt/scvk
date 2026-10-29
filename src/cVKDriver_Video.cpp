@@ -499,7 +499,10 @@ namespace scvk
 			// Without isInitialized the game reports "Could not initialize the hardware
 			// driver" and silently drops to software rendering. The capabilities are
 			// advertised against what a Vulkan implementation can do; claiming less would
-			// steer the game down fallback paths.
+			// steer the game down fallback paths. Every device pairs depth with an 8-bit
+			// stencil, D24_UNORM_S8_UINT or D32_SFLOAT_S8_UINT, and ChooseDepthFormat takes
+			// one. SC4RenderServices reads the stencil flag to decide how it draws terrain
+			// decals back over the shadows.
 			sGDMode mode{};
 			mode.isInitialized     = true;
 			mode.textureStageCount = TEXTURE_STAGE_COUNT;

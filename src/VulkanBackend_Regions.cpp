@@ -13,6 +13,7 @@
 #include "Logger.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace scvk
 {
@@ -20,11 +21,29 @@ namespace scvk
 
 	namespace
 	{
-		// Depth formats in order of preference, by default and with Use32BitDepth. Every
-		// device supports D16_UNORM, so both lists end up with a format.
-		constexpr size_t   DEPTH_FORMAT_CANDIDATES = 3;
-		constexpr VkFormat SIXTEEN_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES]    = { VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT };
-		constexpr VkFormat THIRTY_TWO_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES] = { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+		// Depth formats in order of preference, by default and with Use32BitDepth. The
+		// ones with stencil come first, and every device has D24_UNORM_S8_UINT or
+		// D32_SFLOAT_S8_UINT, so the formats without are there for a device that breaks
+		// the rule. Every device has D16_UNORM, so both lists end up with a format.
+		constexpr size_t   DEPTH_FORMAT_CANDIDATES = 5;
+		constexpr VkFormat SIXTEEN_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES]    = { VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT };
+		constexpr VkFormat THIRTY_TWO_BIT_DEPTH_FIRST[DEPTH_FORMAT_CANDIDATES] = { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D16_UNORM };
+
+		// Steps of the grid a quantised depth sits on, the same as the fragment stage's.
+		// A power of two, so a value on the grid is exact as a float.
+		constexpr float DEPTH_STEPS = 65536.0f;
+
+		/** Whether a depth format has a stencil. */
+		bool HasStencilComponent(VkFormat format)
+		{
+			return format == VK_FORMAT_D16_UNORM_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+		}
+
+		/** Whether a depth format keeps 16 bits of depth, like the DirectX renderer's. */
+		bool IsSixteenBitDepth(VkFormat format)
+		{
+			return format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT;
+		}
 	}
 
 	//// Private Functions
@@ -40,17 +59,24 @@ namespace scvk
 		// and are drawn after them, testing less-or-equal without writing, and the same
 		// surface redrawn into a scroll strip can come out a step or two of a 32-bit float
 		// nearer, so a float buffer failed the lights along the strips and left lines. A
-		// 16-bit buffer rounds both to the same value, as on DirectX. Every device has to
-		// support it; the others stay as fallbacks. The game never calls its stencil
-		// functions, so a format without stencil loses nothing.
+		// 16-bit buffer rounds both to the same value, as on DirectX.
 		//
-		// Use32BitDepth in scvk.ini puts the 32-bit float first instead, as up to 0.2.0.
-		// Surfaces that sit very close together then stop banding, but the lights above
-		// can leave lines again.
+		// With a stencil as well, which the game never uses but SC4RenderServices does, to
+		// draw each terrain decal back over the shadows once per pixel. Not every device
+		// pairs 16-bit depth with a stencil: an AMD Radeon integrated GPU offers
+		// D16_UNORM_S8_UINT, an RTX 3070 only the 24-bit and 32-bit pairs. On those the
+		// fragment stage rounds every depth onto a 16-bit grid before it is tested and
+		// written, which keeps the comparisons a 16-bit buffer makes. The clears are
+		// rounded the same way.
+		//
+		// Use32BitDepth in scvk.ini puts the 32-bit float first instead, as up to 0.2.0,
+		// and nothing is rounded. Surfaces that sit very close together then stop banding,
+		// but the lights above can leave lines again.
 		VkFormat const* const candidates = shouldUse32BitDepth ? THIRTY_TWO_BIT_DEPTH_FIRST : SIXTEEN_BIT_DEPTH_FIRST;
 
 		depthBuffer.format = VK_FORMAT_UNDEFINED;
 		hasStencil         = false;
+		isDepthQuantised   = false;
 		isDepthSampleable  = false;
 
 		for (size_t index = 0; index < DEPTH_FORMAT_CANDIDATES; ++index)
@@ -66,7 +92,8 @@ namespace scvk
 			}
 
 			depthBuffer.format = candidate;
-			hasStencil         = candidate == VK_FORMAT_D24_UNORM_S8_UINT;
+			hasStencil         = HasStencilComponent(candidate);
+			isDepthQuantised   = !shouldUse32BitDepth && !IsSixteenBitDepth(candidate);
 
 			// Sampling it is what the shadow composite and ReShade's depth need
 			isDepthSampleable = (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
@@ -79,9 +106,17 @@ namespace scvk
 			return false;
 		}
 
-		if (shouldUse32BitDepth && depthBuffer.format != VK_FORMAT_D32_SFLOAT)
+		if (shouldUse32BitDepth && depthBuffer.format != VK_FORMAT_D32_SFLOAT && depthBuffer.format != VK_FORMAT_D32_SFLOAT_S8_UINT)
 		{
 			LogWarn("Vulkan: Use32BitDepth is set, but the device has no 32-bit depth format; using format %d.", depthBuffer.format);
+		}
+
+		// The video mode still says there is a stencil, since the game reads its modes
+		// before there is a device. Without one the stencil calls do nothing, which is
+		// what they did before scvk had a stencil.
+		if (!hasStencil)
+		{
+			LogWarn("Vulkan: the device has no depth format with a stencil; stencil calls will do nothing.");
 		}
 
 		return true;
@@ -191,9 +226,7 @@ namespace scvk
 		return true;
 	}
 
-	//// Public API
-
-	void VulkanBackend::ClearDepth(float depth)
+	void VulkanBackend::ClearDepthAttachment(VkImageAspectFlags aspects, VkClearDepthStencilValue const& value)
 	{
 		if (!EnsureFrame() || depthBuffer.image == VK_NULL_HANDLE)
 		{
@@ -206,7 +239,8 @@ namespace scvk
 		//
 		// The same way as the colour clear: the pass stays open and the depth buffer in
 		// its attachment layout, and the clear is ordered against the draws around it by
-		// the pass itself.
+		// the pass itself. Only the aspects asked for, so a depth clear keeps the stencil
+		// and a stencil clear keeps the depth.
 		VkRect2D scissor{};
 		ViewportRectangle(scissor);
 
@@ -218,15 +252,38 @@ namespace scvk
 		BeginRenderPassIfNeeded();
 
 		VkClearAttachment attachment{};
-		attachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		attachment.clearValue.depthStencil.depth   = std::clamp(depth, 0.0f, 1.0f);
-		attachment.clearValue.depthStencil.stencil = 0;
+		attachment.aspectMask              = aspects;
+		attachment.clearValue.depthStencil = value;
 
 		VkClearRect clearRectangle{};
 		clearRectangle.rect       = scissor;
 		clearRectangle.layerCount = 1;
 
 		vkCmdClearAttachments(commandBuffer, 1, &attachment, 1, &clearRectangle);
+	}
+
+	//// Public API
+
+	void VulkanBackend::ClearDepth(float depth)
+	{
+		// Round the value up onto the grid the fragment stage rounds to, as a 16-bit
+		// buffer would store it. Left as it is, a clear could sit between two steps, and
+		// a surface drawn at the cleared depth would then test nearer or farther than it
+		// does on DirectX.
+		float const clamped = std::clamp(depth, 0.0f, 1.0f);
+		float const value   = isDepthQuantised ? std::ceil(clamped * DEPTH_STEPS) / DEPTH_STEPS : clamped;
+
+		ClearDepthAttachment(VK_IMAGE_ASPECT_DEPTH_BIT, VkClearDepthStencilValue{ value, 0 });
+	}
+
+	void VulkanBackend::ClearStencil(uint32_t value)
+	{
+		if (!hasStencil)
+		{
+			return;
+		}
+
+		ClearDepthAttachment(VK_IMAGE_ASPECT_STENCIL_BIT, VkClearDepthStencilValue{ 0.0f, value });
 	}
 
 	uint32_t VulkanBackend::CreateBufferRegion(bool isDepth)

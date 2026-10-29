@@ -175,6 +175,17 @@ namespace scvk
 			// Whether back faces are culled, pipeline state as well.
 			bool     isFaceCullingEnabled;
 
+			// The stencil test and what it does to the buffer, also pipeline state, in the
+			// game's own enumerations. The reference and the two masks are set by command
+			// instead: SC4RenderServices gives every terrain decal a reference of its own,
+			// which as pipeline state would be a pipeline per decal. With the test off
+			// these hold their defaults, so ops changed meanwhile make no new pipelines.
+			bool     isStencilTestEnabled;
+			uint32_t stencilComparison;
+			uint32_t stencilFailOperation;
+			uint32_t stencilDepthFailOperation;
+			uint32_t stencilPassOperation;
+
 			bool operator==(PipelineKey const& other) const = default;
 		};
 
@@ -516,6 +527,13 @@ namespace scvk
 			bool            hasViewport      = false;
 			bool            hasPushConstants = false;
 			PushConstantBlock pushConstants  = {};
+
+			// The stencil values set by command. Binding a pipeline whose stencil state is
+			// fixed replaces them, so they are only known while hasStencilValues is set.
+			bool            hasStencilValues   = false;
+			uint32_t        stencilReference   = 0;
+			uint32_t        stencilCompareMask = 0;
+			uint32_t        stencilWriteMask   = 0;
 		};
 
 		/** Which render pass, if any, the command buffer is inside. */
@@ -614,6 +632,7 @@ namespace scvk
 		RenderImage   backBuffer;
 		RenderImage   depthBuffer;
 		bool          hasStencil          = false;
+		bool          isDepthQuantised    = false;
 		bool          isDepthSampleable   = false;
 		VkRenderPass  renderPass          = VK_NULL_HANDLE;
 		VkRenderPass  colourOnlyPass      = VK_NULL_HANDLE;
@@ -682,6 +701,10 @@ namespace scvk
 		// textureCoordinateSets.
 		VkShaderModule             vertexModules[6] = {};
 		VkShaderModule             fragmentModule   = VK_NULL_HANDLE;
+
+		// The fragment stage that also rounds the depth onto a 16-bit grid, which the
+		// pipelines take instead while isDepthQuantised is set. See ChooseDepthFormat.
+		VkShaderModule             quantisedFragmentModule = VK_NULL_HANDLE;
 		VkPipelineLayout           pipelineLayout   = VK_NULL_HANDLE;
 		std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
 
@@ -721,6 +744,18 @@ namespace scvk
 		uint32_t blendDestinationFactor = 0;
 		bool     isColourWriteEnabled   = true;
 		bool     isFaceCullingEnabled   = false;
+
+		// The stencil state, the way OpenGL starts it: always passing, every bit compared
+		// and written, and the buffer kept whatever the outcome. The comparisons follow the
+		// depth's, and the operations run zero, keep, replace, increment, decrement, invert.
+		bool     isStencilTestEnabled      = false;
+		uint32_t stencilComparison         = 7;
+		uint32_t stencilReference          = 0;
+		uint32_t stencilCompareMask        = 0xff;
+		uint32_t stencilWriteMask          = 0xff;
+		uint32_t stencilFailOperation      = 1;
+		uint32_t stencilDepthFailOperation = 1;
+		uint32_t stencilPassOperation      = 1;
 
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
@@ -992,6 +1027,12 @@ namespace scvk
 		void BeginColourOnlyPass(void);
 		void EndRenderPassIfActive(void);
 		void ApplyViewport(void);
+
+		/** Sets the stencil reference and masks a stencil-tested draw reads, where the command buffer's differ. */
+		void ApplyStencilValues(void);
+
+		/** Clears aspects of the depth buffer inside the pass, within the scissor of a sub-viewport. */
+		void ClearDepthAttachment(VkImageAspectFlags aspects, VkClearDepthStencilValue const& value);
 
 		/** Forgets what the command buffer has bound, after something else bound its own. */
 		void InvalidateBindings(void);
@@ -1381,8 +1422,23 @@ namespace scvk
 		/** Whether back faces are culled. Pipeline state in Vulkan. */
 		void SetFaceCulling(bool isEnabled);
 
+		/**
+		 * Sets the stencil test: whether it runs, its comparison in the game's order, and
+		 * the reference and mask it compares with, both already cut to the stencil's 8 bits.
+		 */
+		void SetStencilTest(bool isEnabled, uint32_t comparison, uint32_t reference, uint32_t compareMask);
+
+		/** What a fragment does to the stencil when it fails the stencil test, fails the depth test, or passes both. */
+		void SetStencilOperations(uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation);
+
+		/** Which stencil bits draws may write. */
+		void SetStencilWriteMask(uint32_t mask);
+
 		/** Clears the depth attachment, within the scissor of a sub-viewport. */
 		void ClearDepth(float depth);
+
+		/** Clears the stencil to a value, within the scissor of a sub-viewport. Nothing happens without a stencil. */
+		void ClearStencil(uint32_t value);
 
 		/**
 		 * The ambient light and alpha multiplier applied to every lit draw, and whether the

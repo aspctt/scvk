@@ -34,6 +34,7 @@
 #include "Logger.h"
 #include "VulkanBackend.h"
 
+#include <algorithm>
 #include <string.h>
 
 namespace scvk
@@ -42,14 +43,22 @@ namespace scvk
 
 	namespace
 	{
-		// The game's clear mask, in its own encoding rather than GL's. Stencil is 0x2000,
-		// and there is no stencil attachment to clear.
-		constexpr uint32_t CLEAR_DEPTH  = 0x1000;
-		constexpr uint32_t CLEAR_COLOUR = 0x4000;
+		// The game's clear mask, in its own encoding rather than GL's.
+		constexpr uint32_t CLEAR_DEPTH   = 0x1000;
+		constexpr uint32_t CLEAR_STENCIL = 0x2000;
+		constexpr uint32_t CLEAR_COLOUR  = 0x4000;
 
 		// The game's comparisons run never, less, equal, less or equal, greater, not
 		// equal, greater or equal, always. Anything past them is refused, as SCD3D11 does.
 		constexpr uint32_t GD_COMPARISON_COUNT = 8;
+
+		// The game's stencil operations run zero, keep, replace, increment, decrement,
+		// invert, the six both of its drivers have a table entry for. See
+		// MapStencilOperation.
+		constexpr uint32_t GD_STENCIL_OPERATION_COUNT = 6;
+
+		// The stencil's bits. Every depth format scvk picks with a stencil has eight.
+		constexpr uint32_t STENCIL_BITS = 0xff;
 
 		// The game's matrix targets: 0 modelview, 1 projection. It also names texture and
 		// colour matrices, but never selects them.
@@ -124,6 +133,11 @@ namespace scvk
 			PushDepthState();
 		}
 
+		if (gdCapability == kGDCapability_StencilTest)
+		{
+			PushStencilTest();
+		}
+
 		if (gdCapability == kGDCapability_Fog)
 		{
 			PushFog();
@@ -143,6 +157,15 @@ namespace scvk
 	void cVKDriver::PushDepthState(void)
 	{
 		vulkan->SetDepthState(isCapabilityEnabled[kGDCapability_DepthTest], isDepthWriteEnabled, depthComparison);
+	}
+
+	void cVKDriver::PushStencilTest(void)
+	{
+		// Clamp the reference into the stencil's range, as OpenGL does before it compares.
+		// Not negative, checked first, so it converts without loss.
+		uint32_t const reference = (stencilReference < 0) ? 0u : std::min(static_cast<uint32_t>(stencilReference), STENCIL_BITS);
+
+		vulkan->SetStencilTest(isCapabilityEnabled[kGDCapability_StencilTest], stencilComparison, reference, stencilCompareMask & STENCIL_BITS);
 	}
 
 	void cVKDriver::PushAlphaTest(void)
@@ -267,6 +290,14 @@ namespace scvk
 		{
 			vulkan->ClearDepth(clearDepthValue);
 		}
+
+		// A clear takes no mask in Vulkan, so a stencil mask with only some bits set
+		// clears them all. SC4RenderServices, the only thing that clears the stencil,
+		// writes all eight.
+		if ((mask & CLEAR_STENCIL) != 0 && (stencilWriteMask & STENCIL_BITS) != 0)
+		{
+			vulkan->ClearStencil(clearStencilValue);
+		}
 	}
 
 	void cVKDriver::ClearColor(float red, float green, float blue, float alpha)
@@ -292,6 +323,11 @@ namespace scvk
 	void cVKDriver::ClearStencil(int32_t stencil)
 	{
 		SCVK_CALL("%d", stencil);
+
+		// Kept until the game asks for a clear, like ClearDepth, and cut to the stencil's
+		// bits as OpenGL cuts it. The bit pattern is what counts, so a negative value
+		// converts as it is.
+		clearStencilValue = static_cast<uint32_t>(stencil) & STENCIL_BITS;
 	}
 
 	void cVKDriver::ColorMask(bool isEnabled)
@@ -329,16 +365,43 @@ namespace scvk
 	void cVKDriver::StencilFunc(uint32_t gdComparison, int32_t reference, uint32_t mask)
 	{
 		SCVK_CALL("%u, %d, 0x%x", gdComparison, reference, mask);
+
+		// The same comparisons as the depth test's
+		if (gdComparison >= GD_COMPARISON_COUNT)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		stencilComparison  = gdComparison;
+		stencilReference   = reference;
+		stencilCompareMask = mask;
+		PushStencilTest();
 	}
 
 	void cVKDriver::StencilMask(uint32_t mask)
 	{
 		SCVK_CALL("0x%x", mask);
+
+		// Kept whole as well, since the stencil clear reads it
+		stencilWriteMask = mask;
+		vulkan->SetStencilWriteMask(mask & STENCIL_BITS);
 	}
 
 	void cVKDriver::StencilOp(uint32_t gdStencilFailOperation, uint32_t gdDepthFailOperation, uint32_t gdPassOperation)
 	{
 		SCVK_CALL("%u, %u, %u", gdStencilFailOperation, gdDepthFailOperation, gdPassOperation);
+
+		if (gdStencilFailOperation >= GD_STENCIL_OPERATION_COUNT || gdDepthFailOperation >= GD_STENCIL_OPERATION_COUNT || gdPassOperation >= GD_STENCIL_OPERATION_COUNT)
+		{
+			SetLastError(DriverError::INVALID_ENUM);
+			return;
+		}
+
+		stencilFailOperation      = gdStencilFailOperation;
+		stencilDepthFailOperation = gdDepthFailOperation;
+		stencilPassOperation      = gdPassOperation;
+		vulkan->SetStencilOperations(gdStencilFailOperation, gdDepthFailOperation, gdPassOperation);
 	}
 
 	void cVKDriver::BlendFunc(uint32_t gdSourceFactor, uint32_t gdDestinationFactor)

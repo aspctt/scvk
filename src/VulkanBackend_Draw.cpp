@@ -102,6 +102,11 @@ namespace scvk
 		constexpr uint32_t GD_FOG_MODE_LINEAR = 2;
 		constexpr float    FOG_MODE_OFF       = 0.0f;
 
+		// What a pipeline key holds for the stencil while the test is off: always passing,
+		// and keep, in the game's enumerations.
+		constexpr uint32_t GD_COMPARISON_ALWAYS = 7;
+		constexpr uint32_t GD_STENCIL_KEEP      = 1;
+
 		// Where a stage's coordinates come from, in the draw record.
 		constexpr float STAGE_SOURCE_FIRST_SET  = 0.0f;
 		constexpr float STAGE_SOURCE_SECOND_SET = 1.0f;
@@ -138,6 +143,28 @@ namespace scvk
 			case 5:  return VK_COMPARE_OP_NOT_EQUAL;
 			case 6:  return VK_COMPARE_OP_GREATER_OR_EQUAL;
 			default: return VK_COMPARE_OP_ALWAYS;
+			}
+		}
+
+		/**
+		 * The game's stencil operations: zero, keep, replace, increment, decrement, invert.
+		 *
+		 * Both of its own drivers read them through a table in that order: StencilOp in
+		 * the OpenGL one (0x87c5f0) indexes 0xb120bc, GL_ZERO first, and in the DirectX one
+		 * (0x882e50) 0xac450c, D3DSTENCILOP_ZERO first. Both count up and down without
+		 * wrapping (GL_INCR, D3DSTENCILOP_INCRSAT). SCGL's table leaves zero out, so its
+		 * operations sit one lower than the game's.
+		 */
+		VkStencilOp MapStencilOperation(uint32_t gdOperation)
+		{
+			switch (gdOperation)
+			{
+			case 0:  return VK_STENCIL_OP_ZERO;
+			case 2:  return VK_STENCIL_OP_REPLACE;
+			case 3:  return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+			case 4:  return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+			case 5:  return VK_STENCIL_OP_INVERT;
+			default: return VK_STENCIL_OP_KEEP;
 			}
 		}
 
@@ -257,6 +284,7 @@ namespace scvk
 		hash = MixHash(hash, static_cast<uint32_t>(key.topology));
 		hash = MixHash(hash, (key.isBlendEnabled ? 1u : 0u) | (key.sourceFactor << 1) | (key.destinationFactor << 6));
 		hash = MixHash(hash, (key.isDepthTestEnabled ? 1u : 0u) | (key.isDepthWriteEnabled ? 2u : 0u) | (key.depthComparison << 2) | (key.isColourWriteEnabled ? 64u : 0u) | (key.isFaceCullingEnabled ? 128u : 0u));
+		hash = MixHash(hash, (key.isStencilTestEnabled ? 1u : 0u) | (key.stencilComparison << 1) | (key.stencilFailOperation << 4) | (key.stencilDepthFailOperation << 7) | (key.stencilPassOperation << 10));
 		return hash;
 	}
 
@@ -284,14 +312,16 @@ namespace scvk
 		}
 
 		// Indexed by hasColour * 3 + textureCoordinateSets, matching the order the
-		// generated header declares them in.
+		// generated header declares them in. Both fragment stages, since which one the
+		// pipelines take depends on the depth format, chosen later.
 		return CreateShaderModule(GEOMETRY_VERTEX_SPIRV_NONE, _countof(GEOMETRY_VERTEX_SPIRV_NONE), vertexModules[0])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE), vertexModules[1])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_TEXTURE2), vertexModules[2])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR), vertexModules[3])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE), vertexModules[4])
 			&& CreateShaderModule(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2, _countof(GEOMETRY_VERTEX_SPIRV_COLOUR_TEXTURE2), vertexModules[5])
-			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModule);
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV, _countof(GEOMETRY_FRAGMENT_SPIRV), fragmentModule)
+			&& CreateShaderModule(GEOMETRY_FRAGMENT_SPIRV_QUANTISED, _countof(GEOMETRY_FRAGMENT_SPIRV_QUANTISED), quantisedFragmentModule);
 	}
 
 	bool VulkanBackend::CreatePipelineLayout(void)
@@ -456,7 +486,7 @@ namespace scvk
 		stages[0].pName  = "main";
 		stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
-		stages[1].module = fragmentModule;
+		stages[1].module = isDepthQuantised ? quantisedFragmentModule : fragmentModule;
 		stages[1].pName  = "main";
 
 		// Describe the vertex attributes
@@ -563,6 +593,18 @@ namespace scvk
 		depthStencil.minDepthBounds   = 0.0f;
 		depthStencil.maxDepthBounds   = 1.0f;
 
+		// Both faces alike, since the game's stencil calls set both, as OpenGL's do. The
+		// reference and masks are left to each draw.
+		VkStencilOpState stencil{};
+		stencil.failOp      = MapStencilOperation(key.stencilFailOperation);
+		stencil.passOp      = MapStencilOperation(key.stencilPassOperation);
+		stencil.depthFailOp = MapStencilOperation(key.stencilDepthFailOperation);
+		stencil.compareOp   = MapCompareOperation(key.stencilComparison);
+
+		depthStencil.stencilTestEnable = key.isStencilTestEnabled ? VK_TRUE : VK_FALSE;
+		depthStencil.front             = stencil;
+		depthStencil.back              = stencil;
+
 		VkPipelineColorBlendAttachmentState blendAttachment{};
 		blendAttachment.blendEnable         = key.isBlendEnabled ? VK_TRUE : VK_FALSE;
 		blendAttachment.srcColorBlendFactor = MapBlendFactor(key.sourceFactor);
@@ -577,10 +619,14 @@ namespace scvk
 		blend.attachmentCount = 1;
 		blend.pAttachments    = &blendAttachment;
 
-		// Leave the viewport and scissor to each draw
-		VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+		// Leave the viewport and scissor to each draw, and the stencil's values too where
+		// it is tested
+		//
+		// Only there: a pipeline with them dynamic needs them set before every draw, and
+		// the draws without the test are nearly all of them.
+		VkDynamicState const dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
 		VkPipelineDynamicStateCreateInfo dynamic{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-		dynamic.dynamicStateCount = _countof(dynamicStates);
+		dynamic.dynamicStateCount = key.isStencilTestEnabled ? _countof(dynamicStates) : 2u;
 		dynamic.pDynamicStates    = dynamicStates;
 
 		// Create the pipeline, through the cache that outlives the session
@@ -956,7 +1002,22 @@ namespace scvk
 	bool VulkanBackend::BindDrawState(uint32_t gdVertexFormat, VkPrimitiveTopology topology, VkBuffer vertexBuffer, VkDeviceSize vertexOffset, VertexLayout const& layout)
 	{
 		// Find the pipeline for the current state
-		PipelineKey const key{ gdVertexFormat, topology, isBlendEnabled, blendSourceFactor, blendDestinationFactor, isDepthTestEnabled, isDepthWriteEnabled, depthComparison, isColourWriteEnabled, isFaceCullingEnabled };
+		//
+		// The stencil's fields hold their defaults while it is not tested, or when there
+		// is no stencil, where OpenGL passes every fragment and changes nothing.
+		bool const isStencilTested = isStencilTestEnabled && hasStencil;
+
+		PipelineKey const key{
+			gdVertexFormat, topology,
+			isBlendEnabled, blendSourceFactor, blendDestinationFactor,
+			isDepthTestEnabled, isDepthWriteEnabled, depthComparison,
+			isColourWriteEnabled, isFaceCullingEnabled,
+			isStencilTested,
+			isStencilTested ? stencilComparison : GD_COMPARISON_ALWAYS,
+			isStencilTested ? stencilFailOperation : GD_STENCIL_KEEP,
+			isStencilTested ? stencilDepthFailOperation : GD_STENCIL_KEEP,
+			isStencilTested ? stencilPassOperation : GD_STENCIL_KEEP,
+		};
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
 		{
@@ -992,6 +1053,17 @@ namespace scvk
 		{
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 			bound.pipeline = pipeline;
+
+			// A pipeline that fixes the stencil's values replaces the ones set by command
+			if (!key.isStencilTestEnabled)
+			{
+				bound.hasStencilValues = false;
+			}
+		}
+
+		if (key.isStencilTestEnabled)
+		{
+			ApplyStencilValues();
 		}
 
 		PushDrawConstants(isTwoStage, isCombining);
@@ -1012,6 +1084,33 @@ namespace scvk
 		}
 
 		return true;
+	}
+
+	void VulkanBackend::ApplyStencilValues(void)
+	{
+		// Set each value the command buffer does not already hold
+		//
+		// A stencil-tested pipeline reads all three from the command buffer, so after a
+		// pipeline that fixed them, or in a new command buffer, all three go again.
+		if (!bound.hasStencilValues || bound.stencilReference != stencilReference)
+		{
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
+			bound.stencilReference = stencilReference;
+		}
+
+		if (!bound.hasStencilValues || bound.stencilCompareMask != stencilCompareMask)
+		{
+			vkCmdSetStencilCompareMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilCompareMask);
+			bound.stencilCompareMask = stencilCompareMask;
+		}
+
+		if (!bound.hasStencilValues || bound.stencilWriteMask != stencilWriteMask)
+		{
+			vkCmdSetStencilWriteMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilWriteMask);
+			bound.stencilWriteMask = stencilWriteMask;
+		}
+
+		bound.hasStencilValues = true;
 	}
 
 	void VulkanBackend::BindDescriptorSets(VkPipelineLayout layout, VkDescriptorSet const sets[4])
@@ -1293,6 +1392,26 @@ namespace scvk
 	void VulkanBackend::SetFaceCulling(bool isEnabled)
 	{
 		isFaceCullingEnabled = isEnabled;
+	}
+
+	void VulkanBackend::SetStencilTest(bool isEnabled, uint32_t comparison, uint32_t reference, uint32_t compareMask)
+	{
+		isStencilTestEnabled = isEnabled;
+		stencilComparison    = comparison;
+		stencilReference     = reference;
+		stencilCompareMask   = compareMask;
+	}
+
+	void VulkanBackend::SetStencilOperations(uint32_t failOperation, uint32_t depthFailOperation, uint32_t passOperation)
+	{
+		stencilFailOperation      = failOperation;
+		stencilDepthFailOperation = depthFailOperation;
+		stencilPassOperation      = passOperation;
+	}
+
+	void VulkanBackend::SetStencilWriteMask(uint32_t mask)
+	{
+		stencilWriteMask = mask;
 	}
 
 	void VulkanBackend::SetSceneTint(float red, float green, float blue, float alpha, bool isColourFromVertexColour, bool isAlphaFromVertexColour)

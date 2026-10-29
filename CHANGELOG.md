@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A stencil buffer, so SC4RenderServices draws terrain decals back over shadows once per pixel and overlapping decals no longer come out darker
+
 ## [0.3.0] - 2026-10-28
 
 Most of this release is UlisseWolf's port of scd3d11's features.
