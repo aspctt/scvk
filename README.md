@@ -344,8 +344,8 @@ by hand from the `[Benchmark]` section of `scvk.ini`.
 
 ## Installing
 
-scvk needs Windows 10 or 11, a graphics card with Vulkan support and game version
-641.
+scvk needs Windows 10 or 11 or Linux through Wine or Proton, a graphics card with
+Vulkan support and game version 641.
 
 Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
 and copy `scvk.dll` into a `Plugins` folder, either the one in your SimCity 4
