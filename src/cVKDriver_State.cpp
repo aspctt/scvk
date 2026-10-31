@@ -563,7 +563,17 @@ namespace scvk
 			return;
 		}
 
+		// Keep the transform when this is the matrix already loaded
+		//
+		// The game loads the same matrix around many draws, and marking it changed has the
+		// next draw work the whole transform out again.
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
+
+		if (memcmp(target, matrix, sizeof(float) * 16) == 0)
+		{
+			return;
+		}
+
 		memcpy(target, matrix, sizeof(float) * 16);
 		NoteMatrixChange();
 	}
@@ -572,7 +582,14 @@ namespace scvk
 	{
 		SCVK_CALL("");
 
+		// Keep the transform when it is the identity already, as LoadMatrix does
 		float* const target = (activeMatrix == PROJECTION_MATRIX) ? projectionMatrix : modelViewMatrix;
+
+		if (memcmp(target, IDENTITY_MATRIX, sizeof(IDENTITY_MATRIX)) == 0)
+		{
+			return;
+		}
+
 		memcpy(target, IDENTITY_MATRIX, sizeof(IDENTITY_MATRIX));
 		NoteMatrixChange();
 	}

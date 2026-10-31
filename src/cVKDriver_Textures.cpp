@@ -404,7 +404,13 @@ namespace scvk
 
 		// Which coordinate set, or generated source, feeds the active stage. The first
 		// stage's source decides whether the draw generates its coordinates, which is
-		// what the cloud shadows do.
+		// what the cloud shadows do. The same source again changes nothing, and marking it
+		// has the next draw work out both stages' coordinates again.
+		if (textureCoordinateSource[activeTextureStage] == gdTextureCoordinateSource)
+		{
+			return;
+		}
+
 		textureCoordinateSource[activeTextureStage] = gdTextureCoordinateSource;
 		isStageCoordinatesDirty = true;
 
@@ -433,8 +439,16 @@ namespace scvk
 		// distinguishes all rewrite rows 2 and 3 of the matrix and leave rows 0 and 1
 		// alone. A 2D sample uses only those first two rows, so none of that distinction
 		// reaches here, and the fourth row is taken to leave q at one.
-		memcpy(textureStageMatrices[activeTextureStage], (matrix != nullptr) ? matrix : IDENTITY_MATRIX, sizeof(textureStageMatrices[activeTextureStage]));
-		isStageCoordinatesDirty = true;
+		//
+		// The game sets a matrix before nearly every textured draw, mostly the one already
+		// set, so only a real change marks the coordinates.
+		float const* const source = (matrix != nullptr) ? matrix : IDENTITY_MATRIX;
+
+		if (memcmp(textureStageMatrices[activeTextureStage], source, sizeof(textureStageMatrices[activeTextureStage])) != 0)
+		{
+			memcpy(textureStageMatrices[activeTextureStage], source, sizeof(textureStageMatrices[activeTextureStage]));
+			isStageCoordinatesDirty = true;
+		}
 
 		// Report the first few matrices
 		//

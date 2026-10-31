@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-DepthBuffer:32` and `-DepthBuffer:16` launch options, ahead of `Use32BitDepth` in `scvk.ini`
 - `-LiveShadows:on` and `-LiveShadows:off`, the name scd3d11 uses now, the same as `-NativeShadowMasks:replace` and `off`
 
+### Changed
+
+- Less work around each draw when the game repeats a matrix or texture setting it already made
+
 ### Fixed
 
 - After a lost graphics device the game is asked to upload its textures again, as its DirectX driver does

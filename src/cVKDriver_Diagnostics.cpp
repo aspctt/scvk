@@ -123,6 +123,15 @@ namespace scvk
 
 	bool cVKDriver::NoteOnce(uint32_t bucket, uint32_t key)
 	{
+		// Skip the search when nothing would be written
+		//
+		// Everything noted goes to the log at the debug level, and the state calls that
+		// note things run many times a draw, each one reading through the whole list.
+		if (!areDrawDiagnosticsEnabled)
+		{
+			return false;
+		}
+
 		uint64_t const entry = (uint64_t{ bucket } << 32) | key;
 
 		for (uint32_t i = 0; i < notedCount; i++)
