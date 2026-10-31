@@ -1,0 +1,40 @@
+# scvk.log already names the graphics card, its driver and every plugin loaded, so the form
+# only asks for what the log leaves out.
+
+name: Bug report
+description: Crash, drawing glitch or other problem with scvk
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you saw instead. Screenshots help with drawing glitches.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: scvk version
+      placeholder: 0.5.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows version, or Linux with your Wine or Proton version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: arguments
+    attributes:
+      label: SimCity 4 launch options
+      placeholder: -w -CustomResolution:enabled -r2560x1440x32
+  - type: textarea
+    id: log
+    attributes:
+      label: scvk.log
+      description: Attach `scvk.log` from beside `scvk.dll`. It starts over with each launch, so attach it before playing again. If there is no log, say so.
+    validations:
+      required: true
