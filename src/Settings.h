@@ -53,6 +53,10 @@ namespace scvk
 		// picks the adapter, instead of preferring a discrete GPU.
 		bool shouldPreferHighPerformanceGpu = true;
 
+		// -DoctorDialog:off, or DoctorDialog=false in scvk.ini. Off leaves the setup
+		// problems in scvk.log, without the dialog when the region view opens.
+		bool isDoctorDialogEnabled = true;
+
 		// -ReShade:off. Registers scvk as a ReShade add-on so effects render
 		// under the interface, with the city's depth supplied.
 		bool isReShadeIntegrationEnabled = true;

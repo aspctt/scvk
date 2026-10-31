@@ -152,6 +152,7 @@ the other.
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
+| `-DoctorDialog:off` | Keeps setup problems in `scvk.log` only, the same as `DoctorDialog=false` in `scvk.ini` |
 | `-FullscreenMode:Borderless` | The same as `-borderless` |
 
 ## Compatibility with other mods
@@ -400,11 +401,15 @@ ColorDepth=32
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
 directory if the Plugins folder is not writable. `-LogLevel:<level>` sets how much
-goes into it, from `trace` to `off`, and is `info` by default. It warns when two copies
-of scvk are loaded, and when SC4RenderServices is older than 0.8.3.
+goes into it, from `trace` to `off`, and is `info` by default. When the game starts,
+scvk looks over your setup and writes what it finds there: another driver drawing, a
+plugin loaded twice or unable to load, an old SC4RenderServices, no 4GB patch,
+compatibility mode and mistyped launch options or settings. Serious problems also show
+in a dialog when the region view opens, and `DoctorDialog=false` in `scvk.ini` or
+`-DoctorDialog:off` keeps them in the log.
 
 `scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
-`MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the
+`MaxFPS`, `Use32BitDepth`, `LogLevel`, `DoctorDialog` and the benchmark, and the
 [`scvk.ini`](scvk.ini) in the zip explains each. sc4pac installs that file as
 `scvk_sc4pacnew.ini`, so rename it to use it. A `scvk.ini` from 0.2 keeps working.
 

@@ -3631,7 +3631,6 @@ namespace scvk
 		if (presentedFrames == 1)
 		{
 			LogInfo("scvk %s is running; the first frame is on screen.", SCVK_VERSION_STRING);
-			CheckPluginSetup();
 		}
 
 		if ((presentedFrames % HEARTBEAT_FRAMES) == 0)

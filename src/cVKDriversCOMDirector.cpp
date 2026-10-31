@@ -29,6 +29,7 @@
 #include "NativeShadowRegistry.h"
 #include "PrintScreen.h"
 #include "SC4Version.h"
+#include "SetupChecks.h"
 #include "TerrainShadows.h"
 #include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
@@ -272,6 +273,7 @@ namespace scvk
 
 		bool PostAppInit(void) override
 		{
+			RunSetupChecks();
 			StartBenchmark();
 			return true;
 		}
@@ -279,6 +281,7 @@ namespace scvk
 		bool PreAppShutdown(void) override
 		{
 			StopBenchmark();
+			StopSetupChecks();
 
 			NativeShadowExperiment::Uninstall();
 			TerrainShadows::Uninstall();

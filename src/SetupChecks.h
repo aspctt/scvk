@@ -28,11 +28,22 @@ namespace scvk
 	//// Public API
 
 	/**
-	 * Warns in scvk.log about plugin setups that load without an error but go wrong
-	 * later: a second copy of scvk, and a SC4RenderServices too old for scvk's stencil.
+	 * Looks at the rest of the game for setups that load without an error but go wrong
+	 * later: another driver drawing, a second copy of scvk or of any plugin, plugins that
+	 * cannot work, the 4GB patch missing, compatibility mode, mistyped launch switches and
+	 * settings, and SC4GraphicsOptions.ini lines its plugin cannot read. Every finding
+	 * goes into scvk.log, and the serious ones into a dialog when the region view opens.
 	 *
-	 * Call it once every plugin has loaded. The first frame is late enough, since the
-	 * game loads them all before it starts drawing.
+	 * Call it once the game is up, so it also runs when scvk is not the driver in use.
 	 */
-	void CheckPluginSetup(void);
+	void RunSetupChecks(void);
+
+	/** Stops listening for the region view. */
+	void StopSetupChecks(void);
+
+	/**
+	 * Logs a serious problem and adds it to the dialog. For what only the renderer can
+	 * see. It may be called before RunSetupChecks. Takes printf arguments.
+	 */
+	void ReportSetupProblem(char const* format, ...);
 }

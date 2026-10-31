@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `scvk.log` warns when two copies of scvk are loaded, and when SC4RenderServices is older than 0.8.3
+- Setup checks at startup, which write to `scvk.log`: another driver drawing, any plugin loaded twice, SC4RenderServices older than 0.8.3, plugins built for SC4RenderServices before 0.8, plugins missing the Visual C++ runtime, no 4GB patch, compatibility mode, launch switch and `scvk.ini` typos, an unquoted `-UserDir` and unreadable lines in `SC4GraphicsOptions.ini`
+- Serious setup problems also show in the game's own dialog when the region view opens. `DoctorDialog=false` in `scvk.ini` or `-DoctorDialog:off` keeps them in the log
 - `-DepthBuffer:32` and `-DepthBuffer:16` launch options, ahead of `Use32BitDepth` in `scvk.ini`
 - `-LiveShadows:on` and `-LiveShadows:off`, the name scd3d11 uses now, the same as `-NativeShadowMasks:replace` and `off`
 

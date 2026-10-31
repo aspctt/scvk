@@ -85,6 +85,9 @@ laid exactly on a model can leave thin lines after scrolling.
 <code>-DepthBuffer:16</code> keeps the default.</li>
 <li><code>-VSync:off</code>, <code>-GPU:default</code>, <code>-FlipModel:off</code>
 and <code>-ReShade:off</code> work as they do in scd3d11.</li>
+<li><code>-DoctorDialog:off</code> keeps setup problems in <code>scvk.log</code>
+instead of showing them in a dialog when the region view opens.
+<code>DoctorDialog=false</code> under <code>[scvk]</code> does the same.</li>
 <li><code>-LogLevel:&lt;level&gt;</code> sets how much goes into
 <code>scvk.log</code>, from <code>trace</code> to <code>off</code>.
 <code>info</code> by default.</li>
@@ -132,8 +135,12 @@ does not need one, and they can stay installed.</li>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <p><code>scvk.log</code> is written beside <code>scvk.dll</code>, or in the
 Windows temp folder if the Plugins folder cannot be written to. It names the
-graphics card scvk chose and notes anything that went wrong, including a second
-copy of scvk and a SC4RenderServices older than 0.8.3.</p>
+graphics card scvk chose and its driver, lists the plugins that loaded and notes
+anything that went wrong.</p>
+<p>scvk also looks over your setup when the game starts, for things like another
+driver drawing, a plugin loaded twice, a SC4RenderServices older than 0.8.3, no 4GB
+patch or a mistyped launch option. Serious problems show in a dialog when the region
+view opens.</p>
 <p>If there is no log at all, the game did not load scvk. Check that
 <code>scvk.dll</code> is directly in a Plugins folder, not in a subfolder, and
 that <code>Enabled</code> is not set to false in <code>scvk.ini</code>.</p>

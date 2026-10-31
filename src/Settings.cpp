@@ -64,6 +64,31 @@ namespace scvk
 			return nullptr;
 		}
 
+		/** -DoctorDialog: on the command line, then DoctorDialog in scvk.ini, on when neither says. */
+		bool ReadDoctorDialogChoice(void)
+		{
+			if (HasCommandLineSwitch("-DoctorDialog:off"))
+			{
+				return false;
+			}
+
+			if (HasCommandLineSwitch("-DoctorDialog:on"))
+			{
+				return true;
+			}
+
+			char settingsPath[MAX_PATH];
+			if (!LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
+			{
+				return true;
+			}
+
+			char value[16] = {};
+			ReadIniValue(settingsPath, "scvk", "DoctorDialog", "true", value, sizeof(value));
+
+			return _stricmp(value, "false") != 0 && strcmp(value, "0") != 0;
+		}
+
 		Settings ReadSettings(void)
 		{
 			Settings settings;
@@ -83,6 +108,8 @@ namespace scvk
 			{
 				settings.shouldPreferHighPerformanceGpu = false;
 			}
+
+			settings.isDoctorDialogEnabled = ReadDoctorDialogChoice();
 
 			if (HasCommandLineSwitch("-ReShade:off"))
 			{
