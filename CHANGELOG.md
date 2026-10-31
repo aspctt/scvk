@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - After a lost graphics device the game is asked to upload its textures again, as its DirectX driver does
 - A stalled graphics card no longer hangs the game while it saves, takes a photo or uploads textures. That read or upload is skipped instead
 - A comment after a value in `scvk.ini`, such as `Use32BitDepth=true ; note`, no longer stops the value being read
+- Live shadows redraw when a camera plugin changes the yaw or pitch
+- Live shadows no longer force a full redraw on every scroll frame along the city's edge
+- Live shadows no longer shade the backdrop beyond the city
 
 ## [0.4.0] - 2026-10-31
 

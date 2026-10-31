@@ -175,11 +175,15 @@ namespace scvk
 				bool const isPartialShadow  = hookedDriver != nullptr && hookedDriver->ConsumeLiveShadowCleanRedraw();
 
 				// cSC43DRender+0x8c owns cSC4CameraControl, whose zoom and rotation are the
-				// integers at +0x108 and +0x10c, written before Draw is entered
-				static void*   lastRender      = nullptr;
-				static int32_t lastZoom        = 0;
-				static int32_t lastRotation    = 0;
-				static bool    hasCameraState  = false;
+				// integers at +0x108 and +0x10c, written before Draw is entered. Camera
+				// plugins also turn the view freely through the yaw and pitch floats at
+				// +0x118 and +0x11c, which the integers never show.
+				static void*    lastRender     = nullptr;
+				static int32_t  lastZoom       = 0;
+				static int32_t  lastRotation   = 0;
+				static uint32_t lastYaw        = 0;
+				static uint32_t lastPitch      = 0;
+				static bool     hasCameraState = false;
 
 				uint8_t* camera = nullptr;
 				std::memcpy(&camera, bytes + 0x8C, sizeof(camera));
@@ -187,15 +191,23 @@ namespace scvk
 				bool isCameraChanged = false;
 				if (camera != nullptr)
 				{
-					int32_t zoom     = 0;
-					int32_t rotation = 0;
+					int32_t  zoom     = 0;
+					int32_t  rotation = 0;
+					uint32_t yaw      = 0;
+					uint32_t pitch    = 0;
 					std::memcpy(&zoom, camera + 0x108, sizeof(zoom));
 					std::memcpy(&rotation, camera + 0x10C, sizeof(rotation));
 
-					isCameraChanged = hasCameraState && lastRender == self && (zoom != lastZoom || rotation != lastRotation);
+					// Kept as bits, so any change counts and a NaN cannot hide one
+					std::memcpy(&yaw, camera + 0x118, sizeof(yaw));
+					std::memcpy(&pitch, camera + 0x11C, sizeof(pitch));
+
+					isCameraChanged = hasCameraState && lastRender == self && (zoom != lastZoom || rotation != lastRotation || yaw != lastYaw || pitch != lastPitch);
 					lastRender      = self;
 					lastZoom        = zoom;
 					lastRotation    = rotation;
+					lastYaw         = yaw;
+					lastPitch       = pitch;
 					hasCameraState  = true;
 				}
 
@@ -216,7 +228,7 @@ namespace scvk
 					if (isCameraChanged && !hasLoggedCamera)
 					{
 						hasLoggedCamera = true;
-						Log(LogCategory::Initialization, "native shadows: zoom/rotation changes force a clean static redraw");
+						Log(LogCategory::Initialization, "native shadows: camera zoom, rotation, yaw and pitch changes force a clean static redraw");
 					}
 				}
 			}

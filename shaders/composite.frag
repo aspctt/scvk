@@ -150,6 +150,16 @@ void main()
 
 	vec3 viewPosition = ViewPosition(pixel, depth);
 	bool isTerrainMapUsed = constants.terrainShade.x != 0.0;
+	vec3 world = isTerrainMapUsed ? (constants.eyeToWorld * vec4(viewPosition, 1.0)).xyz : vec3(0.0);
+
+	// Beyond the city's edge lies the game's backdrop, below the terrain and so under its
+	// shadow ceiling. Nothing out there casts, and shading it only leaves patches where
+	// edge strips are redrawn without the composite.
+	vec2 cityExtent = (constants.terrainCell.zw - 1.0) * constants.terrainCell.x;
+	if (isTerrainMapUsed && (any(lessThan(world.xz, vec2(-1.0))) || any(greaterThan(world.xz, cityExtent + 1.0))))
+	{
+		discard;
+	}
 
 	// The surface's normal, rebuilt from the neighbouring depths, facing the camera
 	vec3 surfaceNormal = normalize(cross(SurfaceStep(pixel, viewPosition, ivec2(0, 1)), SurfaceStep(pixel, viewPosition, ivec2(1, 0))));
@@ -157,7 +167,6 @@ void main()
 	{
 		surfaceNormal = -surfaceNormal;
 	}
-	vec3 world = isTerrainMapUsed ? (constants.eyeToWorld * vec4(viewPosition, 1.0)).xyz : vec3(0.0);
 
 	// Darken fully where N.L is that of flat ground, what SimCity 4's shadow strength is
 	// set for, less on a face turned partly away, and not at all on one turned fully away

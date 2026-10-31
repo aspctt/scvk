@@ -993,7 +993,13 @@ namespace scvk
 		std::vector<LiveShadowDraw*> casters;
 		bool isTracked = false;
 
-		if (isReplaceMode && isStaticPass)
+		// A strip at the city's edge often holds no shadow record and no terrain on the
+		// height field, so its view stays unknown. It drew no caster either, so the
+		// world-space set is still right. Dropping the set there forced a full redraw on
+		// every scroll frame along the edge.
+		bool const isEmptyPartialPass = isPartialPass && !hasView && !hasPass && liveShadowDraws.empty();
+
+		if (isReplaceMode && isStaticPass && !isEmptyPartialPass)
 		{
 			if (hasView && hasProjection)
 			{
