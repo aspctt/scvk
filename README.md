@@ -8,7 +8,8 @@ with one built on Vulkan, loaded as a DLL plugin through the game's own GZCOM
 plugin system.
 
 This project is not affiliated with, endorsed by, or supported by Electronic
-Arts Inc. or Maxis.
+Arts Inc. or Maxis. Vulkan and the Vulkan logo are registered trademarks of the
+Khronos Group Inc.
 
 <p align=center>
 	<a alt="BuyMeACoffee" href="https://buymeacoffee.com/aspctt"><img src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/donate/buymeacoffee-singular_vector.svg"></a>
@@ -16,8 +17,7 @@ Arts Inc. or Maxis.
 
 ## Status
 
-**Early, but playable.** The region view, cities and menus all draw, with a
-few visual bugs left.
+**Early, but playable.** The region view, cities and menus all draw.
 
 | Area | Status |
 |---|---|
