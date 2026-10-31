@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
 ### Added
 
-- A stencil buffer, so SC4RenderServices draws terrain decals back over shadows once per pixel and overlapping decals no longer come out darker
+- A stencil buffer, so SC4RenderServices 0.8.3 or newer draws terrain decals back over shadows once per pixel and overlapping decals no longer come out darker
+
+### Changed
+
+- Cards without a 16-bit depth format that has a stencil use a 24-bit or 32-bit one, with every depth rounded to 16 bits
 
 ## [0.3.0] - 2026-10-28
 
@@ -115,7 +121,8 @@ Most of this release is UlisseWolf's port of scd3d11's features.
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/aspctt/scvk/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/aspctt/scvk/compare/0.2.2...0.3.0
 [0.2.2]: https://github.com/aspctt/scvk/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/aspctt/scvk/compare/0.2.0...0.2.1
