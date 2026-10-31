@@ -1413,7 +1413,7 @@ namespace scvk
 		//
 		// The game holds on to its texture names and region handles, and never asks for
 		// new ones after a reset. They come back with their sizes and formats but empty,
-		// until the game uploads them again, as SCD3D11 does after losing its device.
+		// and the driver then asks the game to upload the textures again.
 		std::vector<Texture> previousTextures = textures;
 		std::vector<BufferRegion> previousRegions = bufferRegions;
 		uint32_t const previousTexture  = currentTexture;

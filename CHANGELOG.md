@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scvk.log` warns when two copies of scvk are loaded, and when SC4RenderServices is older than 0.8.3
 - `-DepthBuffer:32` and `-DepthBuffer:16` launch options, ahead of `Use32BitDepth` in `scvk.ini`
 
+### Fixed
+
+- After a lost graphics device the game is asked to upload its textures again, as its DirectX driver does
+
 ## [0.4.0] - 2026-10-31
 
 ### Added

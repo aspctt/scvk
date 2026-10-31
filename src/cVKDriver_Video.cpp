@@ -34,6 +34,14 @@
 #include "Watchdog.h"
 #include "version.h"
 
+#include <GZCLSIDDefs.h>
+#include <GZServPtrs.h>
+#include <cIGZCOM.h>
+#include <cIGZFrameWork.h>
+#include <cIGZMessage2.h>
+#include <cIGZMessageServer2.h>
+#include <cRZCOMDllDirector.h>
+
 #include <windows.h>
 #include <string.h>
 
@@ -91,6 +99,12 @@ namespace scvk
 			"scvk-debug-vertex-colour",
 			"scvk-debug-vertex-alpha",
 		};
+
+		// What the game's own DirectX driver posts once it has restored a lost device
+		// (0x884ba0). The first makes the game upload its textures again, and the second
+		// redraws the whole view.
+		constexpr uint32_t MESSAGE_RESTORE_TEXTURES  = 0x8ACAA95F;
+		constexpr uint32_t MESSAGE_FORCE_FULL_REDRAW = 0x6ACB92A9;
 	}
 
 	//// State
@@ -117,6 +131,39 @@ namespace scvk
 
 	namespace
 	{
+		/** Posts a message of the game's own class that carries nothing but its type. */
+		void PostGameMessage(cIGZMessageServer2& messageServer, cIGZCOM& com, uint32_t type)
+		{
+			// GZCOM hands the object back through an untyped pointer, and cIGZMessage2 is the
+			// start of the interface asked for.
+			cIGZMessage2* message = nullptr;
+			if (!com.GetClassObject(GZCLSID::kcRZMessage2Standard, GZCLSID::kcIGZMessage2Standard, reinterpret_cast<void**>(&message)))
+			{
+				LogWarn("Could not make game message 0x%08X.", type);
+				return;
+			}
+
+			message->SetType(type);
+			messageServer.MessagePost(message, false);
+			message->Release();
+		}
+
+		/** Tells the game a lost device is back, as its own driver does. */
+		void PostDeviceRestoredMessages(void)
+		{
+			cIGZMessageServer2Ptr messageServer;
+			cIGZCOM* const com = RZGetFramework()->GetCOMObject();
+
+			if (!messageServer || com == nullptr)
+			{
+				LogWarn("Could not ask the game to upload its textures again; they stay blank.");
+				return;
+			}
+
+			PostGameMessage(*messageServer, *com, MESSAGE_RESTORE_TEXTURES);
+			PostGameMessage(*messageServer, *com, MESSAGE_FORCE_FULL_REDRAW);
+		}
+
 		// Switches the main display to the fullscreen mode, or says why it could not
 		bool EnterDisplayMode(void)
 		{
@@ -1106,6 +1153,7 @@ namespace scvk
 				isReShadeEffectsInBackBuffer = false;
 				liveShadowWorldCasters.clear();
 				isLiveShadowWorldValid = false;
+				PostDeviceRestoredMessages();
 			}
 
 			NoteRenderFrame();
