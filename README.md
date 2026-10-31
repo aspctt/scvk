@@ -348,9 +348,10 @@ scvk needs Windows 10 or 11, a graphics card with Vulkan support and game versio
 641.
 
 Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
-and copy `scvk.dll` into the `Plugins` folder of your SimCity 4 installation. That
-is all: the game picks scvk by default. On a machine without
-Vulkan, the game keeps its own DirectX renderer.
+and copy `scvk.dll` into a `Plugins` folder, either the one in your SimCity 4
+installation or the one in `Documents\SimCity 4`, but not both. That is all: the game
+picks scvk by default. On a machine without Vulkan, the game keeps its own DirectX
+renderer.
 
 With [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options),
 both `Driver=DirectX` and `Driver=OpenGL` select scvk. With scd3d11 installed as
@@ -383,8 +384,8 @@ directory if the Plugins folder is not writable. `-LogLevel:<level>` sets how mu
 goes into it, from `trace` to `off`, and is `info` by default.
 
 `scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
-`MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the repository's
-[`scvk.ini`](scvk.ini) explains each. A `scvk.ini` from 0.2 keeps working.
+`MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the
+[`scvk.ini`](scvk.ini) in the zip explains each. A `scvk.ini` from 0.2 keeps working.
 
 To turn scvk off without removing it, put a `scvk.ini` next to the DLL with
 `Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk is never

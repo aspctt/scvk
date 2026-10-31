@@ -1,0 +1,18 @@
+name: scvk
+subfolder: 150-mods
+dependencies:
+  - config:sc4-edition-windows-digital
+assets:
+  - assetId: ${{ assets.0.assetId }}
+    withChecksum:
+      - include: /scvk.dll
+        sha256: "@DLL_SHA256@"
+      - include: /scvk.ini
+        sha256: "@INI_SHA256@"
+        isIni: true
+info:
+  summary: A native Vulkan renderer for SimCity 4
+  conflicts: Only compatible with game version 1.1.641, the Windows digital edition. Cannot be installed alongside SCGL.
+
+---
+url: https://github.com/aspctt/scvk/releases/download/@VERSION@/scvk-@VERSION@.zip

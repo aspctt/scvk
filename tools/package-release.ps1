@@ -2,9 +2,10 @@
 #
 #   pwsh tools/package-release.ps1
 #
-# The zip holds scvk.dll, which goes into the game's Plugins folder, beside the
-# readme and the third party notices from package\ and the license. The version comes from
-# src\version.h, so bump it there first. Release notes are written by hand beside the zip.
+# The zip holds scvk.dll, which goes into a Plugins folder, and the optional scvk.ini, beside
+# the readme and the third party notices from package\, the license and the metadata that
+# puts each Simtropolis upload on sc4pac. The version comes from src\version.h, so bump it
+# there first. Release notes are written by hand beside the zip.
 
 param(
 	# Pack the Release DLL already built instead of building it again.
@@ -19,12 +20,14 @@ $repositoryRoot   = Split-Path $PSScriptRoot -Parent
 $releaseDirectory = Join-Path $repositoryRoot "Releases"
 $stagingDirectory = Join-Path $repositoryRoot "obj\package"
 $versionHeader    = Join-Path $repositoryRoot "src\version.h"
+$metadataTemplate = Join-Path $repositoryRoot "package\metadata.yaml"
 
 # Each file in the zip, by its name there, and where it comes from.
 $packageFiles = [ordered]@{
 	"LICENSE.txt"             = Join-Path $repositoryRoot "LICENSE"
 	"README.htm"              = Join-Path $repositoryRoot "package\README.htm"
 	"scvk.dll"                = Join-Path $repositoryRoot "Release\scvk.dll"
+	"scvk.ini"                = Join-Path $repositoryRoot "scvk.ini"
 	"Third Party Notices.txt" = Join-Path $repositoryRoot "package\Third Party Notices.txt"
 }
 
@@ -60,6 +63,18 @@ foreach ($name in $packageFiles.Keys) {
 
 	Copy-Item $source (Join-Path $stagingDirectory $name)
 }
+
+# Fill in the sc4pac metadata
+#
+# The Simtropolis channel reads this file from the zip on the STEX. A DLL has to come from
+# its GitHub release, and the channel hashes no ini by itself, so the url and both checksums
+# are written here, from the files being packed. A hash left over from an older build would
+# make sc4pac refuse to install.
+$metadata = [System.IO.File]::ReadAllText($metadataTemplate)
+$metadata = $metadata.Replace("@VERSION@", $version)
+$metadata = $metadata.Replace("@DLL_SHA256@", (Get-FileHash (Join-Path $stagingDirectory "scvk.dll") -Algorithm SHA256).Hash)
+$metadata = $metadata.Replace("@INI_SHA256@", (Get-FileHash (Join-Path $stagingDirectory "scvk.ini") -Algorithm SHA256).Hash)
+[System.IO.File]::WriteAllText((Join-Path $stagingDirectory "metadata.yaml"), $metadata)
 
 # Pack them
 New-Item -ItemType Directory -Force $releaseDirectory | Out-Null

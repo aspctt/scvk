@@ -36,8 +36,9 @@ Tutorial. It has not happened again since.</li>
 <h2 id="installation">Installation</h2>
 <ol type="1">
 <li>Close SimCity 4.</li>
-<li>Copy <code>scvk.dll</code> into the Plugins folder in the SimCity 4
-installation directory.</li>
+<li>Copy <code>scvk.dll</code> into a Plugins folder, either the one in the
+SimCity 4 installation directory or the one in Documents\SimCity 4, but not
+both.</li>
 <li>Start the game. A <code>scvk.log</code> file appears beside
 <code>scvk.dll</code>.</li>
 </ol>
@@ -76,8 +77,9 @@ and <code>-ReShade:off</code> work as they do in scd3d11.</li>
 <code>scvk.log</code>, from <code>trace</code> to <code>off</code>.
 <code>info</code> by default.</li>
 </ul>
-<p>A <code>scvk.ini</code> beside <code>scvk.dll</code> is optional, and scvk reads
-it when it is there. A <code>scvk.ini</code> from 0.2 keeps working, but its
+<p>The <code>scvk.ini</code> in the zip is optional. Copy it beside
+<code>scvk.dll</code> if you want to change a setting, and scvk reads it when it is
+there. A <code>scvk.ini</code> from 0.2 keeps working, but its
 <code>MaxFPS=0</code> keeps the game's frame rate caps; delete that line for the
 display's refresh rate.</p>
 <p><code>MaxFPS</code> under <code>[scvk]</code> does what <code>-MaxFPS</code>
@@ -122,7 +124,7 @@ does not need one, and they can stay installed.</li>
 Windows temp folder if the Plugins folder cannot be written to. It names the
 graphics card scvk chose and notes anything that went wrong.</p>
 <p>If there is no log at all, the game did not load scvk. Check that
-<code>scvk.dll</code> is in the Plugins folder of the SimCity 4 installation, and
+<code>scvk.dll</code> is directly in a Plugins folder, not in a subfolder, and
 that <code>Enabled</code> is not set to false in <code>scvk.ini</code>.</p>
 <p>Please report problems at
 <a href="https://github.com/aspctt/scvk/issues">https://github.com/aspctt/scvk/issues</a>,

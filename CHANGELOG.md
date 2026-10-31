@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Cards without a 16-bit depth format that has a stencil use a 24-bit or 32-bit one, with every depth rounded to 16 bits
+- The zip has a `scvk.ini` again, for anyone who wants to change a setting such as `Use32BitDepth`. scvk still runs without it
 
 ## [0.3.0] - 2026-10-28
 
