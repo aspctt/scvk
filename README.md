@@ -366,6 +366,11 @@ By hand, download the zip from the [releases page](https://github.com/aspctt/scv
 and copy `scvk.dll` into a `Plugins` folder, either the one in your SimCity 4
 installation or the one in `Documents\SimCity 4`, but not both.
 
+With `-UserDir`, the `Plugins` folder in that folder takes the place of the one in
+`Documents\SimCity 4`, and a path with spaces needs quotes, as in
+`-UserDir:"D:\My Games\SimCity 4\"`. Without them the game cuts the path at the first
+space and looks in the wrong folder, so a `scvk.dll` there never loads.
+
 That is all: the game picks scvk by default. On a machine without Vulkan, the game
 keeps its own DirectX renderer.
 

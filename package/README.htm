@@ -46,6 +46,11 @@ both.</li>
 <li>Start the game. A <code>scvk.log</code> file appears beside
 <code>scvk.dll</code>.</li>
 </ol>
+<p>With <code>-UserDir</code>, the Plugins folder in that folder takes the place of
+the one in Documents\SimCity 4, and a path with spaces needs quotes, as in
+<code>-UserDir:"D:\My Games\SimCity 4\"</code>. Without them the game cuts the path
+at the first space and looks in the wrong folder, so a <code>scvk.dll</code> there
+never loads.</p>
 <p>That is all: the game picks scvk by default. On a machine without Vulkan, the
 game keeps its own DirectX renderer.</p>
 <p>With <a href="https://github.com/0xC0000054/sc4-graphics-options">sc4-graphics-options</a>,
