@@ -361,6 +361,11 @@ well, `DirectX` selects scd3d11 and `OpenGL` selects scvk. scvk draws in 32-bit
 whatever `ColorDepth` says. Set it to 32 for windowed play: at 16, the game switches
 to fullscreen whenever the desktop runs at a different depth, with any renderer.
 
+With `Driver=DirectX` and no scd3d11, `SC4GraphicsOptions.log` says "Failed to set
+the game's driver to DirectX." on every start. Nothing failed. scvk is drawing, but
+it reports the OpenGL ID from either slot, which is what sc4-graphics-options
+checks. `Driver=OpenGL` keeps that log quiet.
+
 ```ini
 [GraphicsOptions]
 Driver=OpenGL

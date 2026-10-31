@@ -202,6 +202,11 @@ namespace scvk
 		 * OpenGL slot and outranks the built-in driver by reporting a higher version from
 		 * EnumClassObjects. SCGL does the same, which is why scvk and SCGL cannot be
 		 * installed at the same time.
+		 *
+		 * scvk reports this ID from the DirectX slot as well. A plugin that trusts the
+		 * DirectX ID reads the DirectX 7 driver's fields from the driver object, and on
+		 * scvk those would be unrelated data. The cost is that sc4-graphics-options, with
+		 * Driver=DirectX, compares the IDs and logs that it failed to set the driver.
 		 */
 		static constexpr uint32_t DRIVER_GZCLSID = 0xC4554841;
 
