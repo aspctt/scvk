@@ -148,7 +148,7 @@ namespace scvk
 		// VideoMode.cpp and the shadow modules.
 		constexpr char const* SCVK_SWITCHES[] =
 		{
-			"VSync", "GPU", "ReShade", "LiveShadows", "NativeShadowMasks", "FlipModel", "DepthBuffer", "MaxFPS",
+			"VSync", "GPU", "ReShade", "ViewportCull", "LiveShadows", "NativeShadowMasks", "FlipModel", "DepthBuffer", "MaxFPS",
 			"LogLevel", "DoctorDialog", "windowed", "fullscreen", "b", "borderless", "FullscreenMode",
 			"LiveShadowDiag", "NativeShadowDiag", "LiveShadowAllFaces", "LiveShadowKeepPartial",
 			"NativeShadowExperiment", "TerrainShadows", "ShadowRegistry",
@@ -170,7 +170,7 @@ namespace scvk
 		// Switches only SCD3D11 reads. A launcher set up for it may well carry them.
 		constexpr char const* SCD3D11_SWITCHES[] =
 		{
-			"NetworkShadowMasks", "ViewportCull", "DrawStats", "Doctor", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
+			"NetworkShadowMasks", "DrawStats", "Doctor", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
 		};
 
 		constexpr char const* SCVK_SETTINGS[]      = { "MaxFPS", "Use32BitDepth", "LogLevel", "DoctorDialog" };

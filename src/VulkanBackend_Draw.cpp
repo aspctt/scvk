@@ -35,7 +35,9 @@
 
 #include "VulkanBackend.h"
 #include "Logger.h"
+#include "Settings.h"
 #include "ShaderBinaries.h"
+#include "ViewportCull.h"
 
 #include <VertexFormatUtils.h>
 
@@ -114,6 +116,20 @@ namespace scvk
 
 		// Floats per stage in the draw record's rows: s, then t.
 		constexpr uint32_t STAGE_ROW_FLOATS = 8;
+
+		// The game's points and lines, from its primitive numbering. See MapTopology.
+		constexpr uint32_t GD_PRIMITIVE_POINTS     = 3;
+		constexpr uint32_t GD_PRIMITIVE_LINES      = 4;
+		constexpr uint32_t GD_PRIMITIVE_LINE_STRIP = 5;
+
+		// The viewport cull runs while the viewport covers under this many tenths of the
+		// window. A larger one holds nearly everything the game sends, so the test would
+		// cost every draw and drop next to none.
+		constexpr int64_t VIEWPORT_CULL_MAXIMUM_TENTHS = 9;
+
+		// How far past the viewport a vertex must lie before it counts as outside. A
+		// triangle's pixels stop at its edges, so a pixel is more than the rules need.
+		constexpr float VIEWPORT_CULL_MARGIN_PIXELS = 1.0f;
 
 		// OpenGL clip space and Vulkan clip space differ in two ways: Y points the other
 		// way, and depth runs 0..1 rather than -1..1. Column-major, like everything the
@@ -961,11 +977,69 @@ namespace scvk
 		double const megabyte = 1024.0 * 1024.0;
 		LogDebug("Vulkan: vertices since the last heartbeat %u copies (%.1f MB), largest frame %.1f MB; %zu vertex blocks, %u waits for the GPU, %u partial submits; %zu pipelines.", vertexUploads, static_cast<double>(vertexUploadBytes) / megabyte, static_cast<double>(largestFrameVertexBytes) / megabyte, vertexArena.blocks.size(), arenaWaits, partialSubmits, pipelines.size());
 
+		if (viewportCullTests > 0)
+		{
+			LogDebug("Vulkan: viewport cull since the last heartbeat dropped %u of %u draws.", viewportCullDrops, viewportCullTests);
+		}
+
+		viewportCullTests       = 0;
+		viewportCullDrops       = 0;
 		vertexUploads           = 0;
 		vertexUploadBytes       = 0;
 		largestFrameVertexBytes = 0;
 		arenaWaits              = 0;
 		partialSubmits          = 0;
+	}
+
+	void VulkanBackend::UpdateViewportCull(void)
+	{
+		int64_t const viewportArea = int64_t{ viewportWidth } * viewportHeight;
+		int64_t const windowArea   = int64_t{ RenderWidth() } * RenderHeight();
+
+		isViewportCullActive = GetSettings().isViewportCullEnabled && viewportWidth > 0 && viewportHeight > 0 && viewportArea * 10 < windowArea * VIEWPORT_CULL_MAXIMUM_TENTHS;
+
+		if (!isViewportCullActive)
+		{
+			return;
+		}
+
+		// Work out where the margin puts the edges
+		//
+		// The viewport spans -1 to 1 in clip space, and the scissor is always the viewport,
+		// so nothing past that span can reach a pixel. The sizes are pixel counts, which
+		// convert to float exactly. The edges are the same on both sides, so the clip
+		// correction's flip of y makes no difference to them.
+		viewportCullLimitX = 1.0f + 2.0f * VIEWPORT_CULL_MARGIN_PIXELS / static_cast<float>(viewportWidth);
+		viewportCullLimitY = 1.0f + 2.0f * VIEWPORT_CULL_MARGIN_PIXELS / static_cast<float>(viewportHeight);
+	}
+
+	bool VulkanBackend::IsDrawOutsideViewport(uint32_t gdPrimitiveType, uint8_t const* vertices, uint32_t vertexCount, uint32_t stride)
+	{
+		if (!isViewportCullActive || gdPrimitiveType == GD_PRIMITIVE_POINTS || gdPrimitiveType == GD_PRIMITIVE_LINES || gdPrimitiveType == GD_PRIMITIVE_LINE_STRIP)
+		{
+			return false;
+		}
+
+		// Leave a range too large for the arena to the arena
+		//
+		// The indices are client memory, so a stray one can name a range far past the
+		// game's array. The arena refuses such a draw before anything reads it, and this
+		// must not read it first.
+		if (VkDeviceSize{ vertexCount } * stride > vertexArena.blockSize)
+		{
+			return false;
+		}
+
+		viewportCullTests++;
+
+		bool const isOutside = AreVerticesBeyondClipEdge(transform, viewportCullLimitX, viewportCullLimitY, vertices, stride, vertexCount);
+
+		if (isOutside)
+		{
+			viewportCullDrops++;
+		}
+
+		return isOutside;
 	}
 
 	bool VulkanBackend::IsTwoStageDraw(uint32_t textureCoordinateSets) const
@@ -1346,12 +1420,16 @@ namespace scvk
 		viewportY      = y;
 		viewportWidth  = width;
 		viewportHeight = height;
+
+		UpdateViewportCull();
 	}
 
 	void VulkanBackend::SetFullViewport(void)
 	{
 		viewportWidth  = -1;
 		viewportHeight = -1;
+
+		UpdateViewportCull();
 	}
 
 	void VulkanBackend::SetBlendState(bool isEnabled, uint32_t sourceFactor, uint32_t destinationFactor)
@@ -1543,6 +1621,15 @@ namespace scvk
 			return;
 		}
 
+		// Drop it if the viewport cannot show it
+		//
+		// The game's vertices are untyped bytes. Anything else a draw has to do, such as
+		// the live shadows' capture, happened in the driver before this.
+		if (IsDrawOutsideViewport(gdPrimitiveType, static_cast<uint8_t const*>(vertices) + size_t{ firstVertex } * layout.stride, vertexCount, layout.stride))
+		{
+			return;
+		}
+
 		if (!ReserveDrawSpace(VkDeviceSize{ vertexCount } * layout.stride, 0, layout.stride))
 		{
 			return;
@@ -1640,6 +1727,15 @@ namespace scvk
 		uint32_t const emitted     = isQuadList ? (indexCount / 4u) * 6u : indexCount;
 
 		if (emitted == 0)
+		{
+			return;
+		}
+
+		// Drop it if the viewport cannot show it
+		//
+		// This tests the whole range, referenced or not, which can keep a draw but never
+		// drops one that shows. The game's vertices are untyped bytes.
+		if (IsDrawOutsideViewport(gdPrimitiveType, static_cast<uint8_t const*>(vertices) + size_t{ lowest } * layout.stride, vertexCount, layout.stride))
 		{
 			return;
 		}

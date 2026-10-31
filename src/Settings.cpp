@@ -143,6 +143,11 @@ namespace scvk
 			settings.gpuNumber = ReadGpuNumber();
 			settings.isDoctorDialogEnabled = ReadDoctorDialogChoice();
 
+			if (HasCommandLineSwitch("-ViewportCull:off"))
+			{
+				settings.isViewportCullEnabled = false;
+			}
+
 			if (HasCommandLineSwitch("-ReShade:off"))
 			{
 				settings.isReShadeIntegrationEnabled = false;

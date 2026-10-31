@@ -148,6 +148,7 @@ the other.
 | `-GPU:<n>` | Uses the nth graphics card in `scvk.log`'s list, counted from 1 |
 | `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
 | `-ReShade:off` | Leaves ReShade drawing over the interface |
+| `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
 | `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |
 | `-LiveShadows:on` or `-LiveShadows:off` | The same as `-NativeShadowMasks:replace` or `off` |
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |

@@ -61,6 +61,10 @@ namespace scvk
 		// problems in scvk.log, without the dialog when the region view opens.
 		bool isDoctorDialogEnabled = true;
 
+		// -ViewportCull:off. Sends every draw of a scroll's redraw to the card, instead of
+		// dropping those that lie wholly outside the strip being redrawn.
+		bool isViewportCullEnabled = true;
+
 		// -ReShade:off. Registers scvk as a ReShade add-on so effects render
 		// under the interface, with the city's depth supplied.
 		bool isReShadeIntegrationEnabled = true;

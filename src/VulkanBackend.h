@@ -731,6 +731,15 @@ namespace scvk
 		int     viewportLogsRemaining = 12;
 		int32_t loggedViewport[4]     = { -1, -1, -1, -1 };
 
+		// The viewport cull: whether a small viewport is set that draws are tested against,
+		// where its edges lie in clip space, and what it did since the last heartbeat. See
+		// ViewportCull.cpp.
+		bool     isViewportCullActive = false;
+		float    viewportCullLimitX   = 1.0f;
+		float    viewportCullLimitY   = 1.0f;
+		uint32_t viewportCullTests    = 0;
+		uint32_t viewportCullDrops    = 0;
+
 		// Sent to the shader alongside the transform: alpha comparison, reference, the
 		// texture environment mode, and which of the shader's paths the draw takes.
 		float fragmentState[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
@@ -1130,6 +1139,12 @@ namespace scvk
 
 		/** Whether the draw runs the combiner network, on both stages or on the first alone. */
 		bool IsCombinerDraw(uint32_t textureCoordinateSets) const;
+
+		/** Whether draws are tested against the viewport now, and against which edges. */
+		void UpdateViewportCull(void);
+
+		/** Whether a draw of these vertices cannot reach a pixel of the viewport. */
+		bool IsDrawOutsideViewport(uint32_t gdPrimitiveType, uint8_t const* vertices, uint32_t vertexCount, uint32_t stride);
 
 		/** The heartbeat's line on vertex traffic since the last one. */
 		void LogVertexTraffic(void);

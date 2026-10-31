@@ -9,7 +9,9 @@
 #      capture against the colour it was drawn with, through every draw path;
 #   3. draws a quad through the texture environment's blend mode and checks its colour
 #      and alpha;
-#   4. draws in exclusive fullscreen, presses PrintScreen as a real key, and checks the
+#   4. draws through a small viewport, as a scroll does, checks every pixel, and checks
+#      the viewport cull dropped draws without changing the picture;
+#   5. draws in exclusive fullscreen, presses PrintScreen as a real key, and checks the
 #      frame scvk put on the clipboard.
 #
 # Needs: wine with 32-bit support, Xvfb, xdotool, mesa-vulkan-drivers:i386 and
@@ -57,6 +59,15 @@ wine harness.exe 2001 -LogLevel:debug || status=1
 echo "== texture environment blend"
 rm -f scvk.log scvk-*.bmp
 wine harness.exe 2001 -texenvblend -LogLevel:debug || status=1
+
+echo "== a small viewport, with the viewport cull on and off"
+rm -f scvk.log scvk-*.bmp
+wine harness.exe 2001 -viewportstrip -LogLevel:debug || status=1
+grep -q "viewport cull since the last heartbeat dropped [1-9]" scvk.log || { echo "FAIL: the cull dropped nothing"; status=1; }
+mv scvk-frame-2000.bmp culled.bmp
+rm -f scvk.log scvk-*.bmp
+wine harness.exe 2001 -viewportstrip -ViewportCull:off -LogLevel:debug || status=1
+cmp culled.bmp scvk-frame-2000.bmp || { echo "FAIL: the cull changed the picture"; status=1; }
 
 echo "== exclusive fullscreen, PrintScreen to the clipboard"
 rm -f scvk.log

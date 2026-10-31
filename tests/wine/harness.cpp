@@ -1,12 +1,16 @@
 // Loads scvk.dll the way SimCity 4 does and drives it through the driver interface, to
 // check it under Wine on Linux (or on Windows) without the game.
 //
-//   harness.exe [frames] [-fullscreen] [-LogLevel:debug]
+//   harness.exe [frames] [-fullscreen] [-viewportstrip] [-LogLevel:debug]
 //
 // Draws a grid of grey squares through every draw path (plain and indexed, triangles and
 // quads, 16 and 32-bit indices, vertex ranges that do not start at zero), presents the
 // frames, and with -LogLevel:debug reads back scvk's frame capture to check every square
 // landed where it should with the colour it was given. Exits non-zero on any failure.
+//
+// With -viewportstrip the whole grid is still sent, but through a small viewport with a
+// projection matched to it, the way the game redraws what a scroll uncovers. Every pixel
+// of the capture is checked, so the viewport cull cannot drop a draw that shows.
 
 #include <windows.h>
 
@@ -34,6 +38,13 @@ namespace
 	constexpr int ROWS    = 24;
 	constexpr int CELL    = 20;
 	constexpr int SQUARE  = 16;
+
+	// The rectangle -viewportstrip draws through. Its edges cut squares in half on every
+	// side, and it sits off centre, so a test with a side the wrong way round loses them.
+	constexpr int STRIP_X      = 3 * CELL + CELL / 2;
+	constexpr int STRIP_Y      = 2 * CELL + CELL / 2;
+	constexpr int STRIP_WIDTH  = 5 * CELL;
+	constexpr int STRIP_HEIGHT = 4 * CELL;
 
 	struct Vertex
 	{
@@ -96,6 +107,7 @@ int main(int argc, char** argv)
 	bool shouldCheckClip = false;
 	bool isCrashTested    = false;
 	bool isTexEnvBlendTested = false;
+	bool isViewportStripTested = false;
 
 	for (int i = 1; i < argc; i++)
 	{
@@ -103,6 +115,7 @@ int main(int argc, char** argv)
 		else if (std::strcmp(argv[i], "-checkclipboard") == 0) shouldCheckClip = true;
 		else if (std::strcmp(argv[i], "-crash") == 0) isCrashTested = true;
 		else if (std::strcmp(argv[i], "-texenvblend") == 0) isTexEnvBlendTested = true;
+		else if (std::strcmp(argv[i], "-viewportstrip") == 0) isViewportStripTested = true;
 		else if (argv[i][0] != '-') frames = std::atoi(argv[i]);
 	}
 
@@ -225,6 +238,14 @@ int main(int argc, char** argv)
 		-1, -1, 0, 1,
 	};
 
+	// The same space seen through the strip: the strip's rectangle fills clip space
+	float const stripProjection[16] = {
+		2.0f / float(STRIP_WIDTH), 0, 0, 0,
+		0, 2.0f / float(STRIP_HEIGHT), 0, 0,
+		0, 0, -1, 0,
+		-1.0f - 2.0f * float(STRIP_X) / float(STRIP_WIDTH), -1.0f - 2.0f * float(STRIP_Y) / float(STRIP_HEIGHT), 0, 1,
+	};
+
 	uint32_t const format = driver->MakeVertexFormat(kGDVertexFormat_V3F_C4UB);
 
 	// The texture environment's blend mode: one texel of known colour and alpha, over a
@@ -310,6 +331,15 @@ int main(int argc, char** argv)
 			driver->TexEnv(0, kGDTextureEnvParamType_Mode, kGDTextureEnvParam_Modulate);
 			driver->Flush();
 			continue;
+		}
+
+		// Redraw through the strip, once the window is clear
+		if (isViewportStripTested)
+		{
+			driver->SetViewport(STRIP_X, STRIP_Y, STRIP_WIDTH, STRIP_HEIGHT);
+			driver->MatrixMode(1);
+			driver->LoadMatrix(stripProjection);
+			driver->MatrixMode(0);
 		}
 
 		for (int cell = 0; cell < COLUMNS * ROWS; cell++)
@@ -402,6 +432,42 @@ int main(int argc, char** argv)
 			if (std::abs(pixel[2] - 128) > 3 || std::abs(pixel[1] - 64) > 3 || std::abs(pixel[0] - 128) > 3)
 			{
 				Fail("the texture environment's blend mode");
+			}
+		}
+		else if (isViewportStripTested)
+		{
+			int wrong = 0;
+
+			for (int yUp = 0; yUp < captureHeight; yUp++)
+			{
+				for (int x = 0; x < captureWidth; x++)
+				{
+					// Grey on the squares inside the strip, and black everywhere else
+					int const  gap        = (CELL - SQUARE) / 2;
+					bool const isInStrip  = x >= STRIP_X && x < STRIP_X + STRIP_WIDTH && yUp >= STRIP_Y && yUp < STRIP_Y + STRIP_HEIGHT;
+					bool const isInSquare = x % CELL >= gap && x % CELL < gap + SQUARE && yUp % CELL >= gap && yUp % CELL < gap + SQUARE;
+					int const  expected   = (isInStrip && isInSquare) ? GreyOf(x / CELL, yUp / CELL) : 0;
+
+					// The capture is BGRA
+					int const y = isTopDown ? (captureHeight - 1 - yUp) : yUp;
+					uint8_t const* const pixel = &pixels[(size_t(y) * captureWidth + x) * 4];
+
+					if (std::abs(pixel[2] - expected) > 2 || std::abs(pixel[1] - expected) > 2 || std::abs(pixel[0] - expected) > 2)
+					{
+						if (wrong < 5)
+						{
+							std::printf("  pixel %d,%d: rgb %u,%u,%u want %d\n", x, yUp, pixel[2], pixel[1], pixel[0], expected);
+						}
+
+						wrong++;
+					}
+				}
+			}
+
+			std::printf("capture %dx%d through the strip: %d pixels wrong\n", captureWidth, captureHeight, wrong);
+			if (wrong != 0)
+			{
+				Fail("pixels in the capture");
 			}
 		}
 		else

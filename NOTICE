@@ -126,14 +126,15 @@ than vendored verbatim. They are noted here and in their own file headers.
   src/cVKDriver_LiveShadows.cpp, src/cVKDriver_ReShade.cpp,
   src/NativeShadow*.cpp, src/NativeShadow*.h, src/TerrainShadow*.cpp,
   src/TerrainShadow*.h, src/ThumbnailFocusGuard.cpp, src/ThumbnailFocusGuard.h,
-  src/TextureUploadUtils.cpp, src/TextureUploadUtils.h, src/Watchdog.cpp,
-  shaders/composite.frag, shaders/shadow.vert, shaders/shadow.frag,
-  shaders/scene_depth.frag
+  src/TextureUploadUtils.cpp, src/TextureUploadUtils.h, src/ViewportCull.cpp,
+  src/Watchdog.cpp, shaders/composite.frag, shaders/shadow.vert,
+  shaders/shadow.frag, shaders/scene_depth.frag
 
       Carried over from SCD3D11, the Direct3D 11 renderer: the game-side shadow
       modules nearly as they are, the live shadows, the ReShade integration, the
       render watchdog and the thumbnail focus guard rewritten for Vulkan, and
-      their shaders translated from HLSL to GLSL.
+      their shaders translated from HLSL to GLSL. The viewport cull follows its
+      idea, written again for scvk's backend.
 
           SCD3D11
           https://github.com/caspervg/scd3d11
