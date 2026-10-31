@@ -169,6 +169,7 @@
     <ClCompile Include="src\PrintScreen.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\Settings.cpp" />
+    <ClCompile Include="src\SetupChecks.cpp" />
     <ClCompile Include="src\VideoMode.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
     <ClCompile Include="src\VulkanBackend.cpp" />
@@ -272,6 +273,7 @@
     <ClInclude Include="src\TextureUploadUtils.h" />
     <ClInclude Include="src\ThumbnailFocusGuard.h" />
     <ClInclude Include="src\version.h" />
+    <ClInclude Include="src\SetupChecks.h" />
     <ClInclude Include="src\VideoMode.h" />
     <ClInclude Include="src\VulkanApi.h" />
     <ClInclude Include="src\VulkanBackend.h" />

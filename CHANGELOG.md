@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scvk.log` warns when two copies of scvk are loaded, and when SC4RenderServices is older than 0.8.3
+
 ## [0.4.0] - 2026-10-31
 
 ### Added

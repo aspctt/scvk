@@ -381,7 +381,8 @@ ColorDepth=32
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
 directory if the Plugins folder is not writable. `-LogLevel:<level>` sets how much
-goes into it, from `trace` to `off`, and is `info` by default.
+goes into it, from `trace` to `off`, and is `info` by default. It warns when two copies
+of scvk are loaded, and when SC4RenderServices is older than 0.8.3.
 
 `scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
 `MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the
