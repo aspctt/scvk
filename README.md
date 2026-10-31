@@ -17,7 +17,9 @@ Khronos Group Inc.
 
 ## Status
 
-**Early, but playable.** The region view, cities and menus all draw.
+**Stable.** The whole game draws, from the region view to cities, menus and loading
+screens. It has been played on NVIDIA and AMD graphics cards, on Windows and on Linux,
+and Intel graphics are untested.
 
 | Area | Status |
 |---|---|
@@ -352,11 +354,16 @@ by hand from the `[Benchmark]` section of `scvk.ini`.
 scvk needs Windows 10 or 11 or Linux through Wine or Proton, a graphics card with
 Vulkan support and game version 641.
 
-Download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
+With [sc4pac](https://memo33.github.io/sc4pac/), install `aspct:scvk`. It uses the
+`Plugins` folder in `Documents\SimCity 4` by default, so remove any copy from the
+game's own `Plugins` folder first.
+
+By hand, download the zip from the [releases page](https://github.com/aspctt/scvk/releases)
 and copy `scvk.dll` into a `Plugins` folder, either the one in your SimCity 4
-installation or the one in `Documents\SimCity 4`, but not both. That is all: the game
-picks scvk by default. On a machine without Vulkan, the game keeps its own DirectX
-renderer.
+installation or the one in `Documents\SimCity 4`, but not both.
+
+That is all: the game picks scvk by default. On a machine without Vulkan, the game
+keeps its own DirectX renderer.
 
 With [sc4-graphics-options](https://github.com/0xC0000054/sc4-graphics-options),
 both `Driver=DirectX` and `Driver=OpenGL` select scvk. With scd3d11 installed as
@@ -396,7 +403,8 @@ of scvk are loaded, and when SC4RenderServices is older than 0.8.3.
 
 `scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
 `MaxFPS`, `Use32BitDepth`, `LogLevel` and the benchmark, and the
-[`scvk.ini`](scvk.ini) in the zip explains each. A `scvk.ini` from 0.2 keeps working.
+[`scvk.ini`](scvk.ini) in the zip explains each. sc4pac installs that file as
+`scvk_sc4pacnew.ini`, so rename it to use it. A `scvk.ini` from 0.2 keeps working.
 
 To turn scvk off without removing it, put a `scvk.ini` next to the DLL with
 `Enabled=false` under `[Admin]`. The game itself reads that setting, so scvk is never
