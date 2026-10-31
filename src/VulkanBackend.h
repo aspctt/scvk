@@ -824,6 +824,7 @@ namespace scvk
 		VkCommandPool               utilityCommandPool  = VK_NULL_HANDLE;
 		VkCommandBuffer             uploadCommandBuffer = VK_NULL_HANDLE;
 		VkFence                     uploadFence         = VK_NULL_HANDLE;
+		bool                        isUploadPending     = false;
 
 		// Texture uploads, recorded into one batch and staged in an arena, then submitted
 		// ahead of the frame that draws with them. Waiting for each upload on its own cost
@@ -985,7 +986,10 @@ namespace scvk
 		/** Ends and submits the command buffer being recorded, optionally signalling the frame's fence. */
 		bool SubmitCommandBuffer(VkSemaphore waitSemaphore, VkPipelineStageFlags waitStages, VkSemaphore signalSemaphore, bool shouldSignalFence);
 
-		/** Submits what the frame has recorded so far, waits for it, and carries on recording the same frame. */
+		/**
+		 * Submits what the frame has recorded so far, waits for it, and carries on recording
+		 * the same frame. False stops recording; after a timeout the next draw starts a new frame.
+		 */
 		bool SubmitFrameSoFar(void);
 
 		/** Waits for the GPU to finish a frame, if it has not already. */
@@ -994,8 +998,8 @@ namespace scvk
 		/** vkQueueSubmit of one batch, timed as a submit. */
 		VkResult SubmitToQueue(VkSubmitInfo const& submit, VkFence fence);
 
-		/** vkWaitForFences on one fence, timed as waiting for the GPU. */
-		VkResult WaitForFence(VkFence fence, uint64_t timeoutNanoseconds);
+		/** vkWaitForFences on one fence with the two second bound, timed as waiting for the GPU. */
+		VkResult WaitForFence(VkFence fence);
 
 		/** Charges the time since the last switch to the active phase and makes another active. Returns the one it replaced. */
 		FramePhase EnterPhase(FramePhase phase);
@@ -1205,11 +1209,11 @@ namespace scvk
 		/** Writes an uploaded interface texture to a file, a handful of times per session. */
 		void DumpUploadedTexture(Texture const& texture, uint32_t handle, uint32_t width, uint32_t height, uint32_t gdFormat, uint32_t gdType, uint32_t rowLength, void const* pixels);
 
-		/** Starts recording into the upload command buffer. */
-		void BeginUploadCommands(void);
+		/** Starts recording into the upload command buffer, or false while a timed out read still holds it. */
+		bool BeginUploadCommands(void);
 
-		/** Submits the upload command buffer and waits for it. */
-		void SubmitUploadCommands(void);
+		/** Submits the upload command buffer and waits for it, or false when that failed or timed out. */
+		bool SubmitUploadCommands(void);
 
 		/** Opens a texture batch to record into, unless one is open already. */
 		bool BeginTextureBatch(void);
@@ -1220,8 +1224,8 @@ namespace scvk
 		/** Submits the open texture batch and waits for it, freeing its staging. */
 		void FinishTextureBatch(void);
 
-		/** Waits for the submitted texture batch, if there is one, and frees its staging. */
-		void WaitForTextureBatch(void);
+		/** Waits for the submitted texture batch, if there is one, and frees its staging. False when it timed out. */
+		bool WaitForTextureBatch(void);
 
 		/** Finds staging for an upload in the batch, finishing the batch first when the arena is full. */
 		bool AllocateTextureStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress);

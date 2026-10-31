@@ -328,6 +328,7 @@ namespace scvk
 			return false;
 		}
 
+		isUploadPending        = false;
 		isTextureBatchOpen     = false;
 		isTextureBatchInFlight = false;
 
@@ -1233,16 +1234,35 @@ namespace scvk
 		textureMemoryTicks = 0;
 	}
 
-	void VulkanBackend::BeginUploadCommands(void)
+	bool VulkanBackend::BeginUploadCommands(void)
 	{
+		// A read that timed out still owns the command buffer until its fence signals
+		if (isUploadPending)
+		{
+			VkResult const result = WaitForFence(uploadFence);
+			if (result == VK_TIMEOUT)
+			{
+				return false;
+			}
+
+			if (result != VK_SUCCESS)
+			{
+				Fail("vkWaitForFences (upload)", result);
+				return false;
+			}
+
+			isUploadPending = false;
+		}
+
 		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 		vkResetCommandBuffer(uploadCommandBuffer, 0);
 		vkBeginCommandBuffer(uploadCommandBuffer, &beginInformation);
+		return true;
 	}
 
-	void VulkanBackend::SubmitUploadCommands(void)
+	bool VulkanBackend::SubmitUploadCommands(void)
 	{
 		vkEndCommandBuffer(uploadCommandBuffer);
 
@@ -1259,16 +1279,27 @@ namespace scvk
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkQueueSubmit (upload)", result);
-			return;
+			return false;
 		}
 
 		// Waited on rather than pipelined. Only reading the last frame back uses this,
-		// and it needs the pixels at once.
-		result = WaitForFence(uploadFence, UINT64_MAX);
+		// and it needs the pixels at once. A GPU that stalls here costs the game this
+		// read, a photo or a save's thumbnail, rather than hanging the save.
+		result = WaitForFence(uploadFence);
+		if (result == VK_TIMEOUT)
+		{
+			LogWarn("Vulkan: timed out reading the frame back; skipping the read.");
+			isUploadPending = true;
+			return false;
+		}
+
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkWaitForFences (upload)", result);
+			return false;
 		}
+
+		return true;
 	}
 
 	bool VulkanBackend::BeginTextureBatch(void)
@@ -1284,7 +1315,10 @@ namespace scvk
 		}
 
 		// Let the previous batch finish, so its command buffer and staging can be reused
-		WaitForTextureBatch();
+		if (!WaitForTextureBatch())
+		{
+			return false;
+		}
 
 		VkCommandBufferBeginInfo beginInformation{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 		beginInformation.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1341,12 +1375,21 @@ namespace scvk
 		WaitForTextureBatch();
 	}
 
-	void VulkanBackend::WaitForTextureBatch(void)
+	bool VulkanBackend::WaitForTextureBatch(void)
 	{
 		if (isTextureBatchInFlight)
 		{
+			VkResult const result = WaitForFence(textureBatchFence);
+
+			// Still running, so its command buffer and staging stay as they are, and whatever
+			// wanted them goes without until a later call finds the batch done
+			if (result == VK_TIMEOUT)
+			{
+				LogWarn("Vulkan: timed out waiting for a texture batch; skipping the upload that needed it.");
+				return false;
+			}
+
 			// A lost device never signals; whatever the batch staged is let go regardless
-			VkResult const result = WaitForFence(textureBatchFence, UINT64_MAX);
 			if (result != VK_SUCCESS)
 			{
 				NoteDeviceLoss(result);
@@ -1358,7 +1401,7 @@ namespace scvk
 		// An open batch still reads its staging
 		if (isTextureBatchOpen)
 		{
-			return;
+			return true;
 		}
 
 		// Free the staging for the next batch
@@ -1372,6 +1415,7 @@ namespace scvk
 		}
 
 		oversizedUploadBuffers.clear();
+		return true;
 	}
 
 	bool VulkanBackend::AllocateTextureStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress)

@@ -1840,7 +1840,7 @@ namespace scvk
 
 		FrameSlot& slot = *found;
 
-		VkResult const result = WaitForFence(slot.fence, WAIT_TIMEOUT_NANOSECONDS);
+		VkResult const result = WaitForFence(slot.fence);
 		if (result == VK_TIMEOUT)
 		{
 			LogWarn("Vulkan: timed out waiting for frame %llu; skipping work that needed it.", serial);
@@ -2057,7 +2057,22 @@ namespace scvk
 		partialSubmits++;
 
 		FrameSlot& slot = frameSlots[currentSlot];
-		VkResult const result = WaitForFence(slot.fence, UINT64_MAX);
+		VkResult const result = WaitForFence(slot.fence);
+		if (result == VK_TIMEOUT)
+		{
+			// Leave this frame behind and move on to the next slot
+			//
+			// The arenas cannot be rewound while the GPU reads them, so this frame goes
+			// unshown and what follows starts a new one. Its fence stays pending under its
+			// serial, for whichever frame reuses the slot to wait for. Carrying on in the
+			// same slot would count the serial as finished before the rest had even run.
+			LogWarn("Vulkan: timed out waiting for part of frame %llu; moving on to the next one.", frameSerial);
+			isFrameActive = false;
+			currentSlot   = (currentSlot + 1) % FRAMES_IN_FLIGHT;
+			frameSerial++;
+			return false;
+		}
+
 		if (result != VK_SUCCESS)
 		{
 			Fail("vkWaitForFences", result);
@@ -2091,10 +2106,10 @@ namespace scvk
 		return vkQueueSubmit(queue, 1, &submit, fence);
 	}
 
-	VkResult VulkanBackend::WaitForFence(VkFence fence, uint64_t timeoutNanoseconds)
+	VkResult VulkanBackend::WaitForFence(VkFence fence)
 	{
 		PhaseScope const waiting(*this, FRAME_PHASE_GPU_WAITS);
-		return vkWaitForFences(device, 1, &fence, VK_TRUE, timeoutNanoseconds);
+		return vkWaitForFences(device, 1, &fence, VK_TRUE, WAIT_TIMEOUT_NANOSECONDS);
 	}
 
 	VulkanBackend::FramePhase VulkanBackend::EnterPhase(FramePhase phase)
@@ -2503,6 +2518,12 @@ namespace scvk
 		{
 			return true;
 		}
+
+		// Make room for a whole frame from the start
+		//
+		// A read that timed out can still be writing into this buffer. Sized for the
+		// largest read there is, it never has to be replaced under such a copy.
+		size = std::max(size, VkDeviceSize{ renderWidth } * renderHeight * 4u);
 
 		DestroyReadbackBuffer();
 
@@ -3362,13 +3383,21 @@ namespace scvk
 			// It still holds the frame last presented, which is what the game expects for
 			// a photo. The barrier reaches back across the frames already submitted, so
 			// the read waits for the one that drew it.
-			BeginUploadCommands();
+			if (!BeginUploadCommands())
+			{
+				return false;
+			}
+
 			commandBuffer = uploadCommandBuffer;
 			TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 			vkCmdCopyImageToBuffer(uploadCommandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
 			vkCmdPipelineBarrier(uploadCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 			commandBuffer = VK_NULL_HANDLE;
-			SubmitUploadCommands();
+
+			if (!SubmitUploadCommands())
+			{
+				return false;
+			}
 		}
 		else
 		{
