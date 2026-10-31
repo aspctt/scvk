@@ -125,7 +125,8 @@ turn makes the game redraw the whole city instead of the strip that came into vi
 or both. `-NativeShadowMasks:replace` adds the shadow registry, which takes over the
 game's own shadows of buildings, trees and poles, and replaces the terrain's own
 shading as well. It is experimental, and in a city of dense parks and raised roads it
-laid blocks of shadow across the roads.
+laid blocks of shadow across the roads. `-LiveShadows:on` is the same as `replace`,
+under the name scd3d11 uses now.
 
 ### ReShade
 
@@ -147,6 +148,7 @@ the other.
 | `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
 | `-ReShade:off` | Leaves ReShade drawing over the interface |
 | `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |
+| `-LiveShadows:on` or `-LiveShadows:off` | The same as `-NativeShadowMasks:replace` or `off` |
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |

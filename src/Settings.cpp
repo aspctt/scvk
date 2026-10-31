@@ -89,7 +89,18 @@ namespace scvk
 				settings.isReShadeIntegrationEnabled = false;
 			}
 
-			// The shadow modules, off unless a switch names a mode
+			// The shadow modules, off unless a switch names a mode. SCD3D11 folded its modes
+			// into -LiveShadows, on alone or with :on, which is what Replace does here. A
+			// mode named as well wins, being the more exact of the two.
+			if (HasCommandLineSwitch("-LiveShadows") || HasCommandLineSwitch("-LiveShadows:on"))
+			{
+				settings.nativeShadowMode = NativeShadowMode::Replace;
+			}
+			else if (HasCommandLineSwitch("-LiveShadows:off"))
+			{
+				settings.nativeShadowMode = NativeShadowMode::Off;
+			}
+
 			if (HasCommandLineSwitch("-NativeShadowMasks:off"))
 			{
 				settings.nativeShadowMode = NativeShadowMode::Off;

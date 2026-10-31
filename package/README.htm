@@ -63,8 +63,7 @@ scvk is drawing, but it reports the OpenGL ID from either slot.
 below.</p>
 
 <h2 id="settings">Settings</h2>
-<p>scvk needs no settings. Launch options change a few things for one launch, and
-scd3d11's options work the same way:</p>
+<p>scvk needs no settings. Launch options change a few things for one launch:</p>
 <ul>
 <li>scvk starts the game borderless, covering the main monitor. <code>-w</code>
 gives a window and <code>-f</code> exclusive fullscreen, at the size in the game's
@@ -74,7 +73,8 @@ installed, its <code>WindowMode</code> decides instead.</li>
 network pieces. They are off by default, since while they are on every scroll,
 zoom and turn makes the game redraw the whole city.
 <code>-NativeShadowMasks:replace</code> adds the experimental shadow registry and
-terrain shadows.</li>
+terrain shadows, and <code>-LiveShadows:on</code>, scd3d11's name for it, does the
+same.</li>
 <li><code>-MaxFPS:&lt;n&gt;</code> sets the game's frame rate caps, which are 30 at
 Turtle speed, 20 at Rhino and 15 at Cheetah. scvk raises them to the display's
 refresh rate by default, and <code>-MaxFPS:off</code> keeps the game's. A paused

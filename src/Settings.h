@@ -69,7 +69,8 @@ namespace scvk
 		// live in the shadow map, the rest of the shadows left to SC4. Replace adds the
 		// registry, which takes over the shadow records SC4 draws as flat decals, and the
 		// terrain's own shadows; it is experimental, and in a city of dense parks and
-		// raised roads it laid blocks of shadow across the roads.
+		// raised roads it laid blocks of shadow across the roads. -LiveShadows:on is
+		// Replace, under the name SCD3D11 now gives its one switch.
 		NativeShadowMode nativeShadowMode = NativeShadowMode::Off;
 	};
 
