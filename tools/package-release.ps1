@@ -22,6 +22,10 @@ $stagingDirectory = Join-Path $repositoryRoot "obj\package"
 $versionHeader    = Join-Path $repositoryRoot "src\version.h"
 $metadataTemplate = Join-Path $repositoryRoot "package\metadata.yaml"
 
+# vswhere ships with every Visual Studio installer and finds its tools wherever the edition
+# put them.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+
 # Each file in the zip, by its name there, and where it comes from.
 $packageFiles = [ordered]@{
 	"LICENSE.txt"             = Join-Path $repositoryRoot "LICENSE"
@@ -41,12 +45,8 @@ $version = $versionMatch.Matches[0].Groups[1].Value
 $zipPath = Join-Path $releaseDirectory "scvk-$version.zip"
 
 # Build Release
-#
-# vswhere ships with every Visual Studio installer and finds MSBuild wherever the edition
-# put it.
 if (-not $NoBuild) {
-	$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-	$msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+	$msbuild =& $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
 	if (-not $msbuild) { throw "MSBuild not found" }
 
 	& $msbuild (Join-Path $repositoryRoot "scvk.sln") -p:Configuration=Release -p:Platform=Win32 -v:minimal -nologo
@@ -63,6 +63,22 @@ foreach ($name in $packageFiles.Keys) {
 
 	Copy-Item $source (Join-Path $stagingDirectory $name)
 }
+
+# Check the DLL needs no C++ runtime
+#
+# The runtime is linked in, so players need no Visual C++ Redistributable. A project change
+# that brings back /MD builds and runs fine here, and on a machine without the runtime the
+# game would skip scvk.dll without a word.
+$dumpbin = & $vswhere -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x86\dumpbin.exe" | Select-Object -First 1
+if (-not $dumpbin) { throw "dumpbin not found" }
+
+$imports = & $dumpbin /nologo /dependents (Join-Path $stagingDirectory "scvk.dll") |
+	Select-String -Pattern '^\s+(\S+\.dll)\s*$' |
+	ForEach-Object { $_.Matches[0].Groups[1].Value }
+if (-not $imports) { throw "dumpbin listed no imports for scvk.dll" }
+
+$runtimeImports = @($imports | Where-Object { $_ -match '^(msvcp|vcruntime|concrt|ucrtbase|api-ms-win-crt-)' })
+if ($runtimeImports) { throw "scvk.dll imports the C++ runtime: $($runtimeImports -join ', ')" }
 
 # Fill in the sc4pac metadata
 #
