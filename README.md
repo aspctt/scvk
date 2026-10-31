@@ -77,8 +77,9 @@ SC4RenderServices does, from 0.8.3 on, to draw terrain decals back over shadows 
 per pixel. Not every card pairs 16-bit depth with a stencil, and on those scvk takes a
 24-bit or 32-bit one and rounds every depth to 16 bits itself.
 
-Set `Use32BitDepth=true` in `scvk.ini` for a 32-bit depth buffer, as scvk had up to
-0.2.0. The banding goes away, but those lights can leave thin lines after scrolling.
+`-DepthBuffer:32` or `Use32BitDepth=true` in `scvk.ini` gives a 32-bit depth buffer,
+as scvk had up to 0.2.0. The banding goes away, but those lights can leave thin lines
+after scrolling. `-DepthBuffer:16` keeps the default for a launch whatever the ini says.
 
 ### Window modes
 
@@ -145,6 +146,7 @@ the other.
 | `-ReShade:off` | Leaves ReShade drawing over the interface |
 | `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
+| `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
 | `-FullscreenMode:Borderless` | The same as `-borderless` |
 

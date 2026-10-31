@@ -67,6 +67,10 @@ terrain shadows.</li>
 Turtle speed, 20 at Rhino and 15 at Cheetah. scvk raises them to the display's
 refresh rate by default, and <code>-MaxFPS:off</code> keeps the game's. A paused
 city is never held at 30 whatever this says.</li>
+<li><code>-DepthBuffer:32</code> gives the depth buffer 32 bits instead of the 16 the
+DirectX renderer uses. Surfaces that sit very close together stop banding, but lights
+laid exactly on a model can leave thin lines after scrolling.
+<code>-DepthBuffer:16</code> keeps the default.</li>
 <li><code>-VSync:off</code>, <code>-GPU:default</code>, <code>-FlipModel:off</code>
 and <code>-ReShade:off</code> work as they do in scd3d11.</li>
 <li><code>-LogLevel:&lt;level&gt;</code> sets how much goes into
@@ -80,10 +84,8 @@ there. A <code>scvk.ini</code> from 0.2 keeps working, but its
 display's refresh rate.</p>
 <p><code>MaxFPS</code> under <code>[scvk]</code> does what <code>-MaxFPS</code>
 does, where 0 keeps the game's caps.</p>
-<p><code>Use32BitDepth=true</code> under <code>[scvk]</code> gives the depth buffer
-32 bits instead of the 16 the DirectX renderer uses. Surfaces that sit very close
-together stop banding, but lights laid exactly on a model can leave thin lines
-after scrolling.</p>
+<p><code>Use32BitDepth=true</code> under <code>[scvk]</code> does what
+<code>-DepthBuffer:32</code> does.</p>
 <p><code>LogLevel</code> under <code>[scvk]</code> does what
 <code>-LogLevel</code> does.</p>
 <p><code>Enabled=false</code> under <code>[Admin]</code> stops the game loading

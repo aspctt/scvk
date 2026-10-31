@@ -791,7 +791,8 @@ namespace scvk
 		bool shouldShowPassColours = false;
 		int  debugChannel          = -1;
 
-		// Use32BitDepth from scvk.ini, read once for each device. See ChooseDepthFormat.
+		// -DepthBuffer: or Use32BitDepth in scvk.ini, read once for each device. See
+		// ChooseDepthFormat.
 		bool           shouldUse32BitDepth   = false;
 
 		// Descriptor layouts: one set per texture, and one per sampler.

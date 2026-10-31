@@ -123,9 +123,31 @@ namespace scvk
 
 	namespace
 	{
-		/** Whether Use32BitDepth in scvk.ini is true. False when it, or the file, is absent. */
-		bool IsUse32BitDepthSet(void)
+		/**
+		 * Whether the depth buffer is to be 32-bit: what -DepthBuffer: asks for, or else
+		 * Use32BitDepth in scvk.ini. False when neither says.
+		 */
+		bool IsThirtyTwoBitDepthChosen(void)
 		{
+			// The command line first, which takes 16 as well so that one launch can overrule
+			// the ini
+			char choice[16] = {};
+			if (GetCommandLineValue("-DepthBuffer:", choice, sizeof(choice)))
+			{
+				if (strcmp(choice, "32") == 0)
+				{
+					return true;
+				}
+
+				if (strcmp(choice, "16") == 0)
+				{
+					return false;
+				}
+
+				LogWarn("-DepthBuffer:%s is neither 16 nor 32; ignoring it.", choice);
+			}
+
+			// Then scvk.ini
 			char settingsPath[MAX_PATH] = {};
 			if (!LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
 			{
@@ -3098,7 +3120,7 @@ namespace scvk
 		// Once for each device rather than with each swapchain. The pipelines and the
 		// saved depth regions outlive a swapchain rebuild, and both have to keep the depth
 		// format they were made with.
-		shouldUse32BitDepth = IsUse32BitDepthSet();
+		shouldUse32BitDepth = IsThirtyTwoBitDepthChosen();
 
 		// Time the frame's phases only when the log reports them
 		isPhaseTimingEnabled = IsLogged(LOG_LEVEL_DEBUG);

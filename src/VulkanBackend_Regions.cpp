@@ -21,8 +21,8 @@ namespace scvk
 
 	namespace
 	{
-		// Depth formats in order of preference, by default and with Use32BitDepth. The
-		// ones with stencil come first, and every device has D24_UNORM_S8_UINT or
+		// Depth formats in order of preference, by default and for a 32-bit depth buffer.
+		// The ones with stencil come first, and every device has D24_UNORM_S8_UINT or
 		// D32_SFLOAT_S8_UINT, so the formats without are there for a device that breaks
 		// the rule. Every device has D16_UNORM, so both lists end up with a format.
 		constexpr size_t   DEPTH_FORMAT_CANDIDATES = 5;
@@ -69,9 +69,9 @@ namespace scvk
 		// written, which keeps the comparisons a 16-bit buffer makes. The clears are
 		// rounded the same way.
 		//
-		// Use32BitDepth in scvk.ini puts the 32-bit float first instead, as up to 0.2.0,
-		// and nothing is rounded. Surfaces that sit very close together then stop banding,
-		// but the lights above can leave lines again.
+		// -DepthBuffer:32 or Use32BitDepth in scvk.ini puts the 32-bit float first instead,
+		// as up to 0.2.0, and nothing is rounded. Surfaces that sit very close together
+		// then stop banding, but the lights above can leave lines again.
 		VkFormat const* const candidates = shouldUse32BitDepth ? THIRTY_TWO_BIT_DEPTH_FIRST : SIXTEEN_BIT_DEPTH_FIRST;
 
 		depthBuffer.format = VK_FORMAT_UNDEFINED;
@@ -108,7 +108,7 @@ namespace scvk
 
 		if (shouldUse32BitDepth && depthBuffer.format != VK_FORMAT_D32_SFLOAT && depthBuffer.format != VK_FORMAT_D32_SFLOAT_S8_UINT)
 		{
-			LogWarn("Vulkan: Use32BitDepth is set, but the device has no 32-bit depth format; using format %d.", depthBuffer.format);
+			LogWarn("Vulkan: a 32-bit depth buffer was asked for, but the device has no 32-bit depth format; using format %d.", depthBuffer.format);
 		}
 
 		// The video mode still says there is a stencil, since the game reads its modes
