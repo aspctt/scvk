@@ -3,7 +3,11 @@
 #
 #   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -UserDir "S:\SimCity4Data"
 #   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -Runs 3 -SceneSeconds 30
-#   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -GameArguments "-VSync:off"
+#
+# -GameArguments has to be called from inside PowerShell. Through a child pwsh the switch
+# loses its quotes and reads as a parameter name:
+#
+#   & tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -GameArguments "-VSync:off"
 #
 # Every launch goes through Steam and needs its confirmation click; the rest runs by
 # itself. scvk opens the region and the city, pauses it, plays the scenes, writes
