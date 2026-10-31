@@ -117,6 +117,12 @@ namespace scvk
 	void LogError(char const* format, ...);
 	void LogCritical(char const* format, ...);
 
+	/**
+	 * Logs what is free of address space, RAM and commit, at the info level. Which one is
+	 * short tells a game out of its 4 GB from a machine out of memory.
+	 */
+	void LogMemoryStatus(char const* when);
+
 	/** Writes a line at a level from arguments already gathered, for wrappers of these. */
 	void LogMessage(LogLevel level, char const* format, va_list arguments);
 

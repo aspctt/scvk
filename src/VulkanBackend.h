@@ -606,6 +606,7 @@ namespace scvk
 		// device's own limit.
 		uint32_t maximumMemoryAllocations = 0;
 		uint32_t liveMemoryAllocations    = 0;
+		bool     wasMemoryFailureLogged   = false;
 
 		// The memory type the arenas take, and whether it is on the device. A
 		// device-local type the CPU can write, which resizable BAR offers, saves the GPU
@@ -955,7 +956,7 @@ namespace scvk
 
 		bool FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties, uint32_t& outIndex) const;
 
-		/** vkAllocateMemory, counting the allocation against the device's limit. */
+		/** vkAllocateMemory, counting the allocation against the device's limit and logging the first time memory runs out. */
 		VkResult AllocateDeviceMemory(VkMemoryAllocateInfo const& information, VkDeviceMemory& outMemory);
 
 		/** vkFreeMemory for memory from AllocateDeviceMemory, clearing the handle. Does nothing for a null one. */

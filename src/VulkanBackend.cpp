@@ -101,6 +101,10 @@ namespace scvk
 		// arenas.
 		constexpr VkDeviceSize RESIZABLE_BAR_MINIMUM = 1024ull * 1024ull * 1024ull;
 
+		// PCI vendors whose drivers pack their version number their own way.
+		constexpr uint32_t VENDOR_ID_NVIDIA = 0x10DE;
+		constexpr uint32_t VENDOR_ID_INTEL  = 0x8086;
+
 		// Sets each frame's transient descriptor pool holds: the shadow composites, the
 		// depth handed to ReShade and the like, a few a frame.
 		constexpr uint32_t TRANSIENT_SETS_PER_FRAME = 256;
@@ -158,6 +162,50 @@ namespace scvk
 			ReadIniValue(settingsPath, "scvk", "Use32BitDepth", "false", value, sizeof(value));
 
 			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
+		}
+
+		/**
+		 * The driver's version the way its maker writes it. Vulkan leaves this number's
+		 * packing to each vendor: NVIDIA uses 10, 8, 8 and 6 bits, of which the top two are
+		 * the version it publishes, such as 621.01, and Intel on Windows 18 and 14, as
+		 * vulkan.gpuinfo.org reads them. The others use Vulkan's own packing, and so does
+		 * Mesa's Intel driver under Wine, which is why the log keeps the raw number too.
+		 */
+		void FormatDriverVersion(VkPhysicalDeviceProperties const& properties, char* outText, size_t capacity)
+		{
+			uint32_t const version = properties.driverVersion;
+
+			if (properties.vendorID == VENDOR_ID_NVIDIA)
+			{
+				sprintf_s(outText, capacity, "%u.%02u", (version >> 22) & 0x3FF, (version >> 14) & 0xFF);
+			}
+			else if (properties.vendorID == VENDOR_ID_INTEL)
+			{
+				sprintf_s(outText, capacity, "%u.%u", version >> 14, version & 0x3FFF);
+			}
+			else
+			{
+				sprintf_s(outText, capacity, "%u.%u.%u", VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version), VK_VERSION_PATCH(version));
+			}
+		}
+
+		/** The largest heap on the device itself, which is its video memory on a discrete GPU. */
+		VkDeviceSize FindLargestLocalHeap(VkPhysicalDevice device)
+		{
+			VkPhysicalDeviceMemoryProperties memory{};
+			vkGetPhysicalDeviceMemoryProperties(device, &memory);
+
+			VkDeviceSize largest = 0;
+			for (uint32_t i = 0; i < memory.memoryHeapCount; i++)
+			{
+				bool const isLocal = (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+				if (isLocal && memory.memoryHeaps[i].size > largest)
+				{
+					largest = memory.memoryHeaps[i].size;
+				}
+			}
+
+			return largest;
 		}
 
 		bool HasValidationLayer(void)
@@ -510,7 +558,10 @@ namespace scvk
 				score = 1;
 			}
 
-			LogInfo("Vulkan: found device \"%s\" (type %d, vendor 0x%04X, device 0x%04X, API %u.%u.%u, %u memory allocations)", properties.deviceName, properties.deviceType, properties.vendorID, properties.deviceID, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), properties.limits.maxMemoryAllocationCount);
+			char driverVersion[32];
+			FormatDriverVersion(properties, driverVersion, sizeof(driverVersion));
+
+			LogInfo("Vulkan: found device \"%s\" (type %d, vendor 0x%04X, device 0x%04X, driver %s [0x%08X], API %u.%u.%u, %llu MB local, %u memory allocations)", properties.deviceName, properties.deviceType, properties.vendorID, properties.deviceID, driverVersion, properties.driverVersion, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), FindLargestLocalHeap(candidate) / (1024 * 1024), properties.limits.maxMemoryAllocationCount);
 
 			if (!shouldPreferDiscrete && !shouldPreferIntegrated)
 			{
@@ -546,15 +597,7 @@ namespace scvk
 		VkPhysicalDeviceMemoryProperties memory{};
 		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memory);
 
-		VkDeviceSize largestLocalHeap = 0;
-		for (uint32_t i = 0; i < memory.memoryHeapCount; i++)
-		{
-			bool const isLocal = (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
-			if (isLocal && memory.memoryHeaps[i].size > largestLocalHeap)
-			{
-				largestLocalHeap = memory.memoryHeaps[i].size;
-			}
-		}
+		VkDeviceSize const largestLocalHeap = FindLargestLocalHeap(physicalDevice);
 
 		// Choose where the per-frame arenas live
 		//
@@ -1563,6 +1606,14 @@ namespace scvk
 		{
 			outMemory = VK_NULL_HANDLE;
 			NoteDeviceLoss(result);
+
+			// Say which memory ran out, once: a failing allocation tends to repeat every frame
+			bool const isOutOfMemory = result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY;
+			if (isOutOfMemory && !wasMemoryFailureLogged)
+			{
+				wasMemoryFailureLogged = true;
+				LogMemoryStatus("when a Vulkan allocation failed");
+			}
 		}
 
 		return result;
@@ -3162,6 +3213,9 @@ namespace scvk
 			Fail("vkCreateWin32SurfaceKHR", result);
 			return false;
 		}
+
+		// Say what memory the device starts with, to compare with a later failure
+		LogMemoryStatus("at startup");
 
 		// Create the device and what every frame needs
 		//

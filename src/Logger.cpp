@@ -450,6 +450,19 @@ namespace scvk
 		va_end(arguments);
 	}
 
+	void LogMemoryStatus(char const* when)
+	{
+		MEMORYSTATUSEX memory{};
+		memory.dwLength = sizeof(memory);
+		if (!GlobalMemoryStatusEx(&memory))
+		{
+			return;
+		}
+
+		DWORDLONG const megabyte = 1024 * 1024;
+		LogInfo("Memory %s: address space %llu of %llu MB free, RAM %llu of %llu MB free, commit %llu of %llu MB free.", when, memory.ullAvailVirtual / megabyte, memory.ullTotalVirtual / megabyte, memory.ullAvailPhys / megabyte, memory.ullTotalPhys / megabyte, memory.ullAvailPageFile / megabyte, memory.ullTotalPageFile / megabyte);
+	}
+
 	void LogMessage(LogLevel level, char const* format, va_list arguments)
 	{
 		WriteLine(level, format, arguments);
