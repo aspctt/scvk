@@ -22,6 +22,7 @@
 #include "Benchmark.h"
 #include "Logger.h"
 #include "SC4Version.h"
+#include "Settings.h"
 #include "version.h"
 
 #include <GZServPtrs.h>
@@ -118,7 +119,7 @@ namespace scvk
 			MILESTONE_COUNT,
 		};
 
-		struct Settings
+		struct BenchmarkSettings
 		{
 			bool     isEnabled;
 			bool     isDirectX;
@@ -322,14 +323,14 @@ namespace scvk
 		bool IsSettingTrue(char const* settingsPath, char const* key, bool isTrueByDefault)
 		{
 			char value[16] = {};
-			GetPrivateProfileStringA("Benchmark", key, isTrueByDefault ? "true" : "false", value, sizeof(value), settingsPath);
+			ReadIniValue(settingsPath, "Benchmark", key, isTrueByDefault ? "true" : "false", value, sizeof(value));
 
 			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
 		}
 
-		Settings ReadSettings(void)
+		BenchmarkSettings ReadBenchmarkSettings(void)
 		{
-			Settings settings           = {};
+			BenchmarkSettings settings  = {};
 			settings.sceneSeconds       = DEFAULT_SCENE_SECONDS;
 			settings.shouldQuitWhenDone = true;
 
@@ -341,7 +342,7 @@ namespace scvk
 
 			// Read the section
 			char renderer[32] = {};
-			GetPrivateProfileStringA("Benchmark", "Renderer", "scvk", renderer, sizeof(renderer), settingsPath);
+			ReadIniValue(settingsPath, "Benchmark", "Renderer", "scvk", renderer, sizeof(renderer));
 			GetPrivateProfileStringA("Benchmark", "Region", "", settings.region, sizeof(settings.region), settingsPath);
 			GetPrivateProfileStringA("Benchmark", "City", "", settings.city, sizeof(settings.city), settingsPath);
 
@@ -355,9 +356,9 @@ namespace scvk
 		}
 
 		/** The [Benchmark] settings, read on first use and kept for the process. */
-		Settings const& GetSettings(void)
+		BenchmarkSettings const& GetBenchmarkSettings(void)
 		{
-			static Settings const settings = ReadSettings();
+			static BenchmarkSettings const settings = ReadBenchmarkSettings();
 			return settings;
 		}
 
@@ -860,7 +861,7 @@ namespace scvk
 				return;
 			}
 
-			Settings const& settings = GetSettings();
+			BenchmarkSettings const& settings = GetBenchmarkSettings();
 
 			// Write what was run
 			fprintf(file, "# scvk benchmark results\n");
@@ -936,7 +937,7 @@ namespace scvk
 
 			// Ask the game to quit, without its prompt and without saving. It only posts a
 			// message (0x4546b0), so the shutdown happens after this tick returns.
-			if (GetSettings().shouldQuitWhenDone)
+			if (GetBenchmarkSettings().shouldQuitWhenDone)
 			{
 				cISC4AppPtr app;
 				if (app)
@@ -955,7 +956,7 @@ namespace scvk
 		/** Opens the settings' city the way the region screen does when it is clicked (0x7adc20). */
 		void RequestCity(void)
 		{
-			Settings const& settings = GetSettings();
+			BenchmarkSettings const& settings = GetBenchmarkSettings();
 
 			cISC4AppPtr app;
 			if (!app)
@@ -1014,7 +1015,7 @@ namespace scvk
 		/** Whether the game has the settings' region open, or the settings name none. */
 		bool IsSettingsRegionActive(void)
 		{
-			Settings const& settings = GetSettings();
+			BenchmarkSettings const& settings = GetBenchmarkSettings();
 			if (settings.region[0] == '\0')
 			{
 				return true;
@@ -1037,7 +1038,7 @@ namespace scvk
 		 */
 		void SwitchRegion(void)
 		{
-			Settings const& settings = GetSettings();
+			BenchmarkSettings const& settings = GetBenchmarkSettings();
 
 			cISC4AppPtr app;
 			cISC4Nation* const nation = app ? app->GetNation() : nullptr;
@@ -1169,7 +1170,7 @@ namespace scvk
 			SceneRecord& record = state.sceneRecords.back();
 
 			// Note the middle point
-			double const sceneSeconds = GetSettings().sceneSeconds;
+			double const sceneSeconds = GetBenchmarkSettings().sceneSeconds;
 			if (!state.hasMiddlePoint && elapsedSeconds >= sceneSeconds / 2.0)
 			{
 				record.middle        = PickCentre();
@@ -1346,7 +1347,7 @@ namespace scvk
 					double const elapsedSeconds = SecondsInPhase();
 					UpdateMotion(elapsedSeconds);
 
-					if (elapsedSeconds < GetSettings().sceneSeconds)
+					if (elapsedSeconds < GetBenchmarkSettings().sceneSeconds)
 					{
 						return;
 					}
@@ -1511,12 +1512,12 @@ namespace scvk
 
 	bool IsBenchmarkEnabled(void)
 	{
-		return GetSettings().isEnabled;
+		return GetBenchmarkSettings().isEnabled;
 	}
 
 	bool IsBenchmarkOnDirectX(void)
 	{
-		return GetSettings().isEnabled && GetSettings().isDirectX;
+		return GetBenchmarkSettings().isEnabled && GetBenchmarkSettings().isDirectX;
 	}
 
 	void PrepareBenchmark(void)
@@ -1528,7 +1529,7 @@ namespace scvk
 
 		state.processStartTicks = ProcessStartTicks();
 
-		Settings const& settings = GetSettings();
+		BenchmarkSettings const& settings = GetBenchmarkSettings();
 		LogInfo("Benchmark: measuring %s on %s, %u seconds a scene.", settings.isDirectX ? "the game's DirectX driver" : "scvk", settings.city, settings.sceneSeconds);
 		Mark(MILESTONE_PLUGIN_STARTED);
 	}

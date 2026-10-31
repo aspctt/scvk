@@ -86,4 +86,10 @@ namespace scvk
 
 	/** The text after a switch such as -NativeShadowMasks:, up to the next space, or false when absent. */
 	bool GetCommandLineValue(char const* prefix, char* outValue, uint32_t capacity);
+
+	/**
+	 * A value from an ini file without any comment after it, or the fallback when the key
+	 * is absent. Not for a value that may hold a ; or #, such as a city's file name.
+	 */
+	void ReadIniValue(char const* path, char const* section, char const* key, char const* fallback, char* outValue, uint32_t capacity);
 }

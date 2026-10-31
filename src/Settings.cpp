@@ -154,4 +154,21 @@ namespace scvk
 		outValue[count] = '\0';
 		return true;
 	}
+
+	void ReadIniValue(char const* path, char const* section, char const* key, char const* fallback, char* outValue, uint32_t capacity)
+	{
+		GetPrivateProfileStringA(section, key, fallback, outValue, capacity, path);
+
+		// Windows keeps a comment after a value as part of it, so
+		// Use32BitDepth=true ; for banding read as false with nothing to say so. A value
+		// cut short by the buffer loses only comment.
+		size_t length = strcspn(outValue, ";#");
+
+		while (length > 0 && (outValue[length - 1] == ' ' || outValue[length - 1] == '\t'))
+		{
+			length--;
+		}
+
+		outValue[length] = '\0';
+	}
 }

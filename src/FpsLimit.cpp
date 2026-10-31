@@ -206,7 +206,7 @@ namespace scvk
 			if (LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
 			{
 				char setting[16] = {};
-				GetPrivateProfileStringA("scvk", "MaxFPS", "", setting, sizeof(setting), settingsPath);
+				ReadIniValue(settingsPath, "scvk", "MaxFPS", "", setting, sizeof(setting));
 
 				if (setting[0] != '\0')
 				{

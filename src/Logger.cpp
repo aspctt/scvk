@@ -168,7 +168,7 @@ namespace scvk
 			}
 			else if (LogFilePath("scvk.ini", path, sizeof(path)))
 			{
-				GetPrivateProfileStringA("scvk", "LogLevel", "info", logLevelSetting, sizeof(logLevelSetting), path);
+				ReadIniValue(path, "scvk", "LogLevel", "info", logLevelSetting, sizeof(logLevelSetting));
 			}
 
 			for (LogLevelEntry const& entry : LOG_LEVEL_NAMES)

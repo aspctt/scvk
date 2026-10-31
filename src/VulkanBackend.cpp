@@ -155,7 +155,7 @@ namespace scvk
 			}
 
 			char value[16] = {};
-			GetPrivateProfileStringA("scvk", "Use32BitDepth", "false", value, sizeof(value), settingsPath);
+			ReadIniValue(settingsPath, "scvk", "Use32BitDepth", "false", value, sizeof(value));
 
 			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
 		}
