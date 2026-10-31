@@ -339,6 +339,9 @@ quits. The runs alternate between the two renderers, and
 `tools/benchmark-report.py` turns them into average fps, 1% and 0.1% lows and
 load times for each.
 
+With VSync on, the lighter scenes sit at the monitor's refresh rate. Add
+`-GameArguments "-VSync:off"` to see how far past it scvk goes.
+
 DirectX runs keep scvk loaded without its renderer, so both get the same frame
 pacing fixes. Without them a paused city sits at 30 frames a second on DirectX,
 and the comparison would measure that instead. A single run can also be started

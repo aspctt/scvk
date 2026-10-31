@@ -3,6 +3,7 @@
 #
 #   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -UserDir "S:\SimCity4Data"
 #   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -Runs 3 -SceneSeconds 30
+#   pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -GameArguments "-VSync:off"
 #
 # Every launch goes through Steam and needs its confirmation click; the rest runs by
 # itself. scvk opens the region and the city, pauses it, plays the scenes, writes
@@ -55,7 +56,12 @@ param(
 	[int]$LaunchTimeout = 300,
 
 	# Skip copying the freshly built DLL into the Plugins folder.
-	[switch]$NoDeploy
+	[switch]$NoDeploy,
+
+	# More of the game's own launch options, for every run. With VSync on, scvk's lighter
+	# scenes sit at the monitor's refresh rate, so -VSync:off shows the cost of a change
+	# above it. The game's DirectX driver ignores that switch.
+	[string[]]$GameArguments = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -190,7 +196,7 @@ try {
 		#
 		# Info logging only: the debug level's statistics and captures would cost scvk time
 		# that DirectX never spends.
-		& $runScript -Seconds $RunTimeout -LaunchTimeout $LaunchTimeout -Configuration $Configuration -Label $label -NoDeploy -LogLevel info -UntilFile $resultsName -PluginsDir $PluginsDir -UserDir $UserDir
+		& $runScript -Seconds $RunTimeout -LaunchTimeout $LaunchTimeout -Configuration $Configuration -Label $label -NoDeploy -LogLevel info -UntilFile $resultsName -PluginsDir $PluginsDir -UserDir $UserDir -GameArguments $GameArguments
 
 		# Gather what it wrote
 		$results = Get-ChildItem $logDirectory -Filter "scvk-benchmark-*-$label.csv" -ErrorAction SilentlyContinue | Select-Object -First 1
