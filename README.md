@@ -145,6 +145,7 @@ the other.
 |---|---|
 | `-VSync:off` | Lets the frame rate go past the display's refresh rate |
 | `-GPU:default` | Uses the first graphics card Vulkan lists, the way Windows picks, instead of preferring a dedicated one |
+| `-GPU:<n>` | Uses the nth graphics card in `scvk.log`'s list, counted from 1 |
 | `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
 | `-ReShade:off` | Leaves ReShade drawing over the interface |
 | `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |

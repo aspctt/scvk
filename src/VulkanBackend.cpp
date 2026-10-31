@@ -105,6 +105,9 @@ namespace scvk
 		constexpr uint32_t VENDOR_ID_NVIDIA = 0x10DE;
 		constexpr uint32_t VENDOR_ID_INTEL  = 0x8086;
 
+		// A GPU needs this much memory of its own before its size says it is the better one.
+		constexpr VkDeviceSize STRONGER_GPU_MINIMUM_HEAP = 1024ull * 1024ull * 1024ull;
+
 		// Sets each frame's transient descriptor pool holds: the shadow composites, the
 		// depth handed to ReShade and the like, a few a frame.
 		constexpr uint32_t TRANSIENT_SETS_PER_FRAME = 256;
@@ -206,6 +209,30 @@ namespace scvk
 			}
 
 			return largest;
+		}
+
+		/**
+		 * Whether one GPU is far ahead of another, as far as Vulkan can tell. A discrete GPU
+		 * beats any other kind, whose heap is only system memory and says nothing about it.
+		 * Between two of a kind, at least twice the memory and a real amount of it decides.
+		 */
+		bool IsMuchStronger(VkPhysicalDevice candidate, VkPhysicalDevice chosen)
+		{
+			VkPhysicalDeviceProperties candidateProperties{};
+			VkPhysicalDeviceProperties chosenProperties{};
+			vkGetPhysicalDeviceProperties(candidate, &candidateProperties);
+			vkGetPhysicalDeviceProperties(chosen, &chosenProperties);
+
+			bool const isCandidateDiscrete = candidateProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+			bool const isChosenDiscrete    = chosenProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+
+			if (isCandidateDiscrete != isChosenDiscrete)
+			{
+				return isCandidateDiscrete;
+			}
+
+			VkDeviceSize const candidateHeap = FindLargestLocalHeap(candidate);
+			return candidateHeap >= STRONGER_GPU_MINIMUM_HEAP && candidateHeap >= VkDeviceSize{ 2 } * FindLargestLocalHeap(chosen);
 		}
 
 		bool HasValidationLayer(void)
@@ -538,9 +565,12 @@ namespace scvk
 
 		VkPhysicalDevice best = VK_NULL_HANDLE;
 		int bestScore = -1;
+		uint32_t number = 0;
 
 		for (VkPhysicalDevice candidate : devices)
 		{
+			number++;
+
 			VkPhysicalDeviceProperties properties{};
 			vkGetPhysicalDeviceProperties(candidate, &properties);
 
@@ -561,7 +591,8 @@ namespace scvk
 			char driverVersion[32];
 			FormatDriverVersion(properties, driverVersion, sizeof(driverVersion));
 
-			LogInfo("Vulkan: found device \"%s\" (type %d, vendor 0x%04X, device 0x%04X, driver %s [0x%08X], API %u.%u.%u, %llu MB local, %u memory allocations)", properties.deviceName, properties.deviceType, properties.vendorID, properties.deviceID, driverVersion, properties.driverVersion, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), FindLargestLocalHeap(candidate) / (1024 * 1024), properties.limits.maxMemoryAllocationCount);
+			// The number is the one -GPU:<n> takes
+			LogInfo("Vulkan: found device %u \"%s\" (type %d, vendor 0x%04X, device 0x%04X, driver %s [0x%08X], API %u.%u.%u, %llu MB local, %u memory allocations)", number, properties.deviceName, properties.deviceType, properties.vendorID, properties.deviceID, driverVersion, properties.driverVersion, VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion), VK_VERSION_PATCH(properties.apiVersion), FindLargestLocalHeap(candidate) / (1024 * 1024), properties.limits.maxMemoryAllocationCount);
 
 			if (!shouldPreferDiscrete && !shouldPreferIntegrated)
 			{
@@ -580,6 +611,19 @@ namespace scvk
 			}
 		}
 
+		// Take one asked for by number over all of that
+		uint32_t const gpuNumber = GetSettings().gpuNumber;
+		bool const isPickedByNumber = gpuNumber != 0 && gpuNumber <= count;
+
+		if (isPickedByNumber)
+		{
+			best = devices[gpuNumber - 1];
+		}
+		else if (gpuNumber != 0)
+		{
+			LogWarn("-GPU:%u asks for a GPU this machine lacks. It has %u, so scvk chooses as usual.", gpuNumber, count);
+		}
+
 		// Record what was chosen
 		physicalDevice = best;
 		vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
@@ -589,7 +633,27 @@ namespace scvk
 		sprintf_s(version, sizeof(version), "%u.%u.%u", VK_VERSION_MAJOR(physicalDeviceProperties.apiVersion), VK_VERSION_MINOR(physicalDeviceProperties.apiVersion), VK_VERSION_PATCH(physicalDeviceProperties.apiVersion));
 		apiVersion = version;
 
-		LogInfo("Vulkan: selected \"%s\" (%s).", deviceName.c_str(), shouldPreferDiscrete ? "high-performance preference" : "first device listed");
+		char const* const preference = shouldPreferDiscrete ? "high-performance preference" : "first device listed";
+		LogInfo("Vulkan: selected \"%s\" (%s).", deviceName.c_str(), isPickedByNumber ? "-GPU" : preference);
+
+		// Say when a much better GPU sits idle
+		//
+		// One picked by number is the player's choice. The integrated GPU marker does warn,
+		// which makes it the way to try this on a machine with two GPUs.
+		if (!isPickedByNumber)
+		{
+			for (uint32_t i = 0; i < count; i++)
+			{
+				if (devices[i] != physicalDevice && IsMuchStronger(devices[i], physicalDevice))
+				{
+					VkPhysicalDeviceProperties stronger{};
+					vkGetPhysicalDeviceProperties(devices[i], &stronger);
+
+					ReportSetupProblem("scvk draws on %s, not the faster %s. -GPU:%u picks it.", deviceName.c_str(), stronger.deviceName, i + 1);
+					break;
+				}
+			}
+		}
 
 		// Record how far textures can go on it
 		maximumMemoryAllocations = physicalDeviceProperties.limits.maxMemoryAllocationCount;

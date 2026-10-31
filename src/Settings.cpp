@@ -23,10 +23,19 @@
 #include "Logger.h"
 
 #include <windows.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace scvk
 {
+	//// Constants
+
+	namespace
+	{
+		// More than any machine holds, and small enough to rule out a stray long number.
+		constexpr unsigned long MAXIMUM_GPU_NUMBER = 16;
+	}
+
 	//// Private Functions
 
 	namespace
@@ -62,6 +71,28 @@ namespace scvk
 			}
 
 			return nullptr;
+		}
+
+		/** The number in -GPU:<n>, or 0 when there is no switch or it names no device. */
+		uint32_t ReadGpuNumber(void)
+		{
+			char value[32] = {};
+			if (!GetCommandLineValue("-GPU:", value, sizeof(value)) || _stricmp(value, "default") == 0 || _stricmp(value, "high-performance") == 0)
+			{
+				return 0;
+			}
+
+			char* end = nullptr;
+			unsigned long const number = strtoul(value, &end, 10);
+
+			if (end == value || *end != '\0' || number == 0 || number > MAXIMUM_GPU_NUMBER)
+			{
+				LogWarn("-GPU:%s is neither default nor a number from 1 to %lu; ignoring it.", value, MAXIMUM_GPU_NUMBER);
+				return 0;
+			}
+
+			// At most 16, checked just above.
+			return static_cast<uint32_t>(number);
 		}
 
 		/** -DoctorDialog: on the command line, then DoctorDialog in scvk.ini, on when neither says. */
@@ -109,6 +140,7 @@ namespace scvk
 				settings.shouldPreferHighPerformanceGpu = false;
 			}
 
+			settings.gpuNumber = ReadGpuNumber();
 			settings.isDoctorDialogEnabled = ReadDoctorDialogChoice();
 
 			if (HasCommandLineSwitch("-ReShade:off"))

@@ -53,6 +53,10 @@ namespace scvk
 		// picks the adapter, instead of preferring a discrete GPU.
 		bool shouldPreferHighPerformanceGpu = true;
 
+		// -GPU:<n>. The nth device in scvk.log's list, counted from 1, whatever its kind. 0
+		// leaves the choice to the setting above.
+		uint32_t gpuNumber = 0;
+
 		// -DoctorDialog:off, or DoctorDialog=false in scvk.ini. Off leaves the setup
 		// problems in scvk.log, without the dialog when the region view opens.
 		bool isDoctorDialogEnabled = true;
