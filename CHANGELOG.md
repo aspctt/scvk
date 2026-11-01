@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
 ### Added
 
 - Setup checks at startup, which write to `scvk.log`: another driver drawing, any plugin loaded twice, SC4RenderServices older than 0.8.3, plugins built for SC4RenderServices before 0.8, plugins missing the Visual C++ runtime, no 4GB patch, compatibility mode, launch switch and `scvk.ini` typos, an unquoted `-UserDir` and unreadable lines in `SC4GraphicsOptions.ini`
@@ -150,7 +152,8 @@ Most of this release is UlisseWolf's port of scd3d11's features.
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/aspctt/scvk/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/aspctt/scvk/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/aspctt/scvk/compare/0.2.2...0.3.0
 [0.2.2]: https://github.com/aspctt/scvk/compare/0.2.1...0.2.2
