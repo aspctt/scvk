@@ -29,6 +29,7 @@
 #include "SetupChecks.h"
 #include "Benchmark.h"
 #include "Logger.h"
+#include "RendererChoice.h"
 #include "SC4Version.h"
 #include "Settings.h"
 
@@ -116,10 +117,6 @@ namespace scvk
 
 		constexpr uint16_t SUPPORTED_GAME_VERSION = 641;
 
-		// The game's own drivers, told apart by class ID.
-		constexpr uint32_t GAME_DIRECTX_DRIVER_GZCLSID  = 0xBADB6906;
-		constexpr uint32_t GAME_SOFTWARE_DRIVER_GZCLSID = 0x7ACA35C6;
-
 		constexpr uint32_t MESSAGE_POST_REGION_INIT = 0xCBB5BB45;
 		constexpr uint32_t GZIID_MESSAGE_TARGET2    = 0x452294AA;
 
@@ -197,6 +194,9 @@ namespace scvk
 
 		// Another copy of scvk loaded before this one.
 		bool isLaterCopy = false;
+
+		// Another plugin's renderer won, so scvk's findings stay in its log.
+		bool isAnotherRendererDrawing = false;
 
 		/** The problems waiting for the dialog. A function's static, so it exists from the first report. */
 		std::vector<std::string>& PendingProblems(void)
@@ -473,19 +473,21 @@ namespace scvk
 				return;
 			}
 
-			// Another renderer is a choice someone may have made, so a dialog would nag
+			// Another renderer is a choice someone may have made, so a dialog would nag, and
+			// the plugins scvk found a problem with are for that renderer's own checks
 			if (owner != GetModuleHandleA(nullptr))
 			{
 				LogWarn("SimCity 4 is drawing with %s, not scvk. With SCD3D11 installed as well, Driver=OpenGL in SC4GraphicsOptions.ini or -d:OpenGL picks scvk.", ReadModulePath(owner).c_str());
+				isAnotherRendererDrawing = true;
 				return;
 			}
 
 			uint32_t const driverClass = driver->GetGZCLSID();
-			if (driverClass == GAME_SOFTWARE_DRIVER_GZCLSID)
+			if (driverClass == SOFTWARE_DRIVER_GZCLSID)
 			{
 				ReportSetupProblem("SimCity 4 is drawing with its own software driver, not scvk. -d:DirectX, or Driver=DirectX in SC4GraphicsOptions.ini, goes back.");
 			}
-			else if (driverClass == GAME_DIRECTX_DRIVER_GZCLSID)
+			else if (driverClass == DIRECTX_DRIVER_GZCLSID)
 			{
 				ReportSetupProblem("SimCity 4 is drawing with its own DirectX driver, not scvk, because Vulkan could not start. The lines above in scvk.log say why.");
 			}
@@ -1221,9 +1223,10 @@ namespace scvk
 
 		// Wait for the region view, where the game can show a dialog and a player can read it
 		//
-		// A dialog would hold up a benchmark, which nobody is watching.
+		// A dialog would hold up a benchmark, which nobody is watching, and a player using
+		// another renderer did not ask scvk for its opinion.
 		cIGZMessageServer2Ptr messageServer;
-		if (messageServer && GetSettings().isDoctorDialogEnabled && !IsBenchmarkEnabled() && !isLaterCopy && !isListening)
+		if (messageServer && GetSettings().isDoctorDialogEnabled && !IsBenchmarkEnabled() && !isLaterCopy && !isAnotherRendererDrawing && !isListening)
 		{
 			messageServer->AddNotification(&problemDialog, MESSAGE_POST_REGION_INIT);
 			isListening = true;

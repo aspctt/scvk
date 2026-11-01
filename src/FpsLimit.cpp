@@ -382,8 +382,8 @@ namespace scvk
 		// Let the animation clock count short frames as they are
 		//
 		// Always, since without the paused padding a paused city easily runs fast enough
-		// for the old floor to speed its animations up. The game builds its clocks after
-		// scvk starts, so they all get the new floor.
+		// for the old floor to speed its animations up. The game builds its clock when a
+		// city loads (0x7f41b0), after the graphics system starts, so it gets the new floor.
 		PatchCode("animation clock floor", ANIMATION_FLOOR_ADDRESS_641, ANIMATION_FLOOR_ORIGINAL, ANIMATION_FLOOR_PATCHED, sizeof(ANIMATION_FLOOR_ORIGINAL));
 
 		// Keep the game's caps when asked to, or when the display refreshes no faster

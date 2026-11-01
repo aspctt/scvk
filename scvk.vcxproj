@@ -170,6 +170,7 @@
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\SetupChecks.cpp" />
+    <ClCompile Include="src\RendererChoice.cpp" />
     <ClCompile Include="src\VideoMode.cpp" />
     <ClCompile Include="src\ViewportCull.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
@@ -275,6 +276,7 @@
     <ClInclude Include="src\ThumbnailFocusGuard.h" />
     <ClInclude Include="src\version.h" />
     <ClInclude Include="src\SetupChecks.h" />
+    <ClInclude Include="src\RendererChoice.h" />
     <ClInclude Include="src\VideoMode.h" />
     <ClInclude Include="src\ViewportCull.h" />
     <ClInclude Include="src\VulkanApi.h" />

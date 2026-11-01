@@ -281,6 +281,11 @@ namespace scvk
 		void*                          windowHandle     = nullptr;
 		std::unique_ptr<VulkanBackend> vulkan;
 
+		// The slot the game got this driver from, and whether it has started Vulkan. The
+		// driver in a slot the game did not ask for stays idle.
+		uint32_t slotClass       = DRIVER_GZCLSID;
+		bool     isVulkanStarted = false;
+
 		// The viewport, in the game's bottom-origin coordinates
 		int viewportX      = 0;
 		int viewportY      = 0;
@@ -550,6 +555,9 @@ namespace scvk
 		/** Switches on the diagnostics whose marker files sit next to the driver. */
 		void ApplyDiagnosticMarkers(void);
 
+		/** Starts Vulkan and the fault log, once. False when Vulkan is unavailable. */
+		bool StartVulkan(void);
+
 		/** Creates and shows the game's window for a mode, replacing any earlier one. */
 		bool CreateRenderWindow(sGDMode const& mode, void* windowProcedure);
 
@@ -788,7 +796,11 @@ namespace scvk
 		cVKDriver(void);
 		virtual ~cVKDriver(void) override;
 
+		/** Creates the driver of the OpenGL slot, the class scvk reports from either slot. */
 		static bool FactoryFunction(uint32_t interfaceId, void** outInterface);
+
+		/** Creates a driver that knows which of the game's slots it serves. */
+		static bool CreateForSlot(uint32_t slotClass, uint32_t interfaceId, void** outInterface);
 
 		// cIGZUnknown
 

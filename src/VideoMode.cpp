@@ -22,7 +22,7 @@
 #include "VideoMode.h"
 #include "Benchmark.h"
 #include "Logger.h"
-#include "VulkanBackend.h"
+#include "RendererChoice.h"
 
 #include <cGZDisplayMetrics.h>
 #include <cIGZApp.h>
@@ -202,7 +202,7 @@ namespace scvk
 		/** Whether scvk will be the renderer, as far as can be told this early. */
 		bool IsScvkDrawing(SC4VideoPreferences const& video)
 		{
-			return video.driverType != SOFTWARE_DRIVER_TYPE && !IsBenchmarkEnabled() && IsVulkanAvailable();
+			return video.driverType != SOFTWARE_DRIVER_TYPE && WillScvkDraw();
 		}
 
 		/** Whether SC4GraphicsOptions is set to its borderless mode. */
@@ -291,6 +291,19 @@ namespace scvk
 
 			SC4VideoPreferences& video = preferences->videoPreferences;
 
+			// Leave the mode to whatever renderer is drawing instead
+			//
+			// A benchmark compares the renderers in the same mode and leaves Vulkan alone
+			// until it knows which one it measures, so it goes on either way.
+			bool const isBenchmark   = IsBenchmarkEnabled();
+			bool const isScvkDrawing = !isBenchmark && IsScvkDrawing(video);
+
+			if (!isScvkDrawing && !isBenchmark)
+			{
+				LogInfo("Video mode: scvk is not the renderer this time, so the game's video mode is left alone.");
+				return;
+			}
+
 			cGZDisplayMetrics screen{};
 			graphicSystem->GetScreenMetrics(screen);
 
@@ -337,9 +350,9 @@ namespace scvk
 
 			// Go borderless unless a launch option chose the mode or the size
 			//
-			// Only while scvk draws. The game's own renderers would make a framed window
-			// the desktop's size, and a benchmark compares the renderers in the player's
-			// mode.
+			// Only while scvk draws outside a benchmark, which compares the renderers in the
+			// player's mode. The game's own renderers would make a framed window the
+			// desktop's size.
 			LaunchSize size{};
 			bool const hasLaunchSize      = commandLine != nullptr && ReadLaunchSize(*commandLine, size);
 			bool const isWindowWanted     = HasAnySwitch(commandLine, WINDOWED_SWITCHES);
@@ -347,14 +360,14 @@ namespace scvk
 
 			if (!isBorderless && !hasLaunchSize && !isWindowWanted && !isFullscreenWanted)
 			{
-				if (IsScvkDrawing(video))
+				if (isScvkDrawing)
 				{
 					isBorderless = true;
 					LogInfo("Borderless: the default, since no launch option chose a window mode or size.");
 				}
 				else
 				{
-					LogInfo("Borderless: not the default, since scvk is not the renderer this time.");
+					LogInfo("Borderless: not the default during a benchmark.");
 				}
 			}
 

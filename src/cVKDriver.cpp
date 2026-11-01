@@ -83,7 +83,13 @@ namespace scvk
 
 	bool cVKDriver::FactoryFunction(uint32_t interfaceId, void** outInterface)
 	{
+		return CreateForSlot(DRIVER_GZCLSID, interfaceId, outInterface);
+	}
+
+	bool cVKDriver::CreateForSlot(uint32_t slotClass, uint32_t interfaceId, void** outInterface)
+	{
 		cVKDriver* const driver = new cVKDriver();
+		driver->slotClass = slotClass;
 
 		bool const hasInterface = driver->QueryInterface(interfaceId, outInterface);
 		if (!hasInterface || *outInterface == nullptr)

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Scrolling is lighter: draws wholly outside the strip the game is redrawing are left out before their vertices are copied. `-ViewportCull:off` sends them all, as before
 - Less work around each draw when the game repeats a matrix or texture setting it already made
+- scvk stays out of the way when it isn't the renderer. With scd3d11 or the Software driver drawing, it doesn't start Vulkan, patch the game, install its fault log, change the video mode or show its setup dialog
+- One Vulkan instance less at startup, since the slot the game does not use no longer makes one
 
 ### Fixed
 

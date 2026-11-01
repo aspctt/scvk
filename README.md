@@ -164,7 +164,8 @@ the other.
   compatible, and the easiest way to choose between renderers. See
   [Installing](#installing).
 - [scd3d11](https://github.com/caspervg/scd3d11): can be installed alongside, and
-  keeps the DirectX slot. See [Installing](#installing).
+  keeps the DirectX slot. While it draws, scvk stays idle: no Vulkan, no patches and
+  no changes to the video mode. See [Installing](#installing).
 
 ### FPS limits: built in
 

@@ -27,6 +27,7 @@
 #include "Logger.h"
 #include "ModuleLog.h"
 #include "PrintScreen.h"
+#include "RendererChoice.h"
 #include "Settings.h"
 #include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
@@ -619,6 +620,34 @@ namespace scvk
 		driverInformation.append(vulkan->DeviceName()).append("\n");
 	}
 
+	bool cVKDriver::StartVulkan(void)
+	{
+		if (isVulkanStarted)
+		{
+			return true;
+		}
+
+		// Log faults, once for the process
+		//
+		// First in the chain, so it runs before any handler the game or another plugin
+		// adds. That is only fair to them while scvk is the one drawing.
+		if (!isExceptionLogInstalled)
+		{
+			isExceptionLogInstalled = AddVectoredExceptionHandler(1, &LogException) != nullptr;
+		}
+
+		if (!vulkan->CreateInstance())
+		{
+			return false;
+		}
+
+		BuildDriverInformation();
+		ApplyDiagnosticMarkers();
+
+		isVulkanStarted = true;
+		return true;
+	}
+
 	void cVKDriver::ApplyDiagnosticMarkers(void)
 	{
 		// Identify the passes
@@ -928,28 +957,27 @@ namespace scvk
 
 		LogInfo("scvk %s initialising.", SCVK_VERSION_STRING);
 
-		// Log faults, once for the process
+		// Start Vulkan only in the slot the game asked for
 		//
-		// First in the chain, so it runs before any handler the game or another plugin adds.
-		if (!isExceptionLogInstalled)
+		// The game sets up every slot before it picks one (0x9904d0), so this runs even
+		// when another driver will draw. A failed Init is the only thing the game falls
+		// back from, so the slot it wants still finds out here that Vulkan is missing: a
+		// black window is far worse than the game choosing a renderer that works. If it
+		// does end up on an idle driver, SetVideoMode starts Vulkan then.
+		if (IsDriverSlotRequested(slotClass))
 		{
-			isExceptionLogInstalled = AddVectoredExceptionHandler(1, &LogException) != nullptr;
+			if (!StartVulkan())
+			{
+				LogError("Vulkan is unavailable, so scvk is declining to act as the renderer. The game will fall back to another driver.");
+				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
+				return false;
+			}
 		}
-
-		// Decline when Vulkan is unavailable
-		//
-		// A Vulkan renderer that cannot reach Vulkan is of no use to anyone. Reporting
-		// failure here lets the game fall back to a renderer that works, which is far
-		// better than presenting a black window.
-		if (!vulkan->CreateInstance())
+		else
 		{
-			LogError("Vulkan is unavailable, so scvk is declining to act as the renderer. The game will fall back to another driver.");
-			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
-			return false;
+			LogInfo("Standing by in slot %08X, since the game asked for another driver. Vulkan stays off.", slotClass);
+			BuildDriverInformation();
 		}
-
-		BuildDriverInformation();
-		ApplyDiagnosticMarkers();
 
 		// List the video modes
 		uint32_t const modeCount = EnumerateVideoModes();
@@ -983,6 +1011,7 @@ namespace scvk
 		// Release the device and the window
 		StopRenderWatchdog();
 		vulkan->Destroy();
+		isVulkanStarted = false;
 
 		DestroyRenderWindow();
 		UnregisterClassA(WINDOW_CLASS_NAME, GetModuleHandleA(nullptr));
@@ -1093,6 +1122,17 @@ namespace scvk
 			LogInfo("SetVideoMode: the game asked for 16-bit colour; scvk draws in 32-bit regardless.");
 		}
 
+		// Start Vulkan if this driver stood idle
+		//
+		// The slot the game asked for started it in Init. Any other only gets here when
+		// the game falls back to it, and the game has no fallback from this call.
+		if (!StartVulkan())
+		{
+			LogCritical("Vulkan: unavailable, and the game has already picked this driver; nothing will be drawn.");
+			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
+			return;
+		}
+
 		// Create the window, then attach Vulkan to it
 		//
 		// The surface has to come after the window is created and shown, and the
@@ -1102,6 +1142,9 @@ namespace scvk
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return;
 		}
+
+		// Only now is it certain that scvk draws, so the game's code changes here
+		ApplyGameChanges();
 
 		// ReShade makes its effect runtime with the swapchain, so the add-on registers
 		// first; the same step hooks the 3D view's draw for the live shadows

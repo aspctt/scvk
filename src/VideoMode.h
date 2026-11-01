@@ -46,6 +46,9 @@ namespace scvk
 	 * changes the mode the game asks its graphics system for, so the saved mode is still
 	 * there for -w or -f.
 	 *
+	 * All of this waits for scvk to be the renderer, or a benchmark. With scd3d11 or the
+	 * game's Software driver drawing, the game's mode and its preferences stay as they are.
+	 *
 	 * The correction runs as a system service started just before the graphics system,
 	 * after every plugin's PreFrameWorkInit, so no plugin's request comes after it. Call
 	 * from OnStart. Calling it again changes nothing.

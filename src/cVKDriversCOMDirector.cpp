@@ -28,6 +28,7 @@
 #include "NativeShadowMasks.h"
 #include "NativeShadowRegistry.h"
 #include "PrintScreen.h"
+#include "RendererChoice.h"
 #include "SC4Version.h"
 #include "SetupChecks.h"
 #include "TerrainShadows.h"
@@ -54,11 +55,10 @@ namespace scvk
 		// and must not be SCGL's (0xCB6EC543).
 		constexpr uint32_t DIRECTOR_ID = 0x5C4B0001;
 
-		// The DirectX slot, the one the game asks for unless told otherwise. scvk claims it
-		// too, so selecting scvk needs no settings, but one below the OpenGL claim:
-		// scd3d11 claims this slot at 1000000, and a renderer made for it should win it.
-		// The game's own drivers register at version 0.
-		constexpr uint32_t DIRECTX_GZCLSID = 0xBADB6906;
+		// The claim on the DirectX slot, the one the game asks for unless told otherwise.
+		// scvk claims it too, so selecting scvk needs no settings, but one below the OpenGL
+		// claim: scd3d11 claims this slot at 1000000, and a renderer made for it should win
+		// it. The game's own drivers register at version 0.
 		constexpr uint32_t DIRECTX_VERSION = 999999;
 
 		constexpr uint16_t SUPPORTED_GAME_VERSION = 641;
@@ -121,13 +121,17 @@ namespace scvk
 		 * Serves the DirectX slot with scvk, or with the game's DirectX 7 driver when Vulkan
 		 * is unavailable. Declining would drop the game to its Software renderer rather than
 		 * to DirectX, since the game falls back by slot.
+		 *
+		 * With the Software driver asked for, this slot only stands by, so Vulkan is left
+		 * alone. With OpenGL asked for it stays checked: a failed OpenGL slot falls back to
+		 * this one, and that driver has to be one that can draw.
 		 */
 		bool CreateDirectXSlotDriver(uint32_t interfaceId, void** outInterface)
 		{
-			if (IsVulkanAvailable())
+			if (IsSoftwareDriverRequested() || IsVulkanAvailable())
 			{
 				LogInfo("Serving the DirectX slot with scvk.");
-				return cVKDriver::FactoryFunction(interfaceId, outInterface);
+				return cVKDriver::CreateForSlot(DIRECTX_DRIVER_GZCLSID, interfaceId, outInterface);
 			}
 
 			LogWarn("Vulkan is unavailable, so the DirectX slot goes to the game's own DirectX driver.");
@@ -180,8 +184,8 @@ namespace scvk
 	 * render services read the DirectX 7 driver's internals when the driver reports the
 	 * DirectX one, and the game only uses it to look up the OpenGL slot, which scvk also
 	 * fills. The game creates and initialises every slot's driver at startup and keeps
-	 * them until it exits, so the slot it does not use holds an idle scvk driver, just as
-	 * an unused DirectX driver sat idle before.
+	 * them until it exits, so the slot it does not use holds an idle scvk driver, which
+	 * does not start Vulkan, just as an unused DirectX driver sat idle before.
 	 *
 	 * That is why EnumClassObjects is overridden. The inherited implementation reports
 	 * version 0 for everything it registers, which would tie with the game's built-in
@@ -195,7 +199,7 @@ namespace scvk
 		cVKDriversCOMDirector(void)
 		{
 			AddCls(cVKDriver::DRIVER_GZCLSID, &cVKDriver::FactoryFunction);
-			AddCls(DIRECTX_GZCLSID, &CreateDirectXSlotDriver);
+			AddCls(DIRECTX_DRIVER_GZCLSID, &CreateDirectXSlotDriver);
 		}
 
 		uint32_t GetDirectorID(void) const override
@@ -214,7 +218,7 @@ namespace scvk
 			// Outranks the game's own OpenGL and DirectX drivers, which register the same
 			// class IDs at version 0.
 			callback(cVKDriver::DRIVER_GZCLSID, cVKDriver::DRIVER_VERSION, context);
-			callback(DIRECTX_GZCLSID, DIRECTX_VERSION, context);
+			callback(DIRECTX_DRIVER_GZCLSID, DIRECTX_VERSION, context);
 		}
 
 		bool OnStart(cIGZCOM* com) override
@@ -233,27 +237,16 @@ namespace scvk
 			LogInfo("Detected SimCity 4 version %u.", GetGameVersion());
 			LogPlatform();
 
-			// Change the game's frame pacing: no padding while paused, an exact animation
-			// clock, and speed caps at the display's refresh rate
-			ApplyFpsLimitSettings();
+			// Give a benchmark of the game's DirectX driver scvk's frame pacing, so both
+			// renderers run under the same rules. Otherwise the driver changes the game's
+			// code once it draws, and the shadows that draw through scvk go with it.
+			if (IsBenchmarkOnDirectX())
+			{
+				ApplyFpsLimitSettings();
+			}
 
 			// Correct the video mode before the graphics system starts
 			InstallVideoModeService();
-
-			// Install the game-side shadow modules SCD3D11 has, each guarded by the exact
-			// bytes it patches. They are opt-in, as in SCD3D11: the live True3D shadows
-			// with -NativeShadowMasks:network, props or all, the registry and the
-			// terrain's shadows on top of them with replace, and the diagnostics only when
-			// asked for. They draw through scvk, so a benchmark of the game's DirectX
-			// driver leaves them out.
-			if (!IsBenchmarkOnDirectX())
-			{
-				NativeShadowMasks::Install();
-				NativeShadowRegistry::Install();
-				TerrainShadows::Install();
-				NativeShadowDiagnostics::Install();
-				NativeShadowExperiment::Install();
-			}
 
 			// Hear when the game starts, is up and shuts down
 			//
