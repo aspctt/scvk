@@ -1,4 +1,19 @@
-# <p align=center> scvk </p>
+# <p align=center style="text-align: center;"> <img alt="Banner" src="https://i.ibb.co/LzJQGWC3/scvk-Banner.png"> </p>
+
+<p align="center" style="text-align: center;">
+	<img alt="Available for" src="https://img.shields.io/badge/Available_for-1.1.641-blue">
+	<img alt="Requires" src="https://img.shields.io/badge/Requires-Nothing-brightgreen">
+	<img alt="License" src="https://img.shields.io/badge/License-LGPL--2.1--or--later-red">
+</p>
+
+<p align="center" style="text-align: center;">
+	<a alt="Buy Me a Coffee" href="https://buymeacoffee.com/aspctt"><img alt="Buy Me a Coffee" height="40" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/compact/donate/buymeacoffee-singular_vector.svg"></a>
+</p>
+
+<p align="center" style="text-align: center;">
+	<a alt="Available on GitHub" href="https://github.com/aspctt/scvk"><img alt="Available on GitHub" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/compact-minimal/available/github_vector.svg"></a>
+	<a alt="Available on STEX" href="https://community.simtropolis.com/"><img alt="Available on STEX" height="40" src="https://pbs.twimg.com/profile_images/895744581072855041/OYlH7P5t_400x400.jpg"></a>
+</p>
 
 A native Vulkan renderer for SimCity 4.
 
@@ -10,10 +25,6 @@ plugin system.
 This project is not affiliated with, endorsed by, or supported by Electronic
 Arts Inc. or Maxis. Vulkan and the Vulkan logo are registered trademarks of the
 Khronos Group Inc.
-
-<p align=center>
-	<a alt="BuyMeACoffee" href="https://buymeacoffee.com/aspctt"><img src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/donate/buymeacoffee-singular_vector.svg"></a>
-</p>
 
 ## Status
 
