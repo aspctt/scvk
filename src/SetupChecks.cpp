@@ -542,6 +542,12 @@ namespace scvk
 			return name.rfind("msvcp140", 0) == 0 || name.rfind("vcruntime140", 0) == 0 || name == "concrt140.dll";
 		}
 
+		/** The runtime DLLs a debug build imports instead, which no Redistributable has. */
+		bool IsDebugVisualCppRuntime(std::string const& name)
+		{
+			return name == "ucrtbased.dll" || name == "msvcp140d.dll" || name == "vcruntime140d.dll" || name == "vcruntime140_1d.dll" || name == "msvcp140d_atomic_wait.dll" || name == "concrt140d.dll";
+		}
+
 		/** Whether the loader finds a DLL by name, searching where it would for a plugin's imports. */
 		bool CanFindLibrary(std::string const& name)
 		{
@@ -607,6 +613,8 @@ namespace scvk
 		{
 			std::string pluginsMissingRuntime;
 			std::string missingRuntimes;
+			std::string debugPlugins;
+			std::string missingDebugRuntimes;
 
 			for (std::string const& folder : ListPluginFolders())
 			{
@@ -619,7 +627,8 @@ namespace scvk
 
 				do
 				{
-					bool isMissingRuntime = false;
+					bool isMissingRuntime      = false;
+					bool isMissingDebugRuntime = false;
 
 					for (std::string const& import : ReadImports((folder + found.cFileName).c_str()))
 					{
@@ -631,7 +640,23 @@ namespace scvk
 						}
 
 						// The game skips a plugin Windows cannot load without a word
-						if (IsVisualCppRuntime(import) && !CanFindLibrary(import))
+						//
+						// A debug build's runtime starts like the normal one but comes from
+						// nowhere a player can install it, so it goes first and gets its own
+						// advice.
+						if (IsDebugVisualCppRuntime(import))
+						{
+							if (!CanFindLibrary(import))
+							{
+								isMissingDebugRuntime = true;
+
+								if (missingDebugRuntimes.find(import) == std::string::npos)
+								{
+									missingDebugRuntimes += (missingDebugRuntimes.empty() ? "" : ", ") + import;
+								}
+							}
+						}
+						else if (IsVisualCppRuntime(import) && !CanFindLibrary(import))
 						{
 							isMissingRuntime = true;
 
@@ -646,6 +671,11 @@ namespace scvk
 					{
 						pluginsMissingRuntime += (pluginsMissingRuntime.empty() ? "" : ", ") + std::string(found.cFileName);
 					}
+
+					if (isMissingDebugRuntime)
+					{
+						debugPlugins += (debugPlugins.empty() ? "" : ", ") + std::string(found.cFileName);
+					}
 				}
 				while (FindNextFileA(search, &found));
 
@@ -655,6 +685,11 @@ namespace scvk
 			if (!pluginsMissingRuntime.empty())
 			{
 				ReportSetupProblem("SimCity 4 skips %s, because Windows cannot find %s from the Microsoft Visual C++ Redistributable. Install its x86 version from https://aka.ms/vs/17/release/vc_redist.x86.exe, also on 64-bit Windows.", pluginsMissingRuntime.c_str(), missingRuntimes.c_str());
+			}
+
+			if (!debugPlugins.empty())
+			{
+				ReportSetupProblem("SimCity 4 skips %s, a debug build that needs %s. Only Visual Studio installs those, the Visual C++ Redistributable does not have them. Ask the plugin's author for a release build.", debugPlugins.c_str(), missingDebugRuntimes.c_str());
 			}
 		}
 

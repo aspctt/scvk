@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-GPU:<n>` picks a graphics card by its number in `scvk.log`, and scvk warns when a much faster card sits idle
 - `-DepthBuffer:32` and `-DepthBuffer:16` launch options, ahead of `Use32BitDepth` in `scvk.ini`
 - `-LiveShadows:on` and `-LiveShadows:off`, the name scd3d11 uses now, the same as `-NativeShadowMasks:replace` and `off`
+- The setup checks tell a plugin that is a debug build from one missing the Visual C++ runtime, since only Visual Studio has what a debug build needs
 
 ### Changed
 
