@@ -286,6 +286,9 @@ namespace scvk
 		uint32_t slotClass       = DRIVER_GZCLSID;
 		bool     isVulkanStarted = false;
 
+		// The depth offsets asked for so far that scvk has said it ignores.
+		std::vector<int32_t> noticedPolygonOffsets;
+
 		// The viewport, in the game's bottom-origin coordinates
 		int viewportX      = 0;
 		int viewportY      = 0;

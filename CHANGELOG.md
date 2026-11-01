@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-DepthBuffer:32` and `-DepthBuffer:16` launch options, ahead of `Use32BitDepth` in `scvk.ini`
 - `-LiveShadows:on` and `-LiveShadows:off`, the name scd3d11 uses now, the same as `-NativeShadowMasks:replace` and `off`
 - The setup checks tell a plugin that is a debug build from one missing the Visual C++ runtime, since only Visual Studio has what a debug build needs
+- `scvk.log` notes a depth offset other than 0, the first time each one is asked for
 
 ### Changed
 

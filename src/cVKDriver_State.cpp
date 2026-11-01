@@ -665,5 +665,20 @@ namespace scvk
 		// constant 0. The DirectX driver (0x883710) turns the value into a z-bias, which
 		// at 0 does nothing. The OpenGL driver (0x87d230) hands it to glPolygonOffset but
 		// never enables GL_POLYGON_OFFSET_FILL, so there it does nothing whatever its value.
+		if (offset == 0)
+		{
+			return;
+		}
+
+		// Say so once for each other value
+		//
+		// Nothing in the game sends one, so a plugin would be behind it, and on DirectX its
+		// z-bias would move the depth where scvk's does not. A missing depth bias looks like
+		// z-fighting, which is hard to trace back to here without this line.
+		if (std::find(noticedPolygonOffsets.begin(), noticedPolygonOffsets.end(), offset) == noticedPolygonOffsets.end())
+		{
+			noticedPolygonOffsets.push_back(offset);
+			LogInfo("PolygonOffset: something asked for %d, which scvk ignores.", offset);
+		}
 	}
 }
