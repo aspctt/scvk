@@ -477,7 +477,7 @@ namespace scvk
 			// the plugins scvk found a problem with are for that renderer's own checks
 			if (owner != GetModuleHandleA(nullptr))
 			{
-				LogWarn("SimCity 4 is drawing with %s, not scvk. With SCD3D11 installed as well, Driver=OpenGL in SC4GraphicsOptions.ini or -d:OpenGL picks scvk.", ReadModulePath(owner).c_str());
+				LogWarn("SimCity 4 is drawing with %s, not scvk. With SCD3D11 installed as well, Driver=OpenGL in SC4GraphicsOptions.ini or -d:Vulkan picks scvk.", ReadModulePath(owner).c_str());
 				isAnotherRendererDrawing = true;
 				return;
 			}

@@ -143,6 +143,7 @@ the other.
 
 | Option | Effect |
 |---|---|
+| `-d:Vulkan` | Picks scvk for this launch, whatever scd3d11 or `Driver=` in `SC4GraphicsOptions.ini` would choose |
 | `-VSync:off` | Lets the frame rate go past the display's refresh rate |
 | `-GPU:default` | Uses the first graphics card Vulkan lists, the way Windows picks, instead of preferring a dedicated one |
 | `-GPU:<n>` | Uses the nth graphics card in `scvk.log`'s list, counted from 1 |

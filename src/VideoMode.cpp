@@ -23,12 +23,14 @@
 #include "Benchmark.h"
 #include "Logger.h"
 #include "RendererChoice.h"
+#include "cVKDriver.h"
 
 #include <cGZDisplayMetrics.h>
 #include <cIGZApp.h>
 #include <cIGZCmdLine.h>
 #include <cIGZFrameWork.h>
 #include <cIGZGraphicSystem.h>
+#include <cIGZGraphicSystem2.h>
 #include <cIGZSystemService.h>
 #include <cISC4App.h>
 #include <cRZAutoRefCount.h>
@@ -105,6 +107,17 @@ namespace scvk
 		// The preferences' renderer for the game's Software renderer, which its options
 		// and -d:soft choose (0x44d029). Any other value picks a slot scvk serves.
 		constexpr uint8_t SOFTWARE_DRIVER_TYPE = 0;
+
+		// The value the game stores for a -d driver that is neither Software nor DirectX,
+		// as -d:OpenGL is (0x44d0ad).
+		constexpr uint8_t OTHER_DRIVER_TYPE = 0xFF;
+
+		// The game's switch for its driver and scvk's own value for it. The game looks for
+		// its driver names inside the value, then reads it as a hexadecimal class ID
+		// (0x44f45c). This value holds none of those names and no such number, so the game
+		// goes on as if there were no -d at all.
+		constexpr char const* DRIVER_SWITCH = "d";
+		constexpr char const* DRIVER_VULKAN = "Vulkan";
 
 		// The service that corrects the mode. The graphics system is a service too, at
 		// priority 1500000 (0x98fdc0), and the framework starts services from the highest
@@ -199,6 +212,33 @@ namespace scvk
 			return commandLine != nullptr && commandLine->IsSwitchPresent(cRZBaseString(FULLSCREEN_MODE_SWITCH), value, true) && _stricmp(value.ToChar(), FULLSCREEN_MODE_BORDERLESS) == 0;
 		}
 
+		/** Whether -d:Vulkan is among the launch options. */
+		bool IsVulkanDriverWanted(cIGZCmdLine const* commandLine)
+		{
+			cRZBaseString value;
+			return commandLine != nullptr && commandLine->IsSwitchPresent(cRZBaseString(DRIVER_SWITCH), value, true) && _stricmp(value.ToChar(), DRIVER_VULKAN) == 0;
+		}
+
+		/**
+		 * Asks the game for the OpenGL slot, which is always scvk's, the way -d:OpenGL does
+		 * (0x44ce40). This runs after every plugin's PreFrameWorkInit, so it also wins over
+		 * Driver= in SC4GraphicsOptions.ini, and it takes scvk past scd3d11 in the DirectX slot.
+		 */
+		void RequestVulkanDriver(SC4VideoPreferences& video)
+		{
+			cIGZGraphicSystem2Ptr graphicSystem;
+			if (!graphicSystem)
+			{
+				LogWarn("-d:Vulkan: the graphics system is not available, so the game keeps the driver it chose.");
+				return;
+			}
+
+			graphicSystem->SetDefaultDriverClassID(cVKDriver::DRIVER_GZCLSID);
+			video.driverType = OTHER_DRIVER_TYPE;
+
+			LogInfo("-d:Vulkan: the game is asked for scvk's driver.");
+		}
+
 		/** Whether scvk will be the renderer, as far as can be told this early. */
 		bool IsScvkDrawing(SC4VideoPreferences const& video)
 		{
@@ -291,6 +331,17 @@ namespace scvk
 
 			SC4VideoPreferences& video = preferences->videoPreferences;
 
+			cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
+
+			// Pick scvk when asked to
+			//
+			// A benchmark of DirectX claims no slot, so the OpenGL slot would be the game's
+			// own driver there.
+			if (IsVulkanDriverWanted(commandLine) && !IsBenchmarkOnDirectX())
+			{
+				RequestVulkanDriver(video);
+			}
+
 			// Leave the mode to whatever renderer is drawing instead
 			//
 			// A benchmark compares the renderers in the same mode and leaves Vulkan alone
@@ -306,8 +357,6 @@ namespace scvk
 
 			cGZDisplayMetrics screen{};
 			graphicSystem->GetScreenMetrics(screen);
-
-			cIGZCmdLine* const commandLine = RZGetFrameWork()->CommandLine();
 
 			// See whether a borderless window was asked for
 			//

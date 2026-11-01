@@ -48,6 +48,7 @@ namespace scvk
 	 *
 	 * All of this waits for scvk to be the renderer, or a benchmark. With scd3d11 or the
 	 * game's Software driver drawing, the game's mode and its preferences stay as they are.
+	 * The -d:Vulkan launch option makes scvk the renderer, whatever else chose a driver.
 	 *
 	 * The correction runs as a system service started just before the graphics system,
 	 * after every plugin's PreFrameWorkInit, so no plugin's request comes after it. Call
