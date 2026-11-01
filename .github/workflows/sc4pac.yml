@@ -1,0 +1,40 @@
+# Points the sc4pac package at each new GitHub release.
+#
+# caspervg/sc4pac-release-action updates the version, url and checksums in the package's
+# YAML and pushes them to a branch of aspctt/simtropolis-channel. The job summary links to
+# a prefilled pull request, which still takes one click to open. The STEX upload stays a
+# manual step.
+#
+# Releases are published by hand, so the release event fires. One made with a workflow's
+# own GITHUB_TOKEN would not trigger this, and the job would need to sit behind it instead.
+
+name: sc4pac
+
+on:
+  release:
+    types: [published]
+
+# The action only reads the release here, and pushes to the fork with its own token
+permissions:
+  contents: read
+
+jobs:
+  sc4pac:
+    name: Update the sc4pac package
+    runs-on: ubuntu-24.04
+
+    # Holds SC4PAC_FORK_TOKEN, a fine-grained token limited to the fork. The environment
+    # only allows release tags, so nothing but a release can read it.
+    environment: sc4pac
+
+    # Every release pushes to the same branch of the fork
+    concurrency: sc4pac-aspct-scvk
+
+    # Prereleases are skipped by the action, since sc4pac doesn't offer them
+    steps:
+      - name: Update the package on the fork
+        uses: caspervg/sc4pac-release-action@v1
+        with:
+          channel: sebamarynissen/simtropolis-channel
+          asset-id: aspct-scvk
+          token: ${{ secrets.SC4PAC_FORK_TOKEN }}
