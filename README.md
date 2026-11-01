@@ -12,7 +12,7 @@
 
 <p align="center" style="text-align: center;">
 	<a alt="Available on GitHub" href="https://github.com/aspctt/scvk"><img alt="Available on GitHub" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/compact-minimal/available/github_vector.svg"></a>
-	<a alt="Available on STEX" href="https://community.simtropolis.com/"><img alt="Available on STEX" height="40" src="https://pbs.twimg.com/profile_images/895744581072855041/OYlH7P5t_400x400.jpg"></a>
+	<a alt="Available on STEX" href="https://community.simtropolis.com/files/file/37697-scvk-dll/"><img alt="Available on STEX" height="40" src="https://pbs.twimg.com/profile_images/895744581072855041/OYlH7P5t_400x400.jpg"></a>
 </p>
 
 A native Vulkan renderer for SimCity 4.
