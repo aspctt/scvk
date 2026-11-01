@@ -3,9 +3,10 @@
 #   pwsh tools/package-release.ps1
 #
 # The zip holds scvk.dll, which goes into a Plugins folder, and the optional scvk.ini, beside
-# the readme and the third party notices from package\, the license and the metadata that
-# puts each Simtropolis upload on sc4pac. The version comes from src\version.h, so bump it
-# there first. Release notes are written by hand beside the zip.
+# the readme and the third party notices from package\ and the license. It has no
+# metadata.yaml on purpose: one in a Simtropolis upload starts the channel's bot, whose
+# package for a DLL fails the channel's own linter. The version comes from src\version.h,
+# so bump it there first. Release notes are written by hand beside the zip.
 
 param(
 	# Pack the Release DLL already built instead of building it again.
@@ -20,7 +21,6 @@ $repositoryRoot   = Split-Path $PSScriptRoot -Parent
 $releaseDirectory = Join-Path $repositoryRoot "Releases"
 $stagingDirectory = Join-Path $repositoryRoot "obj\package"
 $versionHeader    = Join-Path $repositoryRoot "src\version.h"
-$metadataTemplate = Join-Path $repositoryRoot "package\metadata.yaml"
 
 # vswhere ships with every Visual Studio installer and finds its tools wherever the edition
 # put them.
@@ -79,18 +79,6 @@ if (-not $imports) { throw "dumpbin listed no imports for scvk.dll" }
 
 $runtimeImports = @($imports | Where-Object { $_ -match '^(msvcp|vcruntime|concrt|ucrtbase|api-ms-win-crt-)' })
 if ($runtimeImports) { throw "scvk.dll imports the C++ runtime: $($runtimeImports -join ', ')" }
-
-# Fill in the sc4pac metadata
-#
-# The Simtropolis channel reads this file from the zip on the STEX. A DLL has to come from
-# its GitHub release, and the channel hashes no ini by itself, so the url and both checksums
-# are written here, from the files being packed. A hash left over from an older build would
-# make sc4pac refuse to install.
-$metadata = [System.IO.File]::ReadAllText($metadataTemplate)
-$metadata = $metadata.Replace("@VERSION@", $version)
-$metadata = $metadata.Replace("@DLL_SHA256@", (Get-FileHash (Join-Path $stagingDirectory "scvk.dll") -Algorithm SHA256).Hash)
-$metadata = $metadata.Replace("@INI_SHA256@", (Get-FileHash (Join-Path $stagingDirectory "scvk.ini") -Algorithm SHA256).Hash)
-[System.IO.File]::WriteAllText((Join-Path $stagingDirectory "metadata.yaml"), $metadata)
 
 # Pack them
 New-Item -ItemType Directory -Force $releaseDirectory | Out-Null
