@@ -102,6 +102,9 @@ at the desktop's current size. The display keeps its mode, and other windows can
 switched to over the game. The city scrolls when the cursor reaches the screen's edge,
 as in exclusive fullscreen.
 
+In borderless and fullscreen the cursor stays on the main monitor while the game is in
+front, and goes free again when another window is switched to.
+
 Launch options pick another mode for that launch. `-w` or `-windowed` gives a window
 and `-f` or `-fullscreen` exclusive fullscreen, both at the size in the game's
 options, and `-r` sets a size of its own. `-b` or `-borderless` asks for borderless

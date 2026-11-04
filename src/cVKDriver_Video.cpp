@@ -122,6 +122,7 @@ namespace scvk
 		bool     isDisplayModeChanged   = false;
 		bool     isGameWindowBorderless = false;
 		RECT     borderlessBounds       = {};
+		bool     isCursorConfined       = false;
 
 		// How many more faults the log describes.
 		int  exceptionReportsRemaining     = 8;
@@ -411,6 +412,32 @@ namespace scvk
 			}
 		}
 
+		// Keeps the cursor on the monitor the game window covers
+		void ConfineCursor(void)
+		{
+			isCursorConfined = ClipCursor(&borderlessBounds) != FALSE;
+
+			static bool hasLogged = false;
+			if (isCursorConfined && !hasLogged)
+			{
+				hasLogged = true;
+				LogInfo("Cursor: kept on the main monitor while the game is in front.");
+			}
+		}
+
+		// Lets the cursor leave the game's monitor again, if it was kept there
+		void ReleaseCursor(void)
+		{
+			// Only a clip of our own is cleared, since Windows keeps one for everybody
+			if (!isCursorConfined)
+			{
+				return;
+			}
+
+			ClipCursor(nullptr);
+			isCursorConfined = false;
+		}
+
 		// Sees the game window's messages before the game does
 		LRESULT CALLBACK GameWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 		{
@@ -421,6 +448,32 @@ namespace scvk
 			if (window == gameWindow)
 			{
 				ThumbnailFocusGuard::NoteWindowMessage(message, static_cast<uintptr_t>(wParam));
+			}
+
+			// Keep the cursor on the game's monitor while the game is in front
+			//
+			// A borderless or fullscreen game covers the main monitor, and a cursor that
+			// wanders onto another one leaves the screen's edge, where the game scrolls the
+			// city. Windows keeps one clip rectangle for the whole desktop, so it is set on
+			// every activation and given back on every switch away or minimise.
+			//
+			// At startup the window is already active when it reaches the procedure, which
+			// then sees no WM_ACTIVATE until the first switch away and back. WM_NCACTIVATE
+			// comes when it takes the foreground, and before every WM_ACTIVATE after that.
+			bool const isActivation = message == WM_ACTIVATE || message == WM_NCACTIVATE;
+
+			if (isActivation && window == gameWindow && (isFullscreenWindow || isGameWindowBorderless))
+			{
+				bool const isActive = (message == WM_ACTIVATE) ? (LOWORD(wParam) != WA_INACTIVE && HIWORD(wParam) == 0) : (wParam != FALSE && !IsIconic(window));
+
+				if (isActive)
+				{
+					ConfineCursor();
+				}
+				else
+				{
+					ReleaseCursor();
+				}
 			}
 
 			// Give the desktop back while a fullscreen game is in the background
@@ -935,8 +988,9 @@ namespace scvk
 	void cVKDriver::DestroyRenderWindow(void)
 	{
 		// Give the desktop its mode back first, so the window's last messages are not
-		// taken for a switch away.
+		// taken for a switch away, and the cursor its freedom.
 		EndFullscreen();
+		ReleaseCursor();
 
 		if (windowHandle == nullptr)
 		{

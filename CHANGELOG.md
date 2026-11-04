@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scvk.log` names the `scvk.ini` it read, or says there is none, and says when no `MaxFPS` is set
 - `scvk.log` shows the game's command line
 - `scvk.dll` carries its version and description, which Windows shows on the file's Details tab
+- In borderless and fullscreen the cursor stays on the main monitor while the game is in front
 
 ### Changed
 
