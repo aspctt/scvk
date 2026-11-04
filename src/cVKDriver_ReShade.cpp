@@ -448,11 +448,18 @@ namespace scvk
 		originalDraw = reinterpret_cast<DrawFunction>(draw);
 		hookedDriver = this;
 
-		if (PatchDrawPostStaticView(executable))
+		// Hook the static pass only for live shadows
+		//
+		// The hook draws them into the static view before the game saves it to its backing
+		// store. With them off, the default, it would patch the game for an empty pass on
+		// every static view.
+		bool const areLiveShadowsOn = GetSettings().nativeShadowMode != NativeShadowMode::Off;
+
+		if (areLiveShadowsOn && PatchDrawPostStaticView(executable))
 		{
 			Log(LogCategory::Initialization, "live shadows: static pass hooked before SC4 backing-store save");
 		}
-		else
+		else if (areLiveShadowsOn)
 		{
 			Log(LogCategory::Initialization, "live shadows: DrawPostStaticView byte guard failed; using end-of-scene fallback");
 		}

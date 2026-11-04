@@ -43,6 +43,7 @@
 #include "ModuleLog.h"
 #include "NativeShadowMasks.h"
 #include "NativeShadowRegistry.h"
+#include "Settings.h"
 #include "TerrainShadows.h"
 #include "VulkanBackend.h"
 
@@ -867,6 +868,12 @@ namespace scvk
 
 	void cVKDriver::RenderLivePropShadows(bool isStaticPass)
 	{
+		// Without a shadow module nothing is ever captured, so there is nothing to draw
+		if (GetSettings().nativeShadowMode == NativeShadowMode::Off)
+		{
+			return;
+		}
+
 		// The game updates the static view in place for localised changes, handing over the
 		// dirty rectangle as a scissored viewport. A shadow is not local: casters inside
 		// throw onto receivers outside, and receivers inside are darkened by casters that

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Launch options that turn something on or off also take `true`, `false`, `enabled`, `disabled`, `1` and `0`, as in scd3d11, and mean on by themselves
 - `scvk.log` and the setup dialog show the Windows account in paths as `%USERPROFILE%` or `%USERNAME%`
+- With live shadows off, the default, scvk no longer hooks the game's static city view for them
 
 ## [0.5.0] - 2026-11-01
 
