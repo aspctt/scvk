@@ -424,7 +424,8 @@ ColorDepth=32
 > exit. That is the slot the game is not using.
 
 A `scvk.log` file is written next to the DLL, falling back to the temp
-directory if the Plugins folder is not writable. `-LogLevel:<level>` sets how much
+directory if the Plugins folder is not writable. It opens with the game's command line
+and the `scvk.ini` scvk read, or that there is none. `-LogLevel:<level>` sets how much
 goes into it, from `trace` to `off`, and is `info` by default. When the game starts,
 scvk looks over your setup and writes what it finds there: another driver drawing, a
 plugin loaded twice or unable to load, an old SC4RenderServices, no 4GB patch,

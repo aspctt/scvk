@@ -353,6 +353,17 @@ namespace scvk
 				fprintf(logFile, "%s\n", RedactAccount(line, GetCurrentAccount()).c_str());
 			}
 
+			// Write the command line as Windows passed it
+			//
+			// Launch options come from a shortcut, Steam or a launcher, and the player
+			// often cannot say which reached the game. The whole line also shows quoting a
+			// split argument would hide, such as a -UserDir cut off at its spaces.
+			char const* const commandLine = GetCommandLineA();
+			if (commandLine != nullptr)
+			{
+				fprintf(logFile, "Command line: %s\n", RedactAccount(commandLine, GetCurrentAccount()).c_str());
+			}
+
 			fputc('\n', logFile);
 			hasEverOpened = true;
 		}

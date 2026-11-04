@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `-Depth16:off` and `-Depth16:on`, scd3d11's name for `-DepthBuffer:32` and `16`
 - `-borderless:off` and `-b:off` keep the window mode in the game's options instead of the borderless default
 - `scvk.log` names the `scvk.ini` it read, or says there is none, and says when no `MaxFPS` is set
+- `scvk.log` shows the game's command line
 
 ### Changed
 
