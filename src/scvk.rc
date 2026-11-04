@@ -1,0 +1,59 @@
+/*
+ * scvk - a native Vulkan renderer for SimCity 4
+ *
+ * Copyright (C) 2026 aspctt
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation, under
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, see <https://www.gnu.org/licenses/>.
+ */
+
+// The version Windows shows on the DLL's Details tab, which setup checks such as scvk's
+// own read from every plugin. The numbers come from version.h, so a release changes them
+// there and nowhere else.
+
+//// Dependencies
+
+#include <winver.h>
+#include "version.h"
+
+//// Version
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     SCVK_VERSION_MAJOR, SCVK_VERSION_MINOR, SCVK_VERSION_PATCH, 0
+PRODUCTVERSION  SCVK_VERSION_MAJOR, SCVK_VERSION_MINOR, SCVK_VERSION_PATCH, 0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		// US English, Unicode
+		BLOCK "040904B0"
+		BEGIN
+			VALUE "CompanyName", "aspctt"
+			VALUE "FileDescription", "scvk, a native Vulkan renderer for SimCity 4"
+			VALUE "FileVersion", SCVK_VERSION_STRING
+			VALUE "InternalName", "scvk"
+			VALUE "LegalCopyright", "Copyright (C) 2026 aspctt. LGPL 2.1 or later."
+			VALUE "OriginalFilename", "scvk.dll"
+			VALUE "ProductName", "scvk"
+			VALUE "ProductVersion", SCVK_VERSION_STRING
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x409, 1200
+	END
+END

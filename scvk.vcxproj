@@ -285,5 +285,8 @@
     <ClInclude Include="src\VulkanBackend.h" />
     <ClInclude Include="src\Watchdog.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\scvk.rc" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

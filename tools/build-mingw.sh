@@ -7,7 +7,8 @@
 # Visual Studio; this is for building and checking it from Linux.
 #
 # What it needs:
-#   - i686-w64-mingw32-g++, the POSIX threads flavour (Debian and Ubuntu: g++-mingw-w64-i686)
+#   - i686-w64-mingw32-g++, the POSIX threads flavour (Debian and Ubuntu: g++-mingw-w64-i686),
+#     and the i686-w64-mingw32-windres that package brings along (WINDRES_MINGW names another)
 #   - nothing else: the Vulkan headers are in vendor/vulkan (VULKAN_INCLUDE names others)
 #
 # Usage: tools/build-mingw.sh [Release|Debug]
@@ -75,6 +76,15 @@ for source in "$repository"/src/*.cpp "$repository"/vendor/src/*.cpp; do
 	objectFiles+=("$object")
 	"$compiler" $flags -c "$source" -o "$object"
 done
+
+# Compile the version resource with the windres beside the compiler
+#
+# The same prefix names both, and MinGW-w64's binutils, which the compiler package
+# depends on, holds it.
+windres="${WINDRES_MINGW:-${compiler%g++*}windres}"
+resource="$objects/scvk.res.o"
+"$windres" -I"$repository/src" -O coff "$repository/src/scvk.rc" -o "$resource"
+objectFiles+=("$resource")
 
 # Link, with the exports the game and other plugins look up by name
 #
