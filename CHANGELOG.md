@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `-Depth16:off` and `-Depth16:on`, scd3d11's name for `-DepthBuffer:32` and `16`
+- `-borderless:off` and `-b:off` keep the window mode in the game's options instead of the borderless default
+
 ### Changed
 
+- Launch options that turn something on or off also take `true`, `false`, `enabled`, `disabled`, `1` and `0`, as in scd3d11, and mean on by themselves
 - `scvk.log` and the setup dialog show the Windows account in paths as `%USERPROFILE%` or `%USERNAME%`
 
 ## [0.5.0] - 2026-11-01

@@ -23,6 +23,7 @@
 #include "Logger.h"
 
 #include <windows.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,6 +35,18 @@ namespace scvk
 	{
 		// More than any machine holds, and small enough to rule out a stray long number.
 		constexpr unsigned long MAXIMUM_GPU_NUMBER = 16;
+
+		// The words a flag takes, the same set SCD3D11 takes, so -VSync:false works with
+		// either renderer.
+		constexpr char const* FLAG_ON_WORDS[]  = { "on", "true", "enabled", "1" };
+		constexpr char const* FLAG_OFF_WORDS[] = { "off", "false", "disabled", "0" };
+
+		// Room for the longest flag switch scvk reads, its dash and colon included.
+		constexpr size_t FLAG_SWITCH_LENGTH = 32;
+
+		// Room for the longest flag word. A longer value is cut short and then read as no
+		// flag, which it is.
+		constexpr uint32_t FLAG_VALUE_LENGTH = 16;
 	}
 
 	//// Private Functions
@@ -95,17 +108,13 @@ namespace scvk
 			return static_cast<uint32_t>(number);
 		}
 
-		/** -DoctorDialog: on the command line, then DoctorDialog in scvk.ini, on when neither says. */
+		/** -DoctorDialog on the command line, then DoctorDialog in scvk.ini, on when neither says. */
 		bool ReadDoctorDialogChoice(void)
 		{
-			if (HasCommandLineSwitch("-DoctorDialog:off"))
+			FlagSwitch const flag = ReadFlagSwitch("DoctorDialog");
+			if (flag != FlagSwitch::Absent)
 			{
-				return false;
-			}
-
-			if (HasCommandLineSwitch("-DoctorDialog:on"))
-			{
-				return true;
+				return flag == FlagSwitch::On;
 			}
 
 			char settingsPath[MAX_PATH];
@@ -114,10 +123,27 @@ namespace scvk
 				return true;
 			}
 
-			char value[16] = {};
+			char value[FLAG_VALUE_LENGTH] = {};
 			ReadIniValue(settingsPath, "scvk", "DoctorDialog", "true", value, sizeof(value));
 
-			return _stricmp(value, "false") != 0 && strcmp(value, "0") != 0;
+			bool isOn = true;
+			if (!ParseFlag(value, isOn))
+			{
+				LogWarn("DoctorDialog=%s in scvk.ini is neither true nor false; showing the dialog.", value);
+				return true;
+			}
+
+			return isOn;
+		}
+
+		/** Changes a setting to what its flag switch says, when the switch is given. */
+		void ReadFlagSetting(char const* name, bool& setting)
+		{
+			FlagSwitch const flag = ReadFlagSwitch(name);
+			if (flag != FlagSwitch::Absent)
+			{
+				setting = flag == FlagSwitch::On;
+			}
 		}
 
 		Settings ReadSettings(void)
@@ -126,14 +152,7 @@ namespace scvk
 
 			// The defaults are chosen to need no setting at all; SCD3D11's command line
 			// switches still change them for whoever passes one
-			if (HasCommandLineSwitch("-VSync:off"))
-			{
-				settings.isVSyncEnabled = false;
-			}
-			else if (HasCommandLineSwitch("-VSync:on"))
-			{
-				settings.isVSyncEnabled = true;
-			}
+			ReadFlagSetting("VSync", settings.isVSyncEnabled);
 
 			if (HasCommandLineSwitch("-GPU:default"))
 			{
@@ -143,24 +162,18 @@ namespace scvk
 			settings.gpuNumber = ReadGpuNumber();
 			settings.isDoctorDialogEnabled = ReadDoctorDialogChoice();
 
-			if (HasCommandLineSwitch("-ViewportCull:off"))
-			{
-				settings.isViewportCullEnabled = false;
-			}
-
-			if (HasCommandLineSwitch("-ReShade:off"))
-			{
-				settings.isReShadeIntegrationEnabled = false;
-			}
+			ReadFlagSetting("ViewportCull", settings.isViewportCullEnabled);
+			ReadFlagSetting("ReShade", settings.isReShadeIntegrationEnabled);
 
 			// The shadow modules, off unless a switch names a mode. SCD3D11 folded its modes
 			// into -LiveShadows, on alone or with :on, which is what Replace does here. A
 			// mode named as well wins, being the more exact of the two.
-			if (HasCommandLineSwitch("-LiveShadows") || HasCommandLineSwitch("-LiveShadows:on"))
+			FlagSwitch const liveShadows = ReadFlagSwitch("LiveShadows");
+			if (liveShadows == FlagSwitch::On)
 			{
 				settings.nativeShadowMode = NativeShadowMode::Replace;
 			}
-			else if (HasCommandLineSwitch("-LiveShadows:off"))
+			else if (liveShadows == FlagSwitch::Off)
 			{
 				settings.nativeShadowMode = NativeShadowMode::Off;
 			}
@@ -186,10 +199,7 @@ namespace scvk
 				settings.nativeShadowMode = NativeShadowMode::Replace;
 			}
 
-			if (HasCommandLineSwitch("-FlipModel:off"))
-			{
-				settings.isFlipModelPreferred = false;
-			}
+			ReadFlagSetting("FlipModel", settings.isFlipModelPreferred);
 
 			return settings;
 		}
@@ -228,6 +238,59 @@ namespace scvk
 
 		outValue[count] = '\0';
 		return true;
+	}
+
+	FlagSwitch ReadFlagSwitch(char const* name)
+	{
+		// Alone, which means on
+		char text[FLAG_SWITCH_LENGTH];
+		sprintf_s(text, sizeof(text), "-%s", name);
+
+		if (HasCommandLineSwitch(text))
+		{
+			return FlagSwitch::On;
+		}
+
+		// Then with a value
+		strcat_s(text, sizeof(text), ":");
+
+		char value[FLAG_VALUE_LENGTH] = {};
+		if (!GetCommandLineValue(text, value, sizeof(value)))
+		{
+			return FlagSwitch::Absent;
+		}
+
+		bool isOn = false;
+		if (!ParseFlag(value, isOn))
+		{
+			LogWarn("-%s:%s is neither on nor off; ignoring it.", name, value);
+			return FlagSwitch::Absent;
+		}
+
+		return isOn ? FlagSwitch::On : FlagSwitch::Off;
+	}
+
+	bool ParseFlag(char const* text, bool& outIsOn)
+	{
+		for (char const* const word : FLAG_ON_WORDS)
+		{
+			if (_stricmp(text, word) == 0)
+			{
+				outIsOn = true;
+				return true;
+			}
+		}
+
+		for (char const* const word : FLAG_OFF_WORDS)
+		{
+			if (_stricmp(text, word) == 0)
+			{
+				outIsOn = false;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	void ReadIniValue(char const* path, char const* section, char const* key, char const* fallback, char* outValue, uint32_t capacity)

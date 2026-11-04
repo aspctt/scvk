@@ -37,11 +37,19 @@ namespace scvk
 		Replace,  // all of them, and the shadow registry and the terrain's own shadows on top
 	};
 
+	/** What a launch option that turns something on or off says. See ReadFlagSwitch. */
+	enum class FlagSwitch
+	{
+		Absent,  // not given, or given a value that is no flag, which is logged
+		On,
+		Off,
+	};
+
 	/**
 	 * The renderer's launch options. Every one has a default that suits playing, and the
-	 * game's command line can change them with the switches SCD3D11 takes, so a launcher
-	 * set up for one renderer behaves the same with the other. The few settings older
-	 * than these live in scvk.ini, which is optional.
+	 * game's command line can change them with the switches SCD3D11 takes, read the way
+	 * it reads them, so a launcher set up for one renderer behaves the same with the
+	 * other. The few settings older than these live in scvk.ini, which is optional.
 	 */
 	struct Settings
 	{
@@ -99,6 +107,16 @@ namespace scvk
 
 	/** The text after a switch such as -NativeShadowMasks:, up to the next space, or false when absent. */
 	bool GetCommandLineValue(char const* prefix, char* outValue, uint32_t capacity);
+
+	/**
+	 * Reads a launch option that turns something on or off, the way SCD3D11 reads its
+	 * own: alone, such as -VSync, it means on, and after a colon it takes on, off, true,
+	 * false, enabled, disabled, 1 or 0, in any case. The name goes without its dash.
+	 */
+	FlagSwitch ReadFlagSwitch(char const* name);
+
+	/** Reads one of the words ReadFlagSwitch takes, for the same settings in scvk.ini. False when it is none of them. */
+	bool ParseFlag(char const* text, bool& outIsOn);
 
 	/**
 	 * A value from an ini file without any comment after it, or the fallback when the key

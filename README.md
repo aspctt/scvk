@@ -93,6 +93,7 @@ per pixel. Not every card pairs 16-bit depth with a stencil, and on those scvk t
 `-DepthBuffer:32` or `Use32BitDepth=true` in `scvk.ini` gives a 32-bit depth buffer,
 as scvk had up to 0.2.0. The banding goes away, but those lights can leave thin lines
 after scrolling. `-DepthBuffer:16` keeps the default for a launch whatever the ini says.
+scd3d11's `-Depth16:off` and `-Depth16:on` do the same as `-DepthBuffer:32` and `16`.
 
 ### Window modes
 
@@ -103,7 +104,8 @@ switched to over the game.
 Launch options pick another mode for that launch. `-w` or `-windowed` gives a window
 and `-f` or `-fullscreen` exclusive fullscreen, both at the size in the game's
 options, and `-r` sets a size of its own. `-b` or `-borderless` asks for borderless
-outright and leaves out any `-r` size.
+outright and leaves out any `-r` size, while `-borderless:off` keeps the mode in the
+game's options.
 
 With sc4-graphics-options installed, its `WindowMode` decides instead, and its
 `Borderless` gives the same window. `-b` still wins over its other modes. When the
@@ -150,7 +152,8 @@ interface goes over it, and effects that read depth get the city's own.
 ### Launch options
 
 scvk takes scd3d11's launch options, so a launcher set up for one renderer works with
-the other.
+the other. An option that turns something on or off means on by itself, and after a
+colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 
 | Option | Effect |
 |---|---|
@@ -165,6 +168,7 @@ the other.
 | `-LiveShadows:on` or `-LiveShadows:off` | The same as `-NativeShadowMasks:replace` or `off` |
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
+| `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
 | `-DoctorDialog:off` | Keeps setup problems in `scvk.log` only, the same as `DoctorDialog=false` in `scvk.ini` |
 | `-FullscreenMode:Borderless` | The same as `-borderless` |

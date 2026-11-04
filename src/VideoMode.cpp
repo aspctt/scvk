@@ -23,6 +23,7 @@
 #include "Benchmark.h"
 #include "Logger.h"
 #include "RendererChoice.h"
+#include "Settings.h"
 #include "cVKDriver.h"
 
 #include <cGZDisplayMetrics.h>
@@ -95,9 +96,10 @@ namespace scvk
 		// size for any other.
 		constexpr char const* CUSTOM_RESOLUTION_ON_VALUES[] = { "on", "enabled" };
 
-		// scvk's own launch options for a borderless window. The game matches the whole
-		// name of a switch, in any case (0x914001), and reads none of these itself.
-		constexpr char const* BORDERLESS_SWITCHES[] = { "b", "borderless" };
+		// scvk's own launch options for a borderless window, which the game reads neither of
+		// itself. They are flags, as SCD3D11's -Borderless is, so -Borderless:off turns the
+		// default off. The long name wins when both are given, as in SCD3D11.
+		constexpr char const* BORDERLESS_SWITCHES[] = { "Borderless", "b" };
 
 		// SCD3D11's launch option for its borderless fullscreen, -FullscreenMode:Borderless,
 		// taken as scvk's borderless window, so a launcher set up for SCD3D11 gets one.
@@ -203,6 +205,21 @@ namespace scvk
 			}
 
 			return false;
+		}
+
+		/** What the first of the borderless switches given says, or Absent. */
+		FlagSwitch ReadBorderlessSwitch(void)
+		{
+			for (char const* const name : BORDERLESS_SWITCHES)
+			{
+				FlagSwitch const flag = ReadFlagSwitch(name);
+				if (flag != FlagSwitch::Absent)
+				{
+					return flag;
+				}
+			}
+
+			return FlagSwitch::Absent;
 		}
 
 		/** Whether SCD3D11's -FullscreenMode:Borderless is among the launch options. */
@@ -363,11 +380,16 @@ namespace scvk
 			// The game loads every plugin before it starts any service, so
 			// SC4GraphicsOptions is in the process by now if it is installed at all.
 			HMODULE const graphicsOptions = GetModuleHandleA(GRAPHICS_OPTIONS_MODULE_NAME);
+			FlagSwitch const borderlessSwitch = ReadBorderlessSwitch();
 
-			if (HasAnySwitch(commandLine, BORDERLESS_SWITCHES))
+			if (borderlessSwitch == FlagSwitch::On)
 			{
 				isBorderless = true;
 				LogInfo("Borderless: asked for by a launch option.");
+			}
+			else if (borderlessSwitch == FlagSwitch::Off)
+			{
+				LogInfo("Borderless: turned off by a launch option, so the game keeps the mode in its options.");
 			}
 			else if (IsFullscreenModeBorderless(commandLine))
 			{
@@ -407,7 +429,9 @@ namespace scvk
 			bool const isWindowWanted     = HasAnySwitch(commandLine, WINDOWED_SWITCHES);
 			bool const isFullscreenWanted = HasAnySwitch(commandLine, FULLSCREEN_SWITCHES);
 
-			if (!isBorderless && !hasLaunchSize && !isWindowWanted && !isFullscreenWanted)
+			bool const isModeChosen = borderlessSwitch == FlagSwitch::Off || hasLaunchSize || isWindowWanted || isFullscreenWanted;
+
+			if (!isBorderless && !isModeChosen)
 			{
 				if (isScvkDrawing)
 				{

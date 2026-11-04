@@ -72,8 +72,9 @@ below.</p>
 <ul>
 <li>scvk starts the game borderless, covering the main monitor. <code>-w</code>
 gives a window and <code>-f</code> exclusive fullscreen, at the size in the game's
-options, and <code>-r</code> sets a size of its own. With sc4-graphics-options
-installed, its <code>WindowMode</code> decides instead.</li>
+options, and <code>-r</code> sets a size of its own. <code>-borderless:off</code>
+keeps the mode in the game's options. With sc4-graphics-options installed, its
+<code>WindowMode</code> decides instead.</li>
 <li><code>-NativeShadowMasks:all</code> turns on live shadows for True3D props and
 network pieces. They are off by default, since while they are on every scroll,
 zoom and turn makes the game redraw the whole city.
@@ -89,7 +90,8 @@ city is never held at 30 whatever this says.</li>
 <li><code>-DepthBuffer:32</code> gives the depth buffer 32 bits instead of the 16 the
 DirectX renderer uses. Surfaces that sit very close together stop banding, but lights
 laid exactly on a model can leave thin lines after scrolling.
-<code>-DepthBuffer:16</code> keeps the default.</li>
+<code>-DepthBuffer:16</code> keeps the default. scd3d11's <code>-Depth16:off</code>
+and <code>-Depth16:on</code> do the same.</li>
 <li><code>-VSync:off</code>, <code>-GPU:default</code>, <code>-FlipModel:off</code>,
 <code>-ViewportCull:off</code> and <code>-ReShade:off</code> work as they do in
 scd3d11.</li>
@@ -102,6 +104,10 @@ instead of showing them in a dialog when the region view opens.
 <code>scvk.log</code>, from <code>trace</code> to <code>off</code>.
 <code>info</code> by default.</li>
 </ul>
+<p>Options that turn something on or off mean on by themselves, and after a colon
+they take <code>on</code>, <code>off</code>, <code>true</code>, <code>false</code>,
+<code>enabled</code>, <code>disabled</code>, <code>1</code> or <code>0</code>, as in
+scd3d11.</p>
 <p>The <code>scvk.ini</code> in the zip is optional. Copy it beside
 <code>scvk.dll</code> if you want to change a setting, and scvk reads it when it is
 there. A <code>scvk.ini</code> from 0.2 keeps working, but its

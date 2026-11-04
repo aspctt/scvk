@@ -131,8 +131,8 @@ namespace scvk
 	namespace
 	{
 		/**
-		 * Whether the depth buffer is to be 32-bit: what -DepthBuffer: asks for, or else
-		 * Use32BitDepth in scvk.ini. False when neither says.
+		 * Whether the depth buffer is to be 32-bit: what -DepthBuffer: asks for, then
+		 * SCD3D11's -Depth16, then Use32BitDepth in scvk.ini. False when none says.
 		 */
 		bool IsThirtyTwoBitDepthChosen(void)
 		{
@@ -154,6 +154,16 @@ namespace scvk
 				LogWarn("-DepthBuffer:%s is neither 16 nor 32; ignoring it.", choice);
 			}
 
+			// Then SCD3D11's switch
+			//
+			// Its -Depth16, on by default, rounds every depth onto a 16-bit grid, which is
+			// what scvk's 16-bit buffer gives by being one, so off asks for the finer buffer.
+			FlagSwitch const depth16 = ReadFlagSwitch("Depth16");
+			if (depth16 != FlagSwitch::Absent)
+			{
+				return depth16 == FlagSwitch::Off;
+			}
+
 			// Then scvk.ini
 			char settingsPath[MAX_PATH] = {};
 			if (!LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
@@ -164,7 +174,8 @@ namespace scvk
 			char value[16] = {};
 			ReadIniValue(settingsPath, "scvk", "Use32BitDepth", "false", value, sizeof(value));
 
-			return _stricmp(value, "true") == 0 || strcmp(value, "1") == 0;
+			bool isThirtyTwoBit = false;
+			return ParseFlag(value, isThirtyTwoBit) && isThirtyTwoBit;
 		}
 
 		/**

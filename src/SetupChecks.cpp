@@ -146,7 +146,7 @@ namespace scvk
 		// VideoMode.cpp and the shadow modules.
 		constexpr char const* SCVK_SWITCHES[] =
 		{
-			"VSync", "GPU", "ReShade", "ViewportCull", "LiveShadows", "NativeShadowMasks", "FlipModel", "DepthBuffer", "MaxFPS",
+			"VSync", "GPU", "ReShade", "ViewportCull", "LiveShadows", "NativeShadowMasks", "FlipModel", "DepthBuffer", "Depth16", "MaxFPS",
 			"LogLevel", "DoctorDialog", "windowed", "fullscreen", "b", "borderless", "FullscreenMode",
 			"LiveShadowDiag", "NativeShadowDiag", "LiveShadowAllFaces", "LiveShadowKeepPartial",
 			"NativeShadowExperiment", "TerrainShadows", "ShadowRegistry",
