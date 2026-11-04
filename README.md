@@ -364,8 +364,10 @@ happens by itself. scvk opens the region and the city, pauses it and times every
 frame through eight camera scenes: a still view, scrolling at each zoom level, a
 full turn and a run of zoom changes. It then writes `scvk-benchmark.csv` and
 quits. The runs alternate between the two renderers, and
-`tools/benchmark-report.py` turns them into average fps, 1% and 0.1% lows and
-load times for each.
+`tools/benchmark-report.py` turns them into average fps, 1% and 0.1% lows, frame
+pacing and load times for each. Pacing covers the median and 99th percentile frame
+time, stutters a minute and the average change from one frame to the next, since a few
+long frames feel rough without moving the averages much.
 
 With VSync on, the lighter scenes sit at the monitor's refresh rate. Add
 `-GameArguments "-VSync:off"` to see how far past it scvk goes.

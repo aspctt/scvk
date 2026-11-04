@@ -11,6 +11,14 @@
 # to the city on screen. Startup ends with the first region on screen, before any switch to
 # the benchmark's region.
 #
+# Frame pacing looks at the frames one by one, since a few long frames between short ones
+# feel like stutter while hardly moving the averages. The 99th percentile is the frame time
+# 99% of frames stay at or under. A stutter is a frame that takes more than twice the median
+# of the frames just before it and at least one refresh of a 60 Hz screen, counted per
+# minute. Jitter is the average change in frame
+# time from one frame to the next. The frame clock is the game's own Flush, so a stall in
+# the game counts as much as one in the driver.
+#
 # With a folder, the report is also written there as report.md.
 
 #// Dependencies
@@ -33,6 +41,20 @@ LOAD_TIMES = [
 # How far apart, in world units, the same point of a scene may be in two runs before the
 # report says the runs did not cover the same ground.
 POINT_TOLERANCE = 50.0
+
+# A frame is a stutter when it takes more than this many times the median of the frames
+# before it. Twice its neighbours is about where a single long frame starts to show.
+STUTTER_FACTOR = 2.0
+
+# How many frames before a frame make up the median it is held against. Short enough to
+# follow a scene that speeds up or slows down, long enough that one stutter does not hide
+# the next.
+STUTTER_WINDOW = 30
+
+# The shortest frame that counts as a stutter, one refresh of a 60 Hz screen. Without it a
+# 3 ms frame among 1.4 ms ones counted, and rotating counted hundreds a minute that nobody
+# could see.
+STUTTER_MINIMUM = 1000.0 / 60.0
 
 #// Private Functions
 
@@ -79,6 +101,27 @@ def low_fps(slowest_first, share_divisor):
 	return 1000.0 * count / sum(slowest_first[:count])
 
 
+# The frame time a share of the frames stay at or under, by nearest rank.
+def percentile(fastest_first, share):
+	index = min(len(fastest_first) - 1, max(0, math.ceil(share * len(fastest_first)) - 1))
+	return fastest_first[index]
+
+
+# How many frames take more than STUTTER_FACTOR times the median of the frames before them,
+# and at least STUTTER_MINIMUM.
+def count_stutters(frame_times):
+	count = 0
+	for index in range(1, len(frame_times)):
+		if frame_times[index] < STUTTER_MINIMUM:
+			continue
+
+		recent = frame_times[max(0, index - STUTTER_WINDOW):index]
+		if frame_times[index] > STUTTER_FACTOR * statistics.median(recent):
+			count += 1
+
+	return count
+
+
 def summarise(frame_times):
 	if not frame_times:
 		return None
@@ -86,12 +129,19 @@ def summarise(frame_times):
 	slowest_first = sorted(frame_times, reverse=True)
 	total = sum(frame_times)
 
+	# The change from each frame to the next, for a scene of a single frame none
+	changes = [abs(later - earlier) for earlier, later in zip(frame_times, frame_times[1:])]
+
 	return {
 		"frames": len(frame_times),
 		"average": 1000.0 * len(frame_times) / total,
 		"low1": low_fps(slowest_first, 100),
 		"low01": low_fps(slowest_first, 1000),
 		"slowest": slowest_first[0],
+		"median_time": statistics.median(frame_times),
+		"time99": percentile(slowest_first[::-1], 0.99),
+		"stutters": count_stutters(frame_times) / (total / 60000.0),
+		"jitter": statistics.fmean(changes) if changes else 0.0,
 	}
 
 
@@ -172,12 +222,17 @@ lines.append("")
 lines.append("| Scene | DirectX avg | 1% low | 0.1% low | scvk avg | 1% low | 0.1% low | Change avg | Change 1% | Change 0.1% |")
 lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
+# Summarise every scene of every run once, for both tables
+scene_summaries = {
+	index: {renderer: [summarise(run["frames"].get(index, [])) for run in by_renderer[renderer]] for renderer in RENDERERS}
+	for index in scene_names
+}
+
 spread_warnings = []
 for index in sorted(scene_names):
 	figures = {}
 	for renderer in RENDERERS:
-		summaries = [summarise(run["frames"].get(index, [])) for run in by_renderer[renderer]]
-		figures[renderer] = {key: median_of(summaries, key) for key in ("average", "low1", "low01")}
+		figures[renderer] = {key: median_of(scene_summaries[index][renderer], key) for key in ("average", "low1", "low01")}
 
 	direct, vulkan = figures["DirectX"], figures["scvk"]
 	lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
@@ -190,6 +245,29 @@ for index in sorted(scene_names):
 	spread = point_spread(complete, index)
 	if spread > POINT_TOLERANCE:
 		spread_warnings.append("- %s: the camera's points differ by up to %.0f between runs" % (scene_names[index], spread))
+
+lines.append("")
+
+# Compare the frame pacing
+lines.append("## Frame pacing")
+lines.append("")
+lines.append("Median of the same runs. Frame times and jitter in milliseconds, stutters per minute; lower is better.")
+lines.append("")
+lines.append("| Scene | DirectX median | 99th | Stutters | Jitter | scvk median | 99th | Stutters | Jitter |")
+lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+
+for index in sorted(scene_names):
+	cells = []
+	for renderer in RENDERERS:
+		summaries = scene_summaries[index][renderer]
+		cells += [
+			format_number(median_of(summaries, "median_time"), 2),
+			format_number(median_of(summaries, "time99"), 2),
+			format_number(median_of(summaries, "stutters"), 1),
+			format_number(median_of(summaries, "jitter"), 2),
+		]
+
+	lines.append("| %s | %s |" % (scene_names[index], " | ".join(cells)))
 
 lines.append("")
 
