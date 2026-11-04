@@ -99,7 +99,8 @@ scd3d11's `-Depth16:off` and `-Depth16:on` do the same as `-DepthBuffer:32` and 
 
 scvk starts the game borderless: a window with no frame that covers the main monitor,
 at the desktop's current size. The display keeps its mode, and other windows can be
-switched to over the game.
+switched to over the game. The city scrolls when the cursor reaches the screen's edge,
+as in exclusive fullscreen.
 
 Launch options pick another mode for that launch. `-w` or `-windowed` gives a window
 and `-f` or `-fullscreen` exclusive fullscreen, both at the size in the game's

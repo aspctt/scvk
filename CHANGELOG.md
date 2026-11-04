@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scvk.log` and the setup dialog show the Windows account in paths as `%USERPROFILE%` or `%USERNAME%`
 - With live shadows off, the default, scvk no longer hooks the game's static city view for them
 
+### Fixed
+
+- The city scrolls at the screen's edges in borderless, as it does in exclusive fullscreen
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

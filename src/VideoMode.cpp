@@ -296,20 +296,28 @@ namespace scvk
 			return _wcsnicmp(windowMode, GRAPHICS_OPTIONS_BORDERLESS, wcslen(GRAPHICS_OPTIONS_BORDERLESS)) == 0;
 		}
 
-		/** Asks for a window the screen's size, at the screen's colour depth. */
+		/**
+		 * Asks for fullscreen at the screen's size and colour depth, which the driver then
+		 * shows as a borderless window (cVKDriver::CreateRenderWindow).
+		 */
 		void RequestBorderlessWindow(cIGZGraphicSystem& graphicSystem, cGZDisplayMetrics const& screen)
 		{
-			// A window has to have the screen's colour depth and fit on it, or the game
-			// makes it fullscreen (0x990a3a), so this is the largest window there is.
+			// Ask the game for fullscreen rather than a window
+			//
+			// The game scrolls the city when the cursor reaches the screen's edge only in
+			// fullscreen: with a window the screen's size, which an earlier build asked for,
+			// only a right-button drag scrolled. SCD3D11 turns fullscreen on for its own
+			// borderless mode as well. The driver keeps the display's mode either way, and
+			// the screen's own size and depth are a mode the game always finds in the list.
 			cGZDisplayMetrics request{};
 			request.width    = screen.width;
 			request.height   = screen.height;
 			request.bitDepth = screen.bitDepth;
 
 			graphicSystem.PreInitSetDesiredGameResolution(request);
-			graphicSystem.PreInitSetWindowedMode(true);
+			graphicSystem.PreInitSetWindowedMode(false);
 
-			LogInfo("Borderless: the game runs in a %ux%u window that covers the main monitor.", request.width, request.height);
+			LogInfo("Borderless: the game runs fullscreen at %ux%u, in a window that covers the main monitor.", request.width, request.height);
 		}
 
 		/** Corrects the mode the game is about to ask its graphics system for. */

@@ -764,10 +764,13 @@ namespace scvk
 		//
 		// Exclusive, as the game's own drivers do: the display takes the mode's size, and
 		// the window covers it. A display that refuses the mode leaves the game windowed,
-		// as SCGL does.
-		bool isFullscreen = false;
+		// as SCGL does. Borderless asks the game for fullscreen too (VideoMode.cpp), only
+		// for the game's sake, so the display keeps its mode and the window goes
+		// borderless below.
+		bool const isBorderlessWanted = IsBorderlessWindow();
+		bool       isFullscreen       = false;
 
-		if (mode.isFullscreen)
+		if (mode.isFullscreen && !isBorderlessWanted)
 		{
 			// Keep the display's own colour depth
 			//
@@ -810,12 +813,12 @@ namespace scvk
 
 		// Go borderless when it was asked for
 		//
-		// The game was asked for a window the screen's size (VideoMode.cpp), so the
-		// display keeps its mode. A window of any other size keeps its frame, since a
-		// frameless one would leave part of the monitor uncovered.
+		// The game was asked for the screen's size (VideoMode.cpp), so the display keeps
+		// its mode. Any other size keeps its frame, since a frameless window would leave
+		// part of the monitor uncovered.
 		bool isBorderless = false;
 
-		if (!isFullscreen && IsBorderlessWindow())
+		if (!isFullscreen && isBorderlessWanted)
 		{
 			isBorderless = hasMonitor && monitorWidth == windowWidth && monitorHeight == windowHeight;
 
