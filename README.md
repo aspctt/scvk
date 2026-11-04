@@ -426,7 +426,8 @@ scvk looks over your setup and writes what it finds there: another driver drawin
 plugin loaded twice or unable to load, an old SC4RenderServices, no 4GB patch,
 compatibility mode and mistyped launch options or settings. Serious problems also show
 in a dialog when the region view opens, and `DoctorDialog=false` in `scvk.ini` or
-`-DoctorDialog:off` keeps them in the log.
+`-DoctorDialog:off` keeps them in the log. Paths in the log and the dialog show your
+Windows account as `%USERPROFILE%` or `%USERNAME%`, so a log can be posted as it is.
 
 `scvk.ini` is optional. scvk reads it from beside the DLL when it is there, for
 `MaxFPS`, `Use32BitDepth`, `LogLevel`, `DoctorDialog` and the benchmark, and the

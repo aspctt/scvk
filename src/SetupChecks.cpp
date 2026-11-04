@@ -27,6 +27,7 @@
 //// Dependencies
 
 #include "SetupChecks.h"
+#include "AccountRedaction.h"
 #include "Benchmark.h"
 #include "Logger.h"
 #include "RendererChoice.h"
@@ -1286,12 +1287,16 @@ namespace scvk
 
 	void ReportSetupProblem(char const* format, ...)
 	{
-		char text[MAXIMUM_MESSAGE_LENGTH];
+		char formatted[MAXIMUM_MESSAGE_LENGTH];
 
 		va_list arguments;
 		va_start(arguments, format);
-		vsnprintf(text, sizeof(text), format, arguments);
+		vsnprintf(formatted, sizeof(formatted), format, arguments);
 		va_end(arguments);
+
+		// Take the Windows account out of its paths here rather than only in the log,
+		// since players post screenshots of the dialog as well
+		std::string const text = RedactAccount(formatted, GetCurrentAccount());
 
 		// The game sets up a driver for every slot, so the renderer finds the same thing
 		// more than once
@@ -1301,7 +1306,7 @@ namespace scvk
 			return;
 		}
 
-		problems.emplace_back(text);
-		LogError("%s", text);
+		problems.push_back(text);
+		LogError("%s", text.c_str());
 	}
 }

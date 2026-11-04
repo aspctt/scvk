@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `scvk.log` and the setup dialog show the Windows account in paths as `%USERPROFILE%` or `%USERNAME%`
+
 ## [0.5.0] - 2026-11-01
 
 ### Added

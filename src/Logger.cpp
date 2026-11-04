@@ -20,11 +20,13 @@
 //// Dependencies
 
 #include "Logger.h"
+#include "AccountRedaction.h"
 #include "Settings.h"
 #include "version.h"
 
 #include <windows.h>
 #include <mutex>
+#include <string>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -218,10 +220,11 @@ namespace scvk
 				return;
 			}
 
-			// Write it
+			// Write it, with the Windows account taken out of any path in it
 			FlushRepeats();
 
-			fputs(message, logFile);
+			std::string const line = RedactAccount(message, GetCurrentAccount());
+			fputs(line.c_str(), logFile);
 			fputc('\n', logFile);
 			fflush(logFile);
 

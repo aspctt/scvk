@@ -150,6 +150,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\AccountRedaction.cpp" />
     <ClCompile Include="src\Benchmark.cpp" />
     <ClCompile Include="src\cVKDriver.cpp" />
     <ClCompile Include="src\cVKDriver_Blit.cpp" />
@@ -255,6 +256,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\AccountRedaction.h" />
     <ClInclude Include="src\Benchmark.h" />
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
