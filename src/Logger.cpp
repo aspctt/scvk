@@ -332,6 +332,27 @@ namespace scvk
 				fprintf(logFile, "Trace budget %u calls, then counters only.\n", TRACE_BUDGET);
 			}
 
+			// Name the scvk.ini the settings come from
+			//
+			// Every setting in it is optional, so a file in another folder, or a line left
+			// commented out, changes nothing without a word. A MaxFPS=0 left behind the
+			// shipped file's semicolon kept the refresh rate's caps, and the log gave no reason.
+			char settingsPath[MAX_PATH];
+			if (LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
+			{
+				char line[MAX_PATH + 64];
+				if (GetFileAttributesA(settingsPath) != INVALID_FILE_ATTRIBUTES)
+				{
+					sprintf_s(line, sizeof(line), "Settings from %s.", settingsPath);
+				}
+				else
+				{
+					sprintf_s(line, sizeof(line), "No %s, so every setting has its default.", settingsPath);
+				}
+
+				fprintf(logFile, "%s\n", RedactAccount(line, GetCurrentAccount()).c_str());
+			}
+
 			fputc('\n', logFile);
 			hasEverOpened = true;
 		}

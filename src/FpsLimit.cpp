@@ -53,7 +53,7 @@ namespace scvk
 		{
 			int         cap        = 0;
 			bool        isExplicit = false;
-			char const* source     = "the display's refresh rate";
+			char const* source     = "the display's refresh rate, with no MaxFPS set";
 		};
 	}
 
