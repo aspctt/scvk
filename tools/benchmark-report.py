@@ -1,5 +1,6 @@
 # Compares the runs scvk's benchmark writes (scvk-benchmark.csv), as tools/benchmark.ps1
-# gathers them: frame rates for each scene and the load times, for each renderer.
+# gathers them: frame rates for each scene and the load times, for each renderer. The first
+# of DirectX, dgVoodoo, scd3d11 and scvk with runs is the one the others are compared with.
 #
 #   python tools/benchmark-report.py logs/benchmark-<timestamp>
 #   python tools/benchmark-report.py <results.csv> [<results.csv> ...]
@@ -30,7 +31,24 @@ import sys
 
 #// Constants
 
-RENDERERS = ["DirectX", "scvk"]
+# The order the renderers' columns take, the first one present being what the others are
+# compared with. Any other name, such as a renderer with a variant, follows in the order
+# its runs came.
+RENDERER_ORDER = ["DirectX", "dgVoodoo", "scd3d11", "scvk"]
+
+# The tables, as (heading, summary key, digits after the point).
+FRAME_RATE_TABLES = [
+	("Average frame rate", "average", 0),
+	("1% low", "low1", 0),
+	("0.1% low", "low01", 0),
+]
+
+PACING_TABLES = [
+	("Median frame time, ms", "median_time", 2),
+	("99th percentile frame time, ms", "time99", 2),
+	("Stutters per minute", "stutters", 1),
+	("Jitter, ms", "jitter", 2),
+]
 
 # The milestones the load times are measured between, as the benchmark names them.
 LOAD_TIMES = [
@@ -181,6 +199,25 @@ def point_spread(runs, scene_index):
 
 	return spread
 
+# A median with its change from the baseline's in brackets, when there is one.
+def format_with_change(value, baseline_value, digits):
+	difference = change(baseline_value, value)
+	return format_number(value, digits) + (" (%s)" % difference if difference else "")
+
+
+# The lines of a table of one figure for every scene: each renderer's median over its runs,
+# with its change from the first renderer's.
+def scene_table(heading, key, digits, renderers, scene_names, scene_summaries):
+	table = ["### " + heading, "", "| Scene | " + " | ".join(renderers) + " |", "|---|" + "---:|" * len(renderers)]
+
+	for index in sorted(scene_names):
+		medians = [median_of(scene_summaries[index][renderer], key) for renderer in renderers]
+		cells = [format_number(medians[0], digits)] + [format_with_change(median, medians[0], digits) for median in medians[1:]]
+		table.append("| %s | %s |" % (scene_names[index], " | ".join(cells)))
+
+	table.append("")
+	return table
+
 #// Entry Point
 
 if len(sys.argv) < 2:
@@ -207,86 +244,62 @@ for run in runs:
 lines.append("")
 
 complete = [run for run in runs if run["status"] == "complete"]
-by_renderer = {renderer: [run for run in complete if run["renderer"] == renderer] for renderer in RENDERERS}
 
-# Compare the scenes
+# Order the renderers, the known ones first and the rest as their runs came
+renderers = [renderer for renderer in RENDERER_ORDER if any(run["renderer"] == renderer for run in complete)]
+for run in complete:
+	if run["renderer"] not in renderers:
+		renderers.append(run["renderer"])
+
+if not renderers:
+	raise SystemExit("No complete runs to report.")
+
+by_renderer = {renderer: [run for run in complete if run["renderer"] == renderer] for renderer in renderers}
+
 scene_names = {}
 for run in complete:
 	for index, scene in run["scenes"].items():
 		scene_names[index] = scene["name"]
 
-lines.append("## Frame rates")
-lines.append("")
-lines.append("Median of %s. Change is scvk against DirectX." % ", ".join("%d %s run(s)" % (len(by_renderer[renderer]), renderer) for renderer in RENDERERS))
-lines.append("")
-lines.append("| Scene | DirectX avg | 1% low | 0.1% low | scvk avg | 1% low | 0.1% low | Change avg | Change 1% | Change 0.1% |")
-lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
-
-# Summarise every scene of every run once, for both tables
+# Summarise every scene of every run once, for all the tables
 scene_summaries = {
-	index: {renderer: [summarise(run["frames"].get(index, [])) for run in by_renderer[renderer]] for renderer in RENDERERS}
+	index: {renderer: [summarise(run["frames"].get(index, [])) for run in by_renderer[renderer]] for renderer in renderers}
 	for index in scene_names
 }
 
-spread_warnings = []
-for index in sorted(scene_names):
-	figures = {}
-	for renderer in RENDERERS:
-		figures[renderer] = {key: median_of(scene_summaries[index][renderer], key) for key in ("average", "low1", "low01")}
-
-	direct, vulkan = figures["DirectX"], figures["scvk"]
-	lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-		scene_names[index],
-		format_number(direct["average"]), format_number(direct["low1"]), format_number(direct["low01"]),
-		format_number(vulkan["average"]), format_number(vulkan["low1"]), format_number(vulkan["low01"]),
-		change(direct["average"], vulkan["average"]), change(direct["low1"], vulkan["low1"]), change(direct["low01"], vulkan["low01"]),
-	))
-
-	spread = point_spread(complete, index)
-	if spread > POINT_TOLERANCE:
-		spread_warnings.append("- %s: the camera's points differ by up to %.0f between runs" % (scene_names[index], spread))
-
+# Compare the scenes
+lines.append("## Frame rates")
 lines.append("")
+lines.append("Median of %s. In brackets, the change from %s." % (", ".join("%d %s run(s)" % (len(by_renderer[renderer]), renderer) for renderer in renderers), renderers[0]))
+lines.append("")
+for heading, key, digits in FRAME_RATE_TABLES:
+	lines += scene_table(heading, key, digits, renderers, scene_names, scene_summaries)
 
 # Compare the frame pacing
 lines.append("## Frame pacing")
 lines.append("")
-lines.append("Median of the same runs. Frame times and jitter in milliseconds, stutters per minute; lower is better.")
+lines.append("Median of the same runs; lower is better.")
 lines.append("")
-lines.append("| Scene | DirectX median | 99th | Stutters | Jitter | scvk median | 99th | Stutters | Jitter |")
-lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
-
-for index in sorted(scene_names):
-	cells = []
-	for renderer in RENDERERS:
-		summaries = scene_summaries[index][renderer]
-		cells += [
-			format_number(median_of(summaries, "median_time"), 2),
-			format_number(median_of(summaries, "time99"), 2),
-			format_number(median_of(summaries, "stutters"), 1),
-			format_number(median_of(summaries, "jitter"), 2),
-		]
-
-	lines.append("| %s | %s |" % (scene_names[index], " | ".join(cells)))
-
-lines.append("")
+for heading, key, digits in PACING_TABLES:
+	lines += scene_table(heading, key, digits, renderers, scene_names, scene_summaries)
 
 # Compare the load times
 lines.append("## Load times")
 lines.append("")
 lines.append("Median seconds. Startup counts from the game's process starting, so it includes everything the game loads, plugins too.")
 lines.append("")
-lines.append("| | DirectX | scvk | Change |")
-lines.append("|---|---:|---:|---:|")
+lines.append("| | " + " | ".join(renderers) + " |")
+lines.append("|---|" + "---:|" * len(renderers))
 
 for name, start, end in LOAD_TIMES:
-	medians = {}
-	for renderer in RENDERERS:
+	medians = []
+	for renderer in renderers:
 		times = [load_time(run, start, end) for run in by_renderer[renderer]]
 		times = [time for time in times if time is not None]
-		medians[renderer] = statistics.median(times) if times else None
+		medians.append(statistics.median(times) if times else None)
 
-	lines.append("| %s | %s | %s | %s |" % (name, format_number(medians["DirectX"], 1), format_number(medians["scvk"], 1), change(medians["DirectX"], medians["scvk"])))
+	cells = [format_number(medians[0], 1)] + [format_with_change(median, medians[0], 1) for median in medians[1:]]
+	lines.append("| %s | %s |" % (name, " | ".join(cells)))
 
 lines.append("")
 
@@ -298,6 +311,12 @@ if len(switched) > 1:
 	lines.append("")
 
 # Say whether the runs saw the same ground
+spread_warnings = []
+for index in sorted(scene_names):
+	spread = point_spread(complete, index)
+	if spread > POINT_TOLERANCE:
+		spread_warnings.append("- %s: the camera's points differ by up to %.0f between runs" % (scene_names[index], spread))
+
 if spread_warnings:
 	lines.append("## Camera paths")
 	lines.append("")
