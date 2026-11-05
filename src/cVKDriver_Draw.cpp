@@ -286,6 +286,7 @@ namespace scvk
 			uint32_t lowest  = UINT32_MAX;
 			uint32_t highest = 0;
 
+			// The game passes its indices untyped, in 16 or 32 bits as the draw says
 			for (uint32_t index = 0; index < indexCount; index++)
 			{
 				uint32_t const value = isIndex32Bit ? static_cast<uint32_t const*>(indices)[index] : static_cast<uint16_t const*>(indices)[index];
@@ -293,6 +294,7 @@ namespace scvk
 				highest = std::max(highest, value);
 			}
 
+			// The vertex array is untyped too, and is stepped through in bytes
 			uint8_t const* const vertices = static_cast<uint8_t const*>(vertexPointer) + size_t{ lowest } * vertexStride;
 			NoteLiveShadowCandidate(gdPrimitiveType, vertices, highest - lowest + 1, indices, indexCount, isIndex32Bit, lowest);
 		}

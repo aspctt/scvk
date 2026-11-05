@@ -402,6 +402,7 @@ namespace scvk
 			VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
 			inputAssembly.topology = topologies[variant];
 
+			// Viewports are in floats, which hold the map's size exactly
 			VkViewport const viewport{ 0.0f, 0.0f, static_cast<float>(SHADOW_MAP_SIZE), static_cast<float>(SHADOW_MAP_SIZE), 0.0f, 1.0f };
 			VkRect2D const   scissor{ { 0, 0 }, { SHADOW_MAP_SIZE, SHADOW_MAP_SIZE } };
 
@@ -648,6 +649,7 @@ namespace scvk
 		slot.retiredBuffers.push_back(buffer);
 		slot.retiredMemory.push_back(memory);
 
+		// Mapped memory comes back untyped, and the caller writes bytes to it
 		outBuffer  = buffer;
 		outOffset  = 0;
 		outAddress = static_cast<uint8_t*>(mapped);
@@ -966,6 +968,7 @@ namespace scvk
 		beginInformation.framebuffer       = sceneDepthFramebuffer;
 		beginInformation.renderArea.extent = { renderWidth, renderHeight };
 
+		// Viewports are in floats, which hold any window size exactly
 		VkViewport const viewport{ 0.0f, 0.0f, static_cast<float>(renderWidth), static_cast<float>(renderHeight), 0.0f, 1.0f };
 		VkRect2D const   scissor{ { 0, 0 }, { renderWidth, renderHeight } };
 

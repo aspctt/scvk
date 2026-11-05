@@ -80,15 +80,19 @@ namespace scvk
 		/** "module+0xRVA", or the bare address outside any module. */
 		void DescribeAddress(uintptr_t address, char* text, size_t size)
 		{
-			HMODULE module = nullptr;
+			HMODULE module         = nullptr;
 			char    path[MAX_PATH] = {};
 
+			// The address is a plain number read off a stack. With FROM_ADDRESS the call
+			// takes it where its signature asks for a name, and %p prints a pointer.
 			if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>(address), &module) || GetModuleFileNameA(module, path, MAX_PATH) == 0)
 			{
 				sprintf_s(text, size, "%p", reinterpret_cast<void*>(address));
 				return;
 			}
 
+			// The module handle is its base address, so the offset is the difference. %lx
+			// takes an unsigned long, as wide as the offset in the game's 32-bit process.
 			char const* const slash = strrchr(path, '\\');
 			sprintf_s(text, size, "%p %s+0x%lx", reinterpret_cast<void*>(address), (slash != nullptr) ? slash + 1 : path, static_cast<unsigned long>(address - reinterpret_cast<uintptr_t>(module)));
 		}
@@ -96,6 +100,8 @@ namespace scvk
 		/** Whether a stack word points just after a call instruction in loaded code. */
 		bool IsLikelyReturnAddress(uintptr_t address)
 		{
+			// The longest call is 6 bytes, which must sit in readable code before the
+			// address. The query takes a pointer, and the address is a plain number.
 			MEMORY_BASIC_INFORMATION memory{};
 			if (address < 6 || VirtualQuery(reinterpret_cast<LPCVOID>(address - 6), &memory, sizeof(memory)) != sizeof(memory))
 			{
@@ -108,7 +114,10 @@ namespace scvk
 				return false;
 			}
 
-			// call rel32, call [reg+disp8] or call reg, call [mem] or call [reg+disp32]
+			// Look for a call ending at the address
+			//
+			// call rel32, call [reg+disp8] or call reg, call [mem] or call [reg+disp32].
+			// The region was just checked, so the address can be read as the code it is.
 			uint8_t const* const code = reinterpret_cast<uint8_t const*>(address);
 			return code[-5] == 0xE8 || code[-2] == 0xFF || code[-3] == 0xFF || code[-6] == 0xFF;
 		}
@@ -122,17 +131,20 @@ namespace scvk
 			va_end(arguments);
 		}
 
+		/** Logs where the stalled render thread is, the likely calls on its stack and the window's state. */
 		void LogRenderThreadLocation(ULONGLONG stalled, bool isGameWork)
 		{
-			uintptr_t instruction  = 0;
-			uintptr_t stack[512]   = {};
-			SIZE_T    stackBytes   = 0;
-			DWORD const threadId   = renderThreadId.load();
-			HANDLE const thread    = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, threadId);
+			uintptr_t    instruction = 0;
+			uintptr_t    stack[512]  = {};
+			SIZE_T       stackBytes  = 0;
+			DWORD const  threadId    = renderThreadId.load();
+			HANDLE const thread      = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, threadId);
 
 			if (thread != nullptr)
 			{
 				// Only copy while suspended: the thread may hold the heap or loader lock
+				//
+				// SuspendThread reports failure as (DWORD)-1, compared in its own type.
 				if (SuspendThread(thread) != static_cast<DWORD>(-1))
 				{
 					CONTEXT context{};
@@ -147,6 +159,7 @@ namespace scvk
 						instruction = context.Rip;
 						uintptr_t const stackPointer = context.Rsp;
 #endif
+						// The register is a number, and the read takes a pointer
 						ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(stackPointer), stack, sizeof(stack), &stackBytes);
 					}
 
@@ -172,7 +185,7 @@ namespace scvk
 			//
 			// Between Flush calls the game is busy on its own: a city takes twenty seconds or
 			// more to load, and every load warned. A stall inside one of scvk's phases is
-			// scvk's, and stays a warning.
+			// scvk's, and stays a warning. %p takes the window handles as plain pointers.
 			LogLevel const level      = isGameWork ? LOG_LEVEL_INFO : LOG_LEVEL_WARN;
 			LogLevel const stackLevel = isGameWork ? LOG_LEVEL_DEBUG : LOG_LEVEL_WARN;
 
@@ -197,6 +210,10 @@ namespace scvk
 		SIZE_T ReadStack(uintptr_t stackPointer, uintptr_t* out, SIZE_T capacity)
 		{
 			// Stop at the end of the committed region, past which the stack is not
+			//
+			// The stack pointer comes as a number from the fault's context, and the query
+			// and the read take it as a pointer. The region's base comes back as one, and
+			// its end is worked out as a number.
 			MEMORY_BASIC_INFORMATION memory{};
 			if (VirtualQuery(reinterpret_cast<LPCVOID>(stackPointer), &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT)
 			{
@@ -215,6 +232,7 @@ namespace scvk
 			return read;
 		}
 
+		/** The watchdog's thread: checks twice a second for frames, until stop is set. */
 		void RunRenderWatchdog(HANDLE stop)
 		{
 			ULONGLONG stalledFrame  = 0;
@@ -286,6 +304,7 @@ namespace scvk
 
 	void StartRenderWatchdog(void* window)
 	{
+		// The window is the game's HWND, as void* so the header needs no windows.h.
 		watchedWindow.store(static_cast<HWND>(window));
 
 		std::lock_guard<std::mutex> const lock(watchdogMutex);

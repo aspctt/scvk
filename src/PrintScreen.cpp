@@ -40,11 +40,11 @@ namespace scvk::PrintScreen
 		constexpr DWORD THREAD_START_MILLISECONDS = 2000;
 
 		// How often, and how far apart, opening a clipboard another program holds is tried.
-		constexpr int   CLIPBOARD_ATTEMPTS     = 10;
+		constexpr int   CLIPBOARD_ATTEMPTS           = 10;
 		constexpr DWORD CLIPBOARD_RETRY_MILLISECONDS = 10;
 	}
 
-	//// Variables
+	//// State
 
 	namespace
 	{
@@ -55,9 +55,9 @@ namespace scvk::PrintScreen
 		std::atomic<bool> isRequested{ false };
 
 		// The hook's thread, and the event that says its hook is in place.
-		HANDLE hookThread   = nullptr;
-		DWORD  hookThreadId = 0;
-		HANDLE hookReady    = nullptr;
+		HANDLE hookThread      = nullptr;
+		DWORD  hookThreadId    = 0;
+		HANDLE hookReady       = nullptr;
 		bool   isHookInstalled = false;
 	}
 
@@ -76,6 +76,7 @@ namespace scvk::PrintScreen
 		{
 			if (code == HC_ACTION)
 			{
+				// A low-level keyboard hook gets its key as a pointer carried in lParam.
 				KBDLLHOOKSTRUCT const* const key = reinterpret_cast<KBDLLHOOKSTRUCT const*>(lParam);
 				HWND const window = watchedWindow.load();
 
@@ -106,6 +107,8 @@ namespace scvk::PrintScreen
 			MSG message{};
 			PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
 
+			// The hook lives in scvk's DLL, which is found from its own address. With
+			// FROM_ADDRESS the call takes the address in place of a module name.
 			HMODULE module = nullptr;
 			GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&KeyboardHook), &module);
 
@@ -136,6 +139,7 @@ namespace scvk::PrintScreen
 
 	void Install(void* window)
 	{
+		// The window is the game's HWND, as void* so the header needs no windows.h.
 		watchedWindow.store(static_cast<HWND>(window));
 
 		if (isHookInstalled)
@@ -219,6 +223,8 @@ namespace scvk::PrintScreen
 			return false;
 		}
 
+		// The header's fields are Windows' own signed and DWORD types. The frame is far
+		// smaller than either can hold.
 		BITMAPINFOHEADER header{};
 		header.biSize        = sizeof(BITMAPINFOHEADER);
 		header.biWidth       = static_cast<LONG>(width);
@@ -229,6 +235,7 @@ namespace scvk::PrintScreen
 		header.biSizeImage   = static_cast<DWORD>(pixelBytes);
 		memcpy(locked, &header, sizeof(header));
 
+		// GlobalLock hands back untyped memory, and the rows start after the header.
 		uint8_t* const rows = static_cast<uint8_t*>(locked) + sizeof(BITMAPINFOHEADER);
 		for (uint32_t row = 0; row < height; row++)
 		{
@@ -238,6 +245,8 @@ namespace scvk::PrintScreen
 		GlobalUnlock(memory);
 
 		// Hand it to the clipboard, waiting briefly for a program that has it open
+		//
+		// The window comes in as void* for the same reason as in Install.
 		bool isOpen = false;
 		for (int attempt = 0; attempt < CLIPBOARD_ATTEMPTS && !isOpen; attempt++)
 		{

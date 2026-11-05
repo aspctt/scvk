@@ -147,6 +147,8 @@ namespace scvk
 			using WineVersion     = char const* (__cdecl*)(void);
 			using WineHostVersion = void (__cdecl*)(char const** system, char const** release);
 
+			// GetProcAddress returns a generic function pointer, cast to the export's
+			// real type, through void* so GCC does not warn about the mismatch.
 			HMODULE const ntdll = GetModuleHandleA("ntdll.dll");
 			WineVersion const wineVersion = (ntdll != nullptr) ? reinterpret_cast<WineVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version"))) : nullptr;
 
@@ -158,6 +160,8 @@ namespace scvk
 
 			char const* system  = "an unknown system";
 			char const* release = "";
+
+			// Cast as wine_get_version is above
 			WineHostVersion const hostVersion = reinterpret_cast<WineHostVersion>(reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_host_version")));
 
 			if (hostVersion != nullptr)

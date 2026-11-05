@@ -297,6 +297,8 @@ namespace scvk
 	{
 		size_t hash = 2166136261u;
 		hash = MixHash(hash, key.format);
+
+		// The topology is an enumeration, hashed as its number
 		hash = MixHash(hash, static_cast<uint32_t>(key.topology));
 		hash = MixHash(hash, (key.isBlendEnabled ? 1u : 0u) | (key.sourceFactor << 1) | (key.destinationFactor << 6));
 		hash = MixHash(hash, (key.isDepthTestEnabled ? 1u : 0u) | (key.isDepthWriteEnabled ? 2u : 0u) | (key.depthComparison << 2) | (key.isColourWriteEnabled ? 64u : 0u) | (key.isFaceCullingEnabled ? 128u : 0u));
@@ -808,6 +810,7 @@ namespace scvk
 						return false;
 					}
 
+					// Iterators step by a signed distance, and the arena has a few blocks
 					arena.blocks.insert(arena.blocks.begin() + static_cast<ptrdiff_t>(arena.currentBlock + 1), block);
 					arena.currentBlock++;
 					LogDebug("Vulkan: the %s arena grew to %zu blocks of %llu MB.", arena.name, arena.blocks.size(), arena.blockSize >> 20);
@@ -843,6 +846,7 @@ namespace scvk
 		ArenaBlock& block = arena.blocks[arena.currentBlock];
 		block.lastFrame = frameSerial;
 
+		// Mapped memory comes back untyped, and the caller writes bytes to it
 		outBuffer       = block.buffer;
 		outOffset       = aligned;
 		outAddress      = static_cast<uint8_t*>(block.mapped) + aligned;

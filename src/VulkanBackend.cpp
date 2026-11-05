@@ -762,6 +762,7 @@ namespace scvk
 		// Linux compositor, or straight to the display, as the Vulkan driver decides.
 		LogInfo("Vulkan: %s", hasFullscreenPolicyControl ? "the driver will not take exclusive control of a fullscreen window." : "VK_EXT_full_screen_exclusive is not offered; the driver presents a fullscreen window as it sees fit.");
 
+		// Vulkan counts in 32 bits, and the list holds a few extensions
 		VkDeviceCreateInfo deviceInformation{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 		deviceInformation.queueCreateInfoCount    = 1;
 		deviceInformation.pQueueCreateInfos       = &queueInformation;
@@ -819,6 +820,7 @@ namespace scvk
 				long const size = ftell(file);
 				fseek(file, 0, SEEK_SET);
 
+				// ftell's size is signed, and a positive one under 64 MB converts as is
 				if (size > 0 && size < 64L * 1024L * 1024L)
 				{
 					data.resize(static_cast<size_t>(size));
@@ -2870,6 +2872,7 @@ namespace scvk
 		}
 		else
 		{
+			// Blit offsets are signed, and a window's size is far below INT32_MAX
 			VkImageBlit blit{};
 			blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 			blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
@@ -3051,7 +3054,9 @@ namespace scvk
 		frame.imageView           = backBuffer.view;
 		frame.format              = backBuffer.format;
 		frame.extent              = { renderWidth, renderHeight };
-		frame.imageCount          = static_cast<uint32_t>(swapchainImages.size());
+
+		// Vulkan counts in 32 bits, and a swapchain has a few images
+		frame.imageCount = static_cast<uint32_t>(swapchainImages.size());
 
 		// The driver interface carries the window as a plain pointer, and the context
 		// types it as the HWND it is.
@@ -3664,6 +3669,9 @@ namespace scvk
 		}
 
 		// Say when presenting stops and starts again
+		//
+		// The driver interface carries the window as a plain pointer, and the context
+		// types it as the HWND it is.
 		if (isAcquired == isPresentationPaused)
 		{
 			HWND const window = static_cast<HWND>(windowHandle);
@@ -3715,6 +3723,8 @@ namespace scvk
 		frameSerial++;
 
 		// Log a change in what presenting returns, success codes included
+		//
+		// The window is typed as above.
 		if (result != lastPresentResult)
 		{
 			HWND const window = static_cast<HWND>(windowHandle);

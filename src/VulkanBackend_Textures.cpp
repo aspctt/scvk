@@ -618,6 +618,7 @@ namespace scvk
 		textureBlocks.push_back(block);
 		LogDebug("Vulkan: textures now take %zu blocks of %llu MB; %u memory allocations in all.", textureBlocks.size(), TEXTURE_BLOCK_SIZE >> 20, liveMemoryAllocations);
 
+		// The block just added is the last, and blocks of 64 MB never number near 2^32
 		outMemory.memory      = block.memory;
 		outMemory.offset      = offset;
 		outMemory.size        = requirements.size;
@@ -995,6 +996,7 @@ namespace scvk
 			uint32_t const stride   = (rowLength != 0) ? rowLength : width;
 			size_t const   rowBytes = (size_t{ stride } * pixelBytes + 3u) & ~size_t{ 3 };
 
+			// The game's pixels come untyped, and rows are stepped through in bytes
 			for (uint32_t y = 0; y < height; y++)
 			{
 				uint8_t const* sourceTexel    = static_cast<uint8_t const*>(pixels) + size_t{ y } * rowBytes;
@@ -1436,6 +1438,7 @@ namespace scvk
 
 			oversizedUploadBuffers.push_back(block);
 
+			// Mapped memory comes back untyped, and the caller writes bytes to it
 			outBuffer  = block.buffer;
 			outOffset  = 0;
 			outAddress = static_cast<uint8_t*>(block.mapped);
@@ -1640,6 +1643,9 @@ namespace scvk
 		}
 
 		// Hand out the next slot
+		//
+		// A handle is the slot's index, and the driver interface's handles are 32 bits.
+		// Each texture takes memory, so the list runs out of memory long before that.
 		textures.push_back(texture);
 		return static_cast<uint32_t>(textures.size() - 1);
 	}
@@ -1673,6 +1679,9 @@ namespace scvk
 		}
 
 		// Keep the copy inside the level
+		//
+		// The game's offsets are signed. A negative one is refused first, so the rest
+		// compare unsigned.
 		uint32_t const levelWidth  = std::max(texture.width >> level, 1u);
 		uint32_t const levelHeight = std::max(texture.height >> level, 1u);
 
@@ -1729,6 +1738,7 @@ namespace scvk
 		// they show.
 		if (level == 0 && offsetX == 0 && offsetY == 0 && texture.width * texture.height <= TINY_TEXTURE_TEXELS)
 		{
+			// The size only converts when below the kept bytes, so it fits a size_t
 			size_t const keptBytes = (bytes < sizeof(texture.firstBytes)) ? static_cast<size_t>(bytes) : sizeof(texture.firstBytes);
 			memcpy(texture.firstBytes, uploadAddress, keptBytes);
 

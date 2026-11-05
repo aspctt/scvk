@@ -139,13 +139,14 @@ namespace scvk
 		template <typename Handle>
 		uint64_t HandleValue(Handle handle)
 		{
+			// A pointer handle is taken as its address, which widens to 64 bits
 			if constexpr (std::is_pointer_v<Handle>)
 			{
-				return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(handle));
+				return uint64_t{ reinterpret_cast<uintptr_t>(handle) };
 			}
 			else
 			{
-				return static_cast<uint64_t>(handle);
+				return uint64_t{ handle };
 			}
 		}
 
@@ -155,6 +156,7 @@ namespace scvk
 			return reshade::api::resource_view{ HandleValue(view) };
 		}
 
+		/** Stands in for cSC43DRender::Draw, then draws the scene effects over the 3D view. */
 		bool __fastcall DrawHook(void* self, void* edx)
 		{
 			// A translated update shifts the backing store's pixels and redraws only the
@@ -164,6 +166,7 @@ namespace scvk
 			// -NativeShadowMasks:replace the strips are correct as drawn.
 			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw())
 			{
+				// self is the game's cSC43DRender, its fields reached by their offsets
 				uint8_t* const bytes = static_cast<uint8_t*>(self);
 
 				uint32_t horizontal = 0;
@@ -256,6 +259,7 @@ namespace scvk
 			}
 		}
 
+		/** Runs DrawPostStaticView, then draws the live prop shadows before the game saves the view. */
 		void __fastcall DrawPostStaticViewHook(void* self, void* edx)
 		{
 			DrawPostStaticViewOriginal(self, edx);
@@ -360,6 +364,8 @@ namespace scvk
 		/** Points the 3D view's vtable slot for Draw at the hook, if it holds what is expected. */
 		bool PatchDrawSlot(void* replacement, void* expected)
 		{
+			// The game's module handle is its load address. The slot sits at a fixed
+			// offset from it and holds a function pointer.
 			void** const slot = reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) + (DRAW_SLOT_ADDRESS - IMAGE_BASE));
 
 			DWORD protection = 0;
@@ -377,6 +383,7 @@ namespace scvk
 		bool PatchDrawPostStaticView(void* module)
 		{
 #if defined(_MSC_VER) && defined(_M_IX86)
+			// The function sits at a fixed offset from the game's load address
 			uint8_t* const target = static_cast<uint8_t*>(module) + (DRAW_POST_STATIC_VIEW_ADDRESS - IMAGE_BASE);
 			uint8_t const  expected[] = { 0x56, 0x57, 0x8B, 0xF9, 0x8B, 0x87, 0x1C, 0x01, 0x00, 0x00 };
 
@@ -389,6 +396,9 @@ namespace scvk
 			std::memset(replacement, 0x90, sizeof(replacement));
 			replacement[0] = 0xE9;
 
+			// A jmp rel32 counts from the end of its 5 bytes. The difference of two
+			// addresses wraps to the right signed distance in 32 bits, and the rejoin
+			// address is kept as a number for the jump in DrawPostStaticViewOriginal.
 			int32_t const displacement = static_cast<int32_t>(reinterpret_cast<uintptr_t>(&DrawPostStaticViewHook) - (reinterpret_cast<uintptr_t>(target) + 5));
 			std::memcpy(replacement + 1, &displacement, sizeof(displacement));
 			drawPostStaticViewRejoin = reinterpret_cast<uintptr_t>(target + sizeof(expected));
@@ -436,6 +446,9 @@ namespace scvk
 			return;
 		}
 
+		// The game's module handle is its load address, and Draw sits at a fixed offset
+		// from it. The vtable slot holds plain pointers, and the original is called back
+		// through its own function type.
 		void* const executable = GetModuleHandleW(nullptr);
 		void* const draw       = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(executable) + (DRAW_ADDRESS - IMAGE_BASE));
 
@@ -471,6 +484,9 @@ namespace scvk
 		}
 
 		// Register as an add-on, which works only when ReShade 6 or later is loaded
+		//
+		// ReShade wants scvk's own module, found from the hook's address. With
+		// FROM_ADDRESS the call takes that address where its signature asks for a name.
 		HMODULE module = nullptr;
 		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&DrawHook), &module) || !reshade::register_addon(module))
 		{
@@ -506,6 +522,8 @@ namespace scvk
 		if (areShadowUniformsValid && !hasLoggedValid)
 		{
 			hasLoggedValid = true;
+
+			// %f takes doubles and %u an unsigned, which a handful of bindings fits
 			LogInfo("ReShade: shadow uniforms published (depth scale %.4f, world per screen height %.4f, %u bindings).", static_cast<double>(shadowDepthScale), static_cast<double>(shadowWorldPerScreen), static_cast<unsigned>(shadowBindings.depthScale.size() + shadowBindings.worldPerScreen.size()));
 		}
 		else if (!areShadowUniformsValid && !hasLoggedInvalid)

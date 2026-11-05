@@ -268,7 +268,8 @@ namespace scvk
 		// debug level, since every focus change and resize would otherwise reach the log.
 		void LogWindowMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 		{
-			// The parameters are raw words, whatever the message packs in them.
+			// The parameters are raw words, whatever the message packs in them, and %p
+			// takes the window as a plain pointer.
 			unsigned long const wordParameter = static_cast<unsigned long>(wParam);
 			long const          longParameter = static_cast<long>(lParam);
 			void* const         handle        = static_cast<void*>(window);
@@ -319,6 +320,8 @@ namespace scvk
 
 			case WM_WINDOWPOSCHANGED:
 			{
+				// The message carries a pointer to the new position in lParam, and %p
+				// takes the window it went after as a plain pointer
 				WINDOWPOS const* const position = reinterpret_cast<WINDOWPOS const*>(lParam);
 				if (position == nullptr)
 				{
@@ -400,6 +403,7 @@ namespace scvk
 			}
 
 			case WM_CAPTURECHANGED:
+				// lParam is the window taking the mouse capture
 				LogTrace(LogCategory::Window, "%p WM_CAPTURECHANGED (to %p)", handle, reinterpret_cast<void*>(lParam));
 				break;
 
@@ -447,7 +451,7 @@ namespace scvk
 
 			if (window == gameWindow)
 			{
-				ThumbnailFocusGuard::NoteWindowMessage(message, static_cast<uintptr_t>(wParam));
+				ThumbnailFocusGuard::NoteWindowMessage(message, wParam);
 			}
 
 			// Keep the cursor on the game's monitor while the game is in front

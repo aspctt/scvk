@@ -307,7 +307,9 @@ namespace scvk
 
 		// Reuse a dead slot before growing
 		//
-		// So a game that cycles regions does not walk the handle space upward forever.
+		// So a game that cycles regions does not walk the handle space upward forever. A
+		// handle is the slot plus one, so 0 stays free to mean none, and the game keeps a
+		// handful of regions, far below what 32 bits count.
 		for (size_t i = 0; i < bufferRegions.size(); i++)
 		{
 			if (!bufferRegions[i].isLive)
