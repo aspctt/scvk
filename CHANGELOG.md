@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The city scrolls at the screen's edges in borderless, as it does in exclusive fullscreen
+- The Rhino speed cap follows the others again. scvk read it one byte off, took the 0 there for another plugin's change, logged it as `Rhino 0` and left the game's 20
 
 ## [0.5.0] - 2026-11-01
 

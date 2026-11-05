@@ -45,7 +45,7 @@ namespace scvk
 		{
 			char const* name;
 			uintptr_t   address;
-			uint8_t     originalCap;
+			uint32_t    originalCap;
 		};
 
 		/** The frame rate the speed caps get, 0 keeping the game's own, and where it came from. */
@@ -61,18 +61,23 @@ namespace scvk
 
 	namespace
 	{
-		// Each address points at the one-byte immediate of a MOV that stores the cap.
+		// Each address points at the 32-bit immediate of a MOV that stores the cap
+		// (MOV dword ptr [ESI+0x84], cap, at 0x702444, 0x702450 and 0x70245C), six bytes
+		// into the instruction. Rhino's was 0x702457 up to 0.5.0, taken from
+		// sc4-disable-fps-limits, which is one byte too far: that is the immediate's second
+		// byte, always 0, so scvk logged it as changed by another plugin and never set it.
 		// Verified against game version 641 only; the addresses are meaningless on any
 		// other build, which is why the version gate below is not optional.
 		constexpr SpeedLimit SPEED_LIMITS_641[] = {
 			{ "Cheetah", 0x70244A, 15 },
-			{ "Rhino",   0x702457, 20 },
+			{ "Rhino",   0x702456, 20 },
 			{ "Turtle",  0x702462, 30 },
 		};
 
 		constexpr uint16_t SUPPORTED_GAME_VERSION = 641;
 
-		// The caps are one-byte immediates, so nothing above this fits.
+		// The caps are 32-bit immediates, but 255 is as far as anyone has run them, since the
+		// other cap plugins write a single byte, so scvk stops there too.
 		constexpr int LARGEST_CAP = 255;
 
 		// The simulator's frame tick (0x703E70) pads every frame with simulation and idle
@@ -172,7 +177,7 @@ namespace scvk
 
 			if (value > LARGEST_CAP)
 			{
-				LogWarn("MaxFPS %ld does not fit the game's one-byte caps; using %d.", value, LARGEST_CAP);
+				LogWarn("MaxFPS %ld is above %d, the most scvk sets the caps to; using %d.", value, LARGEST_CAP, LARGEST_CAP);
 				outCap = LARGEST_CAP;
 				return true;
 			}
@@ -399,22 +404,25 @@ namespace scvk
 
 		LogInfo("Speed caps to %d, from %s.", choice.cap, choice.source);
 
-		// Check each byte before writing it
+		// Check each immediate before writing it
 		//
-		// A byte that does not hold the game's own cap was changed by another plugin, such
-		// as caspervg's sc4-disable-fps-limits, and keeps that plugin's value. Writing
+		// An immediate that does not hold the game's own cap was changed by another plugin,
+		// such as caspervg's sc4-disable-fps-limits, and keeps that plugin's value. Writing
 		// over it would fight the other plugin, or on another build corrupt an unrelated
-		// instruction. The cap was clamped to one byte when it was read, so its conversion
-		// loses nothing.
-		uint8_t const newCap = static_cast<uint8_t>(choice.cap);
+		// instruction. The whole 32 bits are read, since sc4-disable-fps-limits writes its
+		// byte into the second one of Rhino's, which makes that cap 65300 rather than 255.
+		// The cap was clamped to 255 when it was read, so its conversion loses nothing.
+		uint32_t const newCap = static_cast<uint32_t>(choice.cap);
 
 		std::string leftAlone;
 		bool        isDifferentCapKept = false;
 
 		for (SpeedLimit const& limit : SPEED_LIMITS_641)
 		{
-			// The table holds plain addresses, which have to become pointers to be read.
-			uint8_t const currentCap = *reinterpret_cast<uint8_t const*>(limit.address);
+			// The immediate sits unaligned inside its instruction, so it is copied out
+			// rather than read through a 32-bit pointer.
+			uint32_t currentCap = 0;
+			memcpy(&currentCap, reinterpret_cast<void const*>(limit.address), sizeof(currentCap));
 
 			if (currentCap != limit.originalCap)
 			{
@@ -425,7 +433,9 @@ namespace scvk
 				continue;
 			}
 
-			if (WriteBytes(limit.address, &newCap, sizeof(newCap)))
+			// WriteBytes takes the cap as the bytes it is stored in, low byte first as the
+			// instruction holds it.
+			if (WriteBytes(limit.address, reinterpret_cast<uint8_t const*>(&newCap), sizeof(newCap)))
 			{
 				LogInfo("%s speed cap changed from %u to %d.", limit.name, limit.originalCap, choice.cap);
 			}
