@@ -10,25 +10,38 @@
 
 #pragma once
 
-#include <cstdint>
+//// Dependencies
 
-namespace scvk::ThumbnailFocusGuard {
+#include <stdint.h>
 
-	// When a city is saved, SC4 renders its region view thumbnail and then checks that the game
-	// window kept focus the whole time. If it did not (Alt+Tab, a click elsewhere, or Windows
-	// "not responding" ghosting during a long save), SC4 waits up to about 10 s for focus to
-	// return and otherwise replaces the thumbnail with the blank default one. That guard only
-	// makes sense for the stock DirectX 7 driver, which read the capture back from a surface
-	// that other windows could cover. SCD3D11 reads it back from its own off-screen texture, so
-	// this patch keeps the thumbnail unless the window was minimized during the render.
-	//
-	// Installed by the driver once it owns the game window, so it only applies when SCD3D11 is
-	// the active renderer. Requires SimCity 4 Deluxe 1.1.641. Later calls just update the window.
-	// Returns true if the patch is active afterwards.
-	bool Install(void *window);
+/**
+ * Keeps the region view thumbnail when the game loses the focus while saving.
+ *
+ * When a city is saved, the game renders its region view thumbnail and then checks that
+ * its window kept the focus the whole time. If it did not, through Alt+Tab, a click
+ * elsewhere or Windows ghosting a window that stopped responding during a long save, the
+ * game waits up to about 10 seconds for the focus to come back and otherwise writes the
+ * blank default thumbnail over the one it rendered. That check only made sense for the
+ * stock DirectX 7 driver, which read the capture back from a surface other windows could
+ * cover. scvk reads it back from its own frame image, so the guard keeps the thumbnail
+ * unless the window was minimised during the render.
+ *
+ * Carried over from SCD3D11. Only game version 641 is changed.
+ */
+namespace scvk::ThumbnailFocusGuard
+{
+	//// Public API
+
+	/**
+	 * Patches the game's check, once the driver owns the game window.
+	 *
+	 * Later calls only change the window. Returns whether the patch is in place afterwards.
+	 */
+	bool Install(void* window);
+
+	/** Puts the game's check back as it was. */
 	void Uninstall(void);
 
-	// Fed from the driver window procedure; tracks minimizes and deactivations.
+	/** Counts the minimises and deactivations the check cares about, from the window procedure. */
 	void NoteWindowMessage(uint32_t message, uintptr_t wParam);
-
 }

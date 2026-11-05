@@ -34,7 +34,7 @@
 
 #include "VulkanBackend.h"
 #include "Logger.h"
-#include "TextureUploadUtils.h"
+#include "TexturePixelConversion.h"
 
 #include <windows.h>
 #include <algorithm>

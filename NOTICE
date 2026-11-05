@@ -126,7 +126,7 @@ than vendored verbatim. They are noted here and in their own file headers.
   src/cVKDriver_LiveShadows.cpp, src/cVKDriver_ReShade.cpp,
   src/NativeShadow*.cpp, src/NativeShadow*.h, src/TerrainShadow*.cpp,
   src/TerrainShadow*.h, src/ThumbnailFocusGuard.cpp, src/ThumbnailFocusGuard.h,
-  src/TextureUploadUtils.cpp, src/TextureUploadUtils.h, src/ViewportCull.cpp,
+  src/TexturePixelConversion.cpp, src/TexturePixelConversion.h, src/ViewportCull.cpp,
   src/Watchdog.cpp, shaders/composite.frag, shaders/shadow.vert,
   shaders/shadow.frag, shaders/scene_depth.frag
 

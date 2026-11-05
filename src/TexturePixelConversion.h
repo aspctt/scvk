@@ -20,16 +20,26 @@
 
 #pragma once
 
-#include <cstdint>
+//// Dependencies
 
-// The game's pixel formats and types, as SCGL's translation tables number them, read
-// into 8-bit RGBA. Used by texture uploads in formats other than the common byte ones.
+#include <stdint.h>
 
-namespace scvk {
-	uint32_t TextureSourceComponents(uint32_t format);
+/**
+ * Converts texels the game uploads in its less common formats and types to 8-bit RGBA.
+ *
+ * The numbers are the game's own, as SCGL's translation tables list them. Formats 0 to 6
+ * are RGB, RGBA, BGR, BGRA, alpha, luminance and luminance with alpha. Types 0 to 7 are
+ * one component each, from signed byte through double; 8, 9, 12 and 13 are packed
+ * 4_4_4_4, 5_5_5_1, 8_8_8_8 and reversed 4_4_4_4. The common byte and 16-bit uploads
+ * have faster paths of their own in VulkanBackend_Textures.cpp.
+ */
+namespace scvk
+{
+	//// Public API
+
+	/** How many bytes one texel of the format and type takes, or 0 when it is not handled. */
 	uint32_t TextureSourcePixelBytes(uint32_t format, uint32_t type);
-	bool ConvertTextureSourcePixel(uint32_t format, uint32_t type, void const *source, uint8_t rgba[4]);
-	bool IsValidBlockCompressedUpdate(
-		uint32_t mipWidth, uint32_t mipHeight,
-		uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+
+	/** Reads one texel into RGBA, returning false for a format or type that is not handled. */
+	bool ConvertTextureSourcePixel(uint32_t format, uint32_t type, void const* source, uint8_t rgba[4]);
 }

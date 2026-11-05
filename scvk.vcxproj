@@ -172,6 +172,8 @@
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\SetupChecks.cpp" />
     <ClCompile Include="src\RendererChoice.cpp" />
+    <ClCompile Include="src\TexturePixelConversion.cpp" />
+    <ClCompile Include="src\ThumbnailFocusGuard.cpp" />
     <ClCompile Include="src\VideoMode.cpp" />
     <ClCompile Include="src\ViewportCull.cpp" />
     <ClCompile Include="src\VulkanApi.cpp" />
@@ -183,9 +185,8 @@
     <ClCompile Include="src\Watchdog.cpp" />
   </ItemGroup>
   <!--
-    Carried over from SCD3D11 nearly as they are: the game-side shadow modules, the
-    thumbnail focus guard and the pixel conversions. They keep the warning level they
-    were written for, like the vendored sources below, so that they can follow upstream.
+    Carried over from SCD3D11 nearly as they are: the game-side shadow modules. They keep
+    the warning level they were written for until the live shadow port rewrites them.
   -->
   <ItemGroup>
     <ClCompile Include="src\NativeShadowDiagnostics.cpp">
@@ -214,16 +215,6 @@
       <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="src\TerrainShadows.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\TextureUploadUtils.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\ThumbnailFocusGuard.cpp">
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
@@ -274,7 +265,7 @@
     <ClInclude Include="src\ShaderBinaries.h" />
     <ClInclude Include="src\TerrainShadowMap.h" />
     <ClInclude Include="src\TerrainShadows.h" />
-    <ClInclude Include="src\TextureUploadUtils.h" />
+    <ClInclude Include="src\TexturePixelConversion.h" />
     <ClInclude Include="src\ThumbnailFocusGuard.h" />
     <ClInclude Include="src\version.h" />
     <ClInclude Include="src\SetupChecks.h" />
