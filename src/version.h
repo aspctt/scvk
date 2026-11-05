@@ -22,7 +22,7 @@
 //// Constants
 
 #define SCVK_VERSION_MAJOR 0
-#define SCVK_VERSION_MINOR 5
+#define SCVK_VERSION_MINOR 6
 #define SCVK_VERSION_PATCH 0
 
-#define SCVK_VERSION_STRING "0.5.0"
+#define SCVK_VERSION_STRING "0.6.0"

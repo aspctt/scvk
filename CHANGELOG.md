@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-05
+
 ### Added
 
 - `-Depth16:off` and `-Depth16:on`, scd3d11's name for `-DepthBuffer:32` and `16`
@@ -172,7 +174,8 @@ Most of this release is UlisseWolf's port of scd3d11's features.
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/aspctt/scvk/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/aspctt/scvk/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/aspctt/scvk/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/aspctt/scvk/compare/0.2.2...0.3.0

@@ -353,29 +353,58 @@ To see a debug view, put an empty file with one of these names next to
 ## Benchmark
 
 `tools/benchmark.ps1` compares scvk with the game's own DirectX 7 driver on a city
-of your choice:
+of your choice, and with dgVoodoo 2 and scd3d11 when asked:
 
 ```
 pwsh tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -Runs 2
 ```
 
 Each run starts the game through Steam, which asks for a click, and the rest
-happens by itself. scvk opens the region and the city, pauses it and times every
+happens by itself. The game runs in a 1920x1080 window, since DirectX 7 quits at
+sizes past 2048. scvk opens the region and the city, pauses it and times every
 frame through eight camera scenes: a still view, scrolling at each zoom level, a
 full turn and a run of zoom changes. It then writes `scvk-benchmark.csv` and
-quits. The runs alternate between the two renderers, and
+quits. The runs alternate between the renderers, and
 `tools/benchmark-report.py` turns them into average fps, 1% and 0.1% lows, frame
 pacing and load times for each. Pacing covers the median and 99th percentile frame
 time, stutters a minute and the average change from one frame to the next, since a few
 long frames feel rough without moving the averages much.
 
-With VSync on, the lighter scenes sit at the monitor's refresh rate. Add
-`-GameArguments "-VSync:off"` to see how far past it scvk goes.
+`-Renderers` picks from `DirectX`, `dgVoodoo`, `scd3d11` and `scvk`. dgVoodoo needs
+its `DDraw.dll` and `D3DImm.dll` in `Apps` beside `SimCity 4.exe` and DirectX needs
+them gone, so the two go in separate sessions. scd3d11's DLL goes into Plugins for its
+own runs only, copied from `-Scd3d11Path`. `-Variant` names runs that differ by a
+launch option, so the report keeps them apart from the plain ones. With VSync on, the
+lighter scenes sit at the monitor's refresh rate, so `-VSync:off` shows how far past it
+each renderer goes. `-GameArguments` only keeps its quotes when the script is called
+from inside PowerShell:
 
-DirectX runs keep scvk loaded without its renderer, so both get the same frame
-pacing fixes. Without them a paused city sits at 30 frames a second on DirectX,
-and the comparison would measure that instead. A single run can also be started
-by hand from the `[Benchmark]` section of `scvk.ini`.
+```
+& tools/benchmark.ps1 -City "Ostton" -Renderers DirectX, scvk, scd3d11 -Scd3d11Path <SCD3D11.dll> -GameArguments "-VSync:off"
+```
+
+The other renderers' runs keep scvk loaded without its renderer, so all of them get
+the same frame pacing fixes. Without them a paused city sits at 30 frames a second on
+DirectX, and the comparison would measure that instead. A single run can also be
+started by hand from the `[Benchmark]` section of `scvk.ini`.
+
+Two runs each on Ostton with VSync off, an RTX 3070 and scvk 0.6.0, scd3d11 0.4.7 and
+dgVoodoo 4.7.1, gave these average frame rates:
+
+| Scene | DirectX | dgVoodoo | scd3d11 | scvk |
+|---|---:|---:|---:|---:|
+| close-still | 141 | 145 | 159 | 167 |
+| close-scroll | 203 | 216 | 262 | 293 |
+| near-scroll | 171 | 184 | 229 | 255 |
+| middle-scroll | 144 | 168 | 215 | 234 |
+| far-scroll | 110 | 135 | 194 | 204 |
+| farthest-scroll | 92 | 120 | 158 | 174 |
+| rotate | 175 | 220 | 259 | 279 |
+| zoom | 148 | 228 | 286 | 308 |
+
+scvk also had the best 1% and 0.1% lows in every scene, and the fewest stutters in all
+but farthest-scroll, where it tied scd3d11. The gap is widest on the still view, at 7.5 stutters a minute against 49.5 on scd3d11 and
+105 on DirectX. `-ViewportCull:off` scrolled 1 to 5% slower and no smoother.
 
 ## Installing
 
