@@ -63,10 +63,6 @@ one version lower, so the game picks scvk without any settings while a renderer
 built for that slot, such as [scd3d11](https://github.com/caspervg/scd3d11), still
 takes it.
 
-> **scvk and [SCGL](https://github.com/nsgomez/scgl) cannot be installed at the
-> same time.** Both claim the same class ID, and whichever registers the higher
-> version silently wins. Install one or the other.
-
 The interface the game expects, `cIGZGDriver`, is a fixed function API: roughly
 OpenGL 1.2 with extensions, including a matrix stack, alpha test, fog, and
 two-stage texture environment combiners. Vulkan has none of that. So scvk is
@@ -186,6 +182,8 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 - [scd3d11](https://github.com/caspervg/scd3d11): can be installed alongside, and
   keeps the DirectX slot. While it draws, scvk stays idle: no Vulkan, no patches and
   no changes to the video mode. See [Installing](#installing).
+- [SCGL](https://github.com/nsgomez/scgl): install one or the other. Both claim the
+  OpenGL class ID, and whichever registers the higher version silently wins.
 
 ### FPS limits: built in
 
