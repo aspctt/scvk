@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- At `LogLevel=debug`, `scvk.log` sums up the live shadows' passes, casters and times every few hundred frames
+
 ### Changed
 
 - Live shadows come with one switch, `-LiveShadows:on`, as in scd3d11: True3D props and network pieces cast live, the shadow registry takes over the game's building, tree and pole shadows, and hills cast terrain shadows
 - Live shadows darken the scene by multiplying, so large terrain shadows no longer wash out in blue
 - Terrain shadows get softer edges further from the hill casting them
 - Under live shadows prebuilt network pieces lose their flat shadow masks, since they cast live, and `-NetworkShadowMasks:on` keeps them
+- Live shadows skip the casters a pass cannot see, and gather and upload the rest with less work
 
 ### Removed
 
