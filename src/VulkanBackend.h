@@ -1615,8 +1615,11 @@ namespace scvk
 		 */
 		bool DrawShadowCasters(ShadowVertex const* vertices, uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, ShadowCasterDraw const* draws, uint32_t drawCount);
 
-		/** Uploads the terrain's shadow ceiling and its height field, one RGBA float texel per vertex. */
-		bool UploadTerrainShadowMaps(float const* ceiling, uint32_t ceilingWidth, uint32_t ceilingHeight, float const* vertices, uint32_t verticesX, uint32_t verticesZ);
+		/**
+		 * Uploads the terrain's shadow map, its ceiling and umbra as one two-float texel each,
+		 * and its height field, one RGBA float texel per vertex.
+		 */
+		bool UploadTerrainShadowMaps(float const* ceilings, uint32_t ceilingWidth, uint32_t ceilingHeight, float const* vertices, uint32_t verticesX, uint32_t verticesZ);
 
 		/**
 		 * Darkens the back buffer where the scene depth lies in shadow, within a rectangle

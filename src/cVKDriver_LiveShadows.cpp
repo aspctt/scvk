@@ -19,31 +19,29 @@
  */
 
 /*
- * Live indexed shadows for True3D props and prebuilt network pieces, as SCD3D11 draws
- * them. The game's own paths either see only positions and coordinates or need a mask
- * baked in advance; this runs where the index buffer and the alpha texture still exist.
+ * Live indexed shadows for True3D props and prebuilt network pieces (-LiveShadows:on), as
+ * SCD3D11 draws them. The game's own shadow paths only see positions and coordinates;
+ * this runs where the index buffer and the alpha texture still exist.
  *
- * With -NativeShadowMasks:replace the same shadow map also takes every shadow record the
- * game's AddShadow made (NativeShadowRegistry): buildings, flora, props and poles cast
- * through the game's own projector and prerendered texture, so their silhouettes match
- * the game's while landing on slopes and other buildings, and overlaps no longer stack.
+ * The same shadow map also takes every shadow record the game's AddShadow made
+ * (ShadowRegistry): buildings, flora, props and poles cast through the game's own
+ * projector and prerendered texture, so their silhouettes match the game's while landing
+ * on slopes and other buildings, and overlaps no longer stack.
  *
  * The same composite also darkens whatever lies in the terrain's own shadow
  * (TerrainShadows), which the game never drew.
  *
- * Everything here is opt-in through the same command line switches as SCD3D11's; without
- * them no draw matches and nothing is captured. The drawing itself is the backend's:
- * VulkanBackend::DrawShadowCasters and CompositeShadows.
+ * Without -LiveShadows:on no draw matches and nothing is captured. The drawing itself is
+ * the backend's: VulkanBackend::DrawShadowCasters and CompositeShadows.
  */
 
 //// Dependencies
 
 #include "cVKDriver.h"
+#include "LiveShadowHooks.h"
 #include "Logger.h"
 #include "ModuleLog.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
-#include "Settings.h"
+#include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "VulkanBackend.h"
 
@@ -71,8 +69,8 @@ namespace scvk
 		constexpr float SHADOW_MAP_SIZE = 2048.0f;
 		constexpr float SHADOW_DEPTH_BIAS_WORLD = 0.05f;
 
-		// The black the captured casters composite with before the game's own shadow
-		// parameters are known, and still do until a pass reports them.
+		// The black the casters composite with until the game's own shadow parameters have
+		// been read
 		constexpr float FALLBACK_SHADOW_OPACITY = 0.38f;
 
 		// A registry caster's ground quad sits this far above the occupant's placement
@@ -92,12 +90,15 @@ namespace scvk
 		// agree this closely.
 		constexpr float SAME_CASTER_TOLERANCE = 0.05f;
 
-		// Network models used as textured road surfaces sit just above the terrain; their
-		// self-shadow only darkens the surface, so they are not casters.
+		// Network models used as textured road surfaces sit just above the terrain. Their
+		// self-shadow only darkens the surface, while an elevated deck must still cast, so
+		// every vertex is checked against the terrain and slopes do not make a piece lying
+		// on the ground look raised.
 		constexpr float GROUND_NETWORK_CASTER_CLEARANCE = 0.5f;
 
-		// A receiver starts to darken this far below the terrain's shadow ceiling and is
-		// fully shadowed this much further down.
+		// A receiver starts to darken this far below the terrain's shadow ceiling, and its
+		// penumbra, the gap down to the umbra, is never narrower than this, so contact edges
+		// stay smooth
 		constexpr float TERRAIN_SHADOW_BIAS     = 0.5f;
 		constexpr float TERRAIN_SHADOW_SOFTNESS = 3.0f;
 
@@ -120,26 +121,6 @@ namespace scvk
 
 	namespace
 	{
-		bool IsDiagnosticLogEnabled(void)
-		{
-			static bool const isEnabled = std::strstr(GetCommandLineA(), "-LiveShadowDiag") != nullptr;
-			return isEnabled;
-		}
-
-		// Darkens faces turned away from the sun too, as the plain shadow map does.
-		bool ShouldShadeSunAwayFaces(void)
-		{
-			static bool const shouldShade = std::strstr(GetCommandLineA(), "-LiveShadowAllFaces") != nullptr;
-			return shouldShade;
-		}
-
-		// Keeps the game's partial static updates and accepts the stale shadows they leave.
-		bool ShouldKeepPartialStaticUpdates(void)
-		{
-			static bool const shouldKeep = std::strstr(GetCommandLineA(), "-LiveShadowKeepPartial") != nullptr;
-			return shouldKeep;
-		}
-
 		void TransformPoint(float const* matrix, float const point[3], float out[3])
 		{
 			out[0] = matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12];
@@ -256,24 +237,24 @@ namespace scvk
 		bool Invert(float const* m, float* out)
 		{
 			double inverse[16];
-			inverse[0]  =  double(m[5]) * m[10] * m[15] - double(m[5]) * m[11] * m[14] - double(m[9]) * m[6] * m[15] + double(m[9]) * m[7] * m[14] + double(m[13]) * m[6] * m[11] - double(m[13]) * m[7] * m[10];
-			inverse[4]  = -double(m[4]) * m[10] * m[15] + double(m[4]) * m[11] * m[14] + double(m[8]) * m[6] * m[15] - double(m[8]) * m[7] * m[14] - double(m[12]) * m[6] * m[11] + double(m[12]) * m[7] * m[10];
-			inverse[8]  =  double(m[4]) * m[9] * m[15] - double(m[4]) * m[11] * m[13] - double(m[8]) * m[5] * m[15] + double(m[8]) * m[7] * m[13] + double(m[12]) * m[5] * m[11] - double(m[12]) * m[7] * m[9];
-			inverse[12] = -double(m[4]) * m[9] * m[14] + double(m[4]) * m[10] * m[13] + double(m[8]) * m[5] * m[14] - double(m[8]) * m[6] * m[13] - double(m[12]) * m[5] * m[10] + double(m[12]) * m[6] * m[9];
-			inverse[1]  = -double(m[1]) * m[10] * m[15] + double(m[1]) * m[11] * m[14] + double(m[9]) * m[2] * m[15] - double(m[9]) * m[3] * m[14] - double(m[13]) * m[2] * m[11] + double(m[13]) * m[3] * m[10];
-			inverse[5]  =  double(m[0]) * m[10] * m[15] - double(m[0]) * m[11] * m[14] - double(m[8]) * m[2] * m[15] + double(m[8]) * m[3] * m[14] + double(m[12]) * m[2] * m[11] - double(m[12]) * m[3] * m[10];
-			inverse[9]  = -double(m[0]) * m[9] * m[15] + double(m[0]) * m[11] * m[13] + double(m[8]) * m[1] * m[15] - double(m[8]) * m[3] * m[13] - double(m[12]) * m[1] * m[11] + double(m[12]) * m[3] * m[9];
-			inverse[13] =  double(m[0]) * m[9] * m[14] - double(m[0]) * m[10] * m[13] - double(m[8]) * m[1] * m[14] + double(m[8]) * m[2] * m[13] + double(m[12]) * m[1] * m[10] - double(m[12]) * m[2] * m[9];
-			inverse[2]  =  double(m[1]) * m[6] * m[15] - double(m[1]) * m[7] * m[14] - double(m[5]) * m[2] * m[15] + double(m[5]) * m[3] * m[14] + double(m[13]) * m[2] * m[7] - double(m[13]) * m[3] * m[6];
-			inverse[6]  = -double(m[0]) * m[6] * m[15] + double(m[0]) * m[7] * m[14] + double(m[4]) * m[2] * m[15] - double(m[4]) * m[3] * m[14] - double(m[12]) * m[2] * m[7] + double(m[12]) * m[3] * m[6];
-			inverse[10] =  double(m[0]) * m[5] * m[15] - double(m[0]) * m[7] * m[13] - double(m[4]) * m[1] * m[15] + double(m[4]) * m[3] * m[13] + double(m[12]) * m[1] * m[7] - double(m[12]) * m[3] * m[5];
-			inverse[14] = -double(m[0]) * m[5] * m[14] + double(m[0]) * m[6] * m[13] + double(m[4]) * m[1] * m[14] - double(m[4]) * m[2] * m[13] - double(m[12]) * m[1] * m[6] + double(m[12]) * m[2] * m[5];
-			inverse[3]  = -double(m[1]) * m[6] * m[11] + double(m[1]) * m[7] * m[10] + double(m[5]) * m[2] * m[11] - double(m[5]) * m[3] * m[10] - double(m[9]) * m[2] * m[7] + double(m[9]) * m[3] * m[6];
-			inverse[7]  =  double(m[0]) * m[6] * m[11] - double(m[0]) * m[7] * m[10] - double(m[4]) * m[2] * m[11] + double(m[4]) * m[3] * m[10] + double(m[8]) * m[2] * m[7] - double(m[8]) * m[3] * m[6];
-			inverse[11] = -double(m[0]) * m[5] * m[11] + double(m[0]) * m[7] * m[9] + double(m[4]) * m[1] * m[11] - double(m[4]) * m[3] * m[9] - double(m[8]) * m[1] * m[7] + double(m[8]) * m[3] * m[5];
-			inverse[15] =  double(m[0]) * m[5] * m[10] - double(m[0]) * m[6] * m[9] - double(m[4]) * m[1] * m[10] + double(m[4]) * m[2] * m[9] + double(m[8]) * m[1] * m[6] - double(m[8]) * m[2] * m[5];
+			inverse[0]  =  double{ m[5] } * m[10] * m[15] - double{ m[5] } * m[11] * m[14] - double{ m[9] } * m[6] * m[15] + double{ m[9] } * m[7] * m[14] + double{ m[13] } * m[6] * m[11] - double{ m[13] } * m[7] * m[10];
+			inverse[4]  = -double{ m[4] } * m[10] * m[15] + double{ m[4] } * m[11] * m[14] + double{ m[8] } * m[6] * m[15] - double{ m[8] } * m[7] * m[14] - double{ m[12] } * m[6] * m[11] + double{ m[12] } * m[7] * m[10];
+			inverse[8]  =  double{ m[4] } * m[9] * m[15] - double{ m[4] } * m[11] * m[13] - double{ m[8] } * m[5] * m[15] + double{ m[8] } * m[7] * m[13] + double{ m[12] } * m[5] * m[11] - double{ m[12] } * m[7] * m[9];
+			inverse[12] = -double{ m[4] } * m[9] * m[14] + double{ m[4] } * m[10] * m[13] + double{ m[8] } * m[5] * m[14] - double{ m[8] } * m[6] * m[13] - double{ m[12] } * m[5] * m[10] + double{ m[12] } * m[6] * m[9];
+			inverse[1]  = -double{ m[1] } * m[10] * m[15] + double{ m[1] } * m[11] * m[14] + double{ m[9] } * m[2] * m[15] - double{ m[9] } * m[3] * m[14] - double{ m[13] } * m[2] * m[11] + double{ m[13] } * m[3] * m[10];
+			inverse[5]  =  double{ m[0] } * m[10] * m[15] - double{ m[0] } * m[11] * m[14] - double{ m[8] } * m[2] * m[15] + double{ m[8] } * m[3] * m[14] + double{ m[12] } * m[2] * m[11] - double{ m[12] } * m[3] * m[10];
+			inverse[9]  = -double{ m[0] } * m[9] * m[15] + double{ m[0] } * m[11] * m[13] + double{ m[8] } * m[1] * m[15] - double{ m[8] } * m[3] * m[13] - double{ m[12] } * m[1] * m[11] + double{ m[12] } * m[3] * m[9];
+			inverse[13] =  double{ m[0] } * m[9] * m[14] - double{ m[0] } * m[10] * m[13] - double{ m[8] } * m[1] * m[14] + double{ m[8] } * m[2] * m[13] + double{ m[12] } * m[1] * m[10] - double{ m[12] } * m[2] * m[9];
+			inverse[2]  =  double{ m[1] } * m[6] * m[15] - double{ m[1] } * m[7] * m[14] - double{ m[5] } * m[2] * m[15] + double{ m[5] } * m[3] * m[14] + double{ m[13] } * m[2] * m[7] - double{ m[13] } * m[3] * m[6];
+			inverse[6]  = -double{ m[0] } * m[6] * m[15] + double{ m[0] } * m[7] * m[14] + double{ m[4] } * m[2] * m[15] - double{ m[4] } * m[3] * m[14] - double{ m[12] } * m[2] * m[7] + double{ m[12] } * m[3] * m[6];
+			inverse[10] =  double{ m[0] } * m[5] * m[15] - double{ m[0] } * m[7] * m[13] - double{ m[4] } * m[1] * m[15] + double{ m[4] } * m[3] * m[13] + double{ m[12] } * m[1] * m[7] - double{ m[12] } * m[3] * m[5];
+			inverse[14] = -double{ m[0] } * m[5] * m[14] + double{ m[0] } * m[6] * m[13] + double{ m[4] } * m[1] * m[14] - double{ m[4] } * m[2] * m[13] - double{ m[12] } * m[1] * m[6] + double{ m[12] } * m[2] * m[5];
+			inverse[3]  = -double{ m[1] } * m[6] * m[11] + double{ m[1] } * m[7] * m[10] + double{ m[5] } * m[2] * m[11] - double{ m[5] } * m[3] * m[10] - double{ m[9] } * m[2] * m[7] + double{ m[9] } * m[3] * m[6];
+			inverse[7]  =  double{ m[0] } * m[6] * m[11] - double{ m[0] } * m[7] * m[10] - double{ m[4] } * m[2] * m[11] + double{ m[4] } * m[3] * m[10] + double{ m[8] } * m[2] * m[7] - double{ m[8] } * m[3] * m[6];
+			inverse[11] = -double{ m[0] } * m[5] * m[11] + double{ m[0] } * m[7] * m[9] + double{ m[4] } * m[1] * m[11] - double{ m[4] } * m[3] * m[9] - double{ m[8] } * m[1] * m[7] + double{ m[8] } * m[3] * m[5];
+			inverse[15] =  double{ m[0] } * m[5] * m[10] - double{ m[0] } * m[6] * m[9] - double{ m[4] } * m[1] * m[10] + double{ m[4] } * m[2] * m[9] + double{ m[8] } * m[1] * m[6] - double{ m[8] } * m[2] * m[5];
 
-			double const determinant = m[0] * inverse[0] + m[1] * inverse[4] + m[2] * inverse[8] + m[3] * inverse[12];
+			double const determinant = double{ m[0] } * inverse[0] + double{ m[1] } * inverse[4] + double{ m[2] } * inverse[8] + double{ m[3] } * inverse[12];
 			if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12)
 			{
 				return false;
@@ -330,7 +311,7 @@ namespace scvk
 		 * from the sun: the caster's box pushed down the sun onto the plane at its
 		 * placement height.
 		 */
-		bool GroundQuad(NativeShadowRegistry::Caster const& caster, float const sun[3], float quad[4][3])
+		bool GroundQuad(ShadowRegistry::Caster const& caster, float const sun[3], float quad[4][3])
 		{
 			if (sun[1] > -1.0e-3f)
 			{
@@ -375,7 +356,7 @@ namespace scvk
 		/** A registry caster that survived culling, and where its geometry lands in the upload. */
 		struct RegistryDraw
 		{
-			NativeShadowRegistry::PassCaster const* caster = nullptr;
+			ShadowRegistry::PassCaster const* caster = nullptr;
 			float    quad[4][3]  = {};
 			bool     hasQuad     = false;
 			bool     isQuadDrawn = false;
@@ -392,16 +373,13 @@ namespace scvk
 	{
 		// The game-side prebuilt network hook brackets exactly the occupant renderer that
 		// matters, so it is both cheaper and more precise than hashing the meshes
-		liveShadowMatchCalls++;
-
-		if (NativeShadowMasks::LiveNetworkDrawActive())
+		if (LiveShadowHooks::NetworkDrawActive())
 		{
-			liveShadowMatchHits++;
 			return true;
 		}
 
 		uint32_t const coordinateSets = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord);
-		if (!NativeShadowMasks::HasLivePropMeshes() || vertices == nullptr || vertexCount == 0 || vertexStride < sizeof(float) * 3 || coordinateSets == 0)
+		if (!LiveShadowHooks::HasPropMeshes() || vertices == nullptr || vertexCount == 0 || vertexStride < sizeof(float) * 3 || coordinateSets == 0)
 		{
 			return false;
 		}
@@ -426,20 +404,14 @@ namespace scvk
 			}
 		}
 
-		bool const isMatched = NativeShadowMasks::MatchLivePropSignature(signature);
-		if (isMatched)
-		{
-			liveShadowMatchHits++;
-		}
-
-		return isMatched;
+		return LiveShadowHooks::MatchPropSignature(signature);
 	}
 
 	void cVKDriver::NoteLiveShadowCandidate(uint32_t gdPrimitiveType, uint8_t const* firstVertex, uint32_t vertexCount, void const* indices, uint32_t indexCount, bool isIndex32Bit, uint32_t indexBase)
 	{
 		// Nothing can match unless a shadow module is installed, which keeps every draw
 		// path at the cost of two loads when the shadows are off
-		if (!NativeShadowMasks::LiveNetworkDrawActive() && !NativeShadowMasks::HasLivePropMeshes())
+		if (!LiveShadowHooks::NetworkDrawActive() && !LiveShadowHooks::HasPropMeshes())
 		{
 			return;
 		}
@@ -483,6 +455,7 @@ namespace scvk
 				source.resize(indexCount);
 				for (uint32_t index = 0; index < indexCount; index++)
 				{
+					// The game passes its indices untyped, in 16 or 32 bits as the draw says
 					uint32_t const value = isIndex32Bit ? static_cast<uint32_t const*>(indices)[index] : static_cast<uint16_t const*>(indices)[index];
 					source[index] = value - indexBase;
 				}
@@ -516,7 +489,7 @@ namespace scvk
 				break;
 
 			default:
-				if (!NativeShadowRegistry::AppendTriangles(gdPrimitiveType, source.data(), static_cast<uint32_t>(source.size()), primitives))
+				if (!ShadowRegistry::AppendTriangles(gdPrimitiveType, source.data(), static_cast<uint32_t>(source.size()), primitives))
 				{
 					return;
 				}
@@ -574,7 +547,7 @@ namespace scvk
 		draw.alphaFunction  = alphaComparison;
 		draw.alphaReference = alphaReference;
 		draw.isAlphaTested  = isCapabilityEnabled[kGDCapability_AlphaTest];
-		draw.isNetwork      = NativeShadowMasks::LiveNetworkDrawActive();
+		draw.isNetwork      = LiveShadowHooks::NetworkDrawActive();
 
 		size_t const loggedVertices = vertexCount;
 		size_t const loggedIndices  = draw.indices.size();
@@ -588,13 +561,13 @@ namespace scvk
 		if (!hasLogged)
 		{
 			hasLogged = true;
-			Log(LogCategory::Initialization, "native shadows: matched first %s caster (%u vertices, %u indices)", isNetwork ? "prebuilt network" : "prop", static_cast<unsigned>(loggedVertices), static_cast<unsigned>(loggedIndices));
+			Log(LogCategory::Initialization, "live shadows: matched first %s caster (%u vertices, %u indices)", isNetwork ? "prebuilt network" : "prop", static_cast<unsigned>(loggedVertices), static_cast<unsigned>(loggedIndices));
 		}
 	}
 
 	void cVKDriver::NoteLiveShadowTerrainView(uint8_t const* firstVertex)
 	{
-		if (isLiveShadowTerrainViewValid || isLiveShadowTerrainViewRejected || !NativeShadowRegistry::Enabled() || firstVertex == nullptr)
+		if (isLiveShadowTerrainViewValid || !LiveShadowHooks::Enabled() || firstVertex == nullptr)
 		{
 			return;
 		}
@@ -614,7 +587,7 @@ namespace scvk
 
 	bool cVKDriver::TrackLiveShadowWorldCasters(float const* eyeToWorld, float const* worldToView, float const* projection, float const sun[3], bool isSunKnown, bool isPartialPass)
 	{
-		// -NativeShadowMasks:replace keeps the captured casters of every static pass in
+		// With the registry, live shadows keep the captured casters of every static pass in
 		// world space. A full pass replaces the set. A partial pass updates it: a caster
 		// drawn again replaces its entry, one that should have been redrawn but was not is
 		// gone, and one not seen before is new. The shadow of a caster that went, or of a
@@ -674,7 +647,7 @@ namespace scvk
 			float ground   = draw.worldLow[1] - UNKNOWN_GROUND_DROP;
 			float altitude = 0.0f;
 
-			if (NativeShadowRegistry::TerrainAltitude((draw.worldLow[0] + draw.worldHigh[0]) * 0.5f, (draw.worldLow[2] + draw.worldHigh[2]) * 0.5f, altitude))
+			if (TerrainShadows::Altitude((draw.worldLow[0] + draw.worldHigh[0]) * 0.5f, (draw.worldLow[2] + draw.worldHigh[2]) * 0.5f, altitude))
 			{
 				ground = std::min(altitude, draw.worldLow[1]);
 			}
@@ -714,29 +687,6 @@ namespace scvk
 			placeInWorld(draw);
 		}
 
-		// Drop network pieces lying on the terrain: they only darken the road surface
-		liveShadowDraws.erase(std::remove_if(liveShadowDraws.begin(), liveShadowDraws.end(), [&](LiveShadowDraw const& draw)
-		{
-			if (!draw.isNetwork)
-			{
-				return false;
-			}
-
-			for (size_t index = 0; index < draw.vertices.size(); index += VERTEX_FLOATS)
-			{
-				float world[3] = {};
-				TransformPoint(draw.modelToWorld, draw.vertices.data() + index, world);
-
-				float terrain = 0.0f;
-				if (!TerrainShadows::Altitude(world[0], world[2], terrain) || world[1] - terrain > GROUND_NETWORK_CASTER_CLEARANCE)
-				{
-					return false;
-				}
-			}
-
-			return true;
-		}), liveShadowDraws.end());
-
 		if (!isPartialPass)
 		{
 			for (LiveShadowDraw& draw : liveShadowDraws)
@@ -764,8 +714,6 @@ namespace scvk
 			redisplay.push_back({ draw.shadowLow[0], draw.shadowLow[2], draw.shadowHigh[0], draw.shadowHigh[2] });
 		};
 
-		unsigned added   = 0;
-		unsigned removed = 0;
 		size_t const known = liveShadowWorldCasters.size();
 
 		for (LiveShadowDraw& draw : liveShadowDraws)
@@ -806,7 +754,6 @@ namespace scvk
 			}
 
 			liveShadowWorldCasters.push_back(std::move(draw));
-			added++;
 		}
 
 		liveShadowDraws.clear();
@@ -819,7 +766,6 @@ namespace scvk
 			}
 
 			queueRedisplay(cached);
-			removed++;
 			return true;
 		};
 
@@ -827,17 +773,7 @@ namespace scvk
 
 		for (auto const& box : redisplay)
 		{
-			NativeShadowRegistry::RedisplayWorldRect(box[0], box[1], box[2], box[3]);
-		}
-
-		if (IsDiagnosticLogEnabled() && (added != 0 || removed != 0))
-		{
-			static unsigned logged = 0;
-			if (logged < 16)
-			{
-				logged++;
-				Log(LogCategory::Initialization, "live shadows: partial pass kept %u casters, %u new, %u gone, %u regions redisplayed", static_cast<unsigned>(liveShadowWorldCasters.size()), added, removed, static_cast<unsigned>(redisplay.size()));
-			}
+			ShadowRegistry::RedisplayWorldRect(box[0], box[1], box[2], box[3]);
 		}
 
 		return true;
@@ -868,8 +804,8 @@ namespace scvk
 
 	void cVKDriver::RenderLivePropShadows(bool isStaticPass)
 	{
-		// Without a shadow module nothing is ever captured, so there is nothing to draw
-		if (GetSettings().nativeShadowMode == NativeShadowMode::Off)
+		// Without live shadows nothing is ever captured, so there is nothing to draw
+		if (!LiveShadowHooks::Enabled())
 		{
 			return;
 		}
@@ -877,28 +813,19 @@ namespace scvk
 		// The game updates the static view in place for localised changes, handing over the
 		// dirty rectangle as a scissored viewport. A shadow is not local: casters inside
 		// throw onto receivers outside, and receivers inside are darkened by casters that
-		// were never redrawn. A partial pass composites what it honestly has, clipped to
-		// the rectangle, then asks for a clean rebuild. With -NativeShadowMasks:replace
-		// none of that applies, since every caster is known in world space.
+		// were never redrawn. ShadowRegistry's casters arrive complete for the rectangle and
+		// the game dirties a record's rectangle when it changes, and
+		// TrackLiveShadowWorldCasters does the same for captured casters. A partial pass that
+		// cannot be followed, or one whose terrain shadows changed, composites what it
+		// honestly has, clipped to the rectangle, and asks for a clean rebuild. A pass over
+		// the whole window is never partial, so this cannot drive a redraw loop.
 		bool const isPartialPass = IsSubViewport();
-		bool const isReplaceMode = NativeShadowRegistry::Enabled();
+		bool const isRegistryOn  = ShadowRegistry::Enabled();
 
-		if (!isReplaceMode && isPartialPass && wasLiveShadowEverCaptured && !ShouldKeepPartialStaticUpdates())
-		{
-			isLiveShadowCleanRedrawPending = true;
-			liveShadowPartialPasses++;
-
-			static bool hasLoggedPartial = false;
-			if (!hasLoggedPartial)
-			{
-				hasLoggedPartial = true;
-				Log(LogCategory::Initialization, "live shadows: partial static pass (%dx%d at %d,%d) forces a clean redraw", viewportWidth, viewportHeight, viewportX, viewportY);
-			}
-		}
-
-		// What the game's own DrawShadows calls in this pass gathered
-		NativeShadowRegistry::Pass pass;
-		bool const hasPass = NativeShadowRegistry::TakePass(pass);
+		// What the game's own DrawShadows calls in this pass gathered. Without them the tone
+		// and the sun are asked for directly, so a rotation cannot leave a stale sun behind.
+		ShadowRegistry::Pass pass;
+		bool const hasPass = ShadowRegistry::TakePass(pass);
 
 		if (hasPass)
 		{
@@ -906,30 +833,32 @@ namespace scvk
 			liveShadowStrength    = pass.strength;
 			isLiveShadowToneValid = true;
 		}
-		else if (isReplaceMode && isStaticPass && NativeShadowRegistry::ShadowParams(liveShadowColour, liveShadowStrength))
+		else if (isStaticPass && LiveShadowHooks::ShadowParams(liveShadowColour, liveShadowStrength))
 		{
 			isLiveShadowToneValid = true;
 		}
 
-		if (hasPass && pass.sunValid)
+		if (hasPass && pass.isSunValid)
 		{
 			std::memcpy(liveShadowSunWorld, pass.sunDirection, sizeof(liveShadowSunWorld));
 			isLiveShadowSunWorldValid = true;
 		}
-		else if (isReplaceMode && isStaticPass && NativeShadowRegistry::SunDirection(liveShadowSunWorld))
+		else if (isStaticPass && LiveShadowHooks::SunDirection(liveShadowSunWorld))
 		{
 			isLiveShadowSunWorldValid = true;
 		}
 
-		// The terrain's shadow ceiling, rebuilt only when the height field or the sun moved
+		// The terrain's shadow ceiling, rebuilt only when the height field or the sun moved.
+		// The height field is read with -TerrainShadows:off too, since it places the
+		// captured casters.
 		TerrainShadowMap::Map const* terrainMap = nullptr;
 		uint64_t terrainGeneration = 0;
 
-		if (isReplaceMode && isStaticPass && isLiveShadowSunWorldValid && TerrainShadows::Enabled() && TerrainShadows::ShadowsRendered())
+		if (isStaticPass && isLiveShadowSunWorldValid && TerrainShadows::ShadowsRendered())
 		{
 			try
 			{
-				terrainMap = TerrainShadows::Update(liveShadowSunWorld, isPartialPass, terrainGeneration);
+				terrainMap = TerrainShadows::Update(liveShadowSunWorld, terrainGeneration);
 			}
 			catch (std::bad_alloc const&)
 			{
@@ -937,8 +866,24 @@ namespace scvk
 			}
 		}
 
+		if (!TerrainShadows::Enabled())
+		{
+			terrainMap = nullptr;
+		}
+
+		// A partial pass cannot repaint the rest of the view, so a terrain map other than the
+		// one the backing store was shaded with asks for a clean rebuild
+		bool const isTerrainChanged = terrainMap != nullptr && terrainGeneration != liveShadowShadedTerrainGeneration;
+		if (terrainMap != nullptr)
+		{
+			liveShadowShadedTerrainGeneration = terrainGeneration;
+		}
+
 		// DrawShadows' first argument maps eye space to world for the game's texgen, so its
-		// inverse is the view of every draw in this pass
+		// inverse is the view of every draw in this pass. A pass without shadow records takes
+		// the modelview of its first terrain draw instead: terrain vertices are world
+		// coordinates, which that draw's first vertex lying on the city's height field
+		// confirms.
 		float worldToView[16] = {};
 		float eyeToWorld[16]  = {};
 		bool hasView = hasPass && Invert(pass.eyeToWorld, worldToView);
@@ -947,66 +892,74 @@ namespace scvk
 		{
 			std::memcpy(eyeToWorld, pass.eyeToWorld, sizeof(eyeToWorld));
 		}
-
-		if (isStaticPass && isLiveShadowTerrainViewValid && !isLiveShadowTerrainViewRejected)
+		else if (isStaticPass && isLiveShadowTerrainViewValid)
 		{
-			if (hasView && !isLiveShadowTerrainViewTrusted)
-			{
-				// The terrain's modelview stands in for the view only after it has been
-				// seen to be the same matrix
-				float worst = 0.0f;
-				for (unsigned index = 0; index < 16; index++)
-				{
-					worst = std::max(worst, std::fabs(worldToView[index] - liveShadowTerrainView[index]) / (1.0f + std::fabs(worldToView[index])));
-				}
+			float altitude = 0.0f;
+			bool const isOnTerrain = TerrainShadows::Altitude(liveShadowTerrainVertex[0], liveShadowTerrainVertex[2], altitude) && std::fabs(altitude - liveShadowTerrainVertex[1]) <= TERRAIN_VERTEX_TOLERANCE;
 
-				isLiveShadowTerrainViewTrusted  = worst < 1.0e-3f;
-				isLiveShadowTerrainViewRejected = !isLiveShadowTerrainViewTrusted;
-				Log(LogCategory::Initialization, "live shadows: terrain model-view %s the DrawShadows view (%.3g)", isLiveShadowTerrainViewTrusted ? "matches" : "differs from", static_cast<double>(worst));
+			static bool hasLoggedVertexCheck = false;
+			if (!hasLoggedVertexCheck)
+			{
+				hasLoggedVertexCheck = true;
+				Log(LogCategory::Initialization, "live shadows: terrain vertex %.2f/%.2f/%.2f %s the height field (%.3f there)", static_cast<double>(liveShadowTerrainVertex[0]), static_cast<double>(liveShadowTerrainVertex[1]), static_cast<double>(liveShadowTerrainVertex[2]), isOnTerrain ? "lies on" : "is off", static_cast<double>(altitude));
 			}
-			else if (!hasView)
+
+			if (isOnTerrain && Invert(liveShadowTerrainView, eyeToWorld))
 			{
-				// Before any DrawShadows call the terrain's own vertex vouches for it: lying on
-				// the height field, it is in world coordinates, so the modelview is the view
-				float altitude = 0.0f;
-				bool const isOnTerrain = !isLiveShadowTerrainViewTrusted && TerrainShadows::Altitude(liveShadowTerrainVertex[0], liveShadowTerrainVertex[2], altitude) && std::fabs(altitude - liveShadowTerrainVertex[1]) <= TERRAIN_VERTEX_TOLERANCE;
-
-				if (!isLiveShadowTerrainViewTrusted)
-				{
-					static bool hasLoggedVertexCheck = false;
-					if (!hasLoggedVertexCheck)
-					{
-						hasLoggedVertexCheck = true;
-						Log(LogCategory::Initialization, "live shadows: terrain vertex %.2f/%.2f/%.2f %s the height field (%.3f there)", static_cast<double>(liveShadowTerrainVertex[0]), static_cast<double>(liveShadowTerrainVertex[1]), static_cast<double>(liveShadowTerrainVertex[2]), isOnTerrain ? "lies on" : "is off", static_cast<double>(altitude));
-					}
-				}
-
-				if ((isLiveShadowTerrainViewTrusted || isOnTerrain) && Invert(liveShadowTerrainView, eyeToWorld))
-				{
-					std::memcpy(worldToView, liveShadowTerrainView, sizeof(worldToView));
-					hasView = true;
-				}
+				std::memcpy(worldToView, liveShadowTerrainView, sizeof(worldToView));
+				hasView = true;
 			}
 		}
 
 		// The next pass, or the next frame after a scroll, has its own view
 		isLiveShadowTerrainViewValid = false;
 
+		// Drop network pieces lying on the terrain, which only darken the road surface
+		//
+		// Where the terrain under a vertex is unknown, the piece keeps casting.
+		if (hasView)
+		{
+			auto const isOnGround = [&](LiveShadowDraw const& draw)
+			{
+				if (!draw.isNetwork)
+				{
+					return false;
+				}
+
+				float modelToWorld[16] = {};
+				Multiply(eyeToWorld, draw.modelView, modelToWorld);
+
+				for (size_t index = 0; index < draw.vertices.size(); index += VERTEX_FLOATS)
+				{
+					float world[3] = {};
+					TransformPoint(modelToWorld, draw.vertices.data() + index, world);
+
+					float terrain = 0.0f;
+					if (!TerrainShadows::Altitude(world[0], world[2], terrain) || world[1] - terrain > GROUND_NETWORK_CASTER_CLEARANCE)
+					{
+						return false;
+					}
+				}
+
+				return true;
+			};
+
+			liveShadowDraws.erase(std::remove_if(liveShadowDraws.begin(), liveShadowDraws.end(), isOnGround), liveShadowDraws.end());
+		}
+
 		// The composite rebuilds view positions through the pass's own projection
 		float projection[16] = {};
 		bool const hasProjection = !liveShadowDraws.empty() || isLiveShadowSceneProjectionValid;
 		std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection, sizeof(projection));
-
-		std::vector<LiveShadowDraw*> casters;
-		bool isTracked = false;
 
 		// A strip at the city's edge often holds no shadow record and no terrain on the
 		// height field, so its view stays unknown. It drew no caster either, so the
 		// world-space set is still right. Dropping the set there forced a full redraw on
 		// every scroll frame along the edge.
 		bool const isEmptyPartialPass = isPartialPass && !hasView && !hasPass && liveShadowDraws.empty();
+		bool isTracked = false;
 
-		if (isReplaceMode && isStaticPass && !isEmptyPartialPass)
+		if (isRegistryOn && isStaticPass && !isEmptyPartialPass)
 		{
 			if (hasView && hasProjection)
 			{
@@ -1017,25 +970,28 @@ namespace scvk
 
 			if (!isTracked)
 			{
-				// A pass the world-space set cannot follow leaves it stale; a partial one also
-				// leaves pixels outside it wrong, so it falls back to a clean rebuild
-				bool const isAffected = !liveShadowDraws.empty() || !liveShadowWorldCasters.empty() || terrainMap != nullptr;
 				isLiveShadowWorldValid = false;
-
-				if (isPartialPass && isAffected && !ShouldKeepPartialStaticUpdates())
-				{
-					isLiveShadowCleanRedrawPending = true;
-					liveShadowPartialPasses++;
-
-					static bool hasLoggedUntracked = false;
-					if (!hasLoggedUntracked)
-					{
-						hasLoggedUntracked = true;
-						Log(LogCategory::Initialization, "live shadows: partial pass without a view (%dx%d at %d,%d) forces a clean redraw", viewportWidth, viewportHeight, viewportX, viewportY);
-					}
-				}
 			}
 		}
+
+		// Without the registry a partial pass only ever sees the casters drawn inside its own
+		// rectangle, so once one has cast it cannot be trusted. With it, only a static pass
+		// the world-space set could not follow is.
+		bool const areCastersStale = isRegistryOn ? (isStaticPass && !isTracked && !isEmptyPartialPass && (!liveShadowDraws.empty() || !liveShadowWorldCasters.empty())) : wasLiveShadowEverCaptured;
+
+		if (isPartialPass && (areCastersStale || isTerrainChanged))
+		{
+			isLiveShadowCleanRedrawPending = true;
+
+			static bool hasLoggedPartial = false;
+			if (!hasLoggedPartial)
+			{
+				hasLoggedPartial = true;
+				Log(LogCategory::Initialization, "live shadows: partial static pass (%dx%d at %d,%d) forces a clean redraw", viewportWidth, viewportHeight, viewportX, viewportY);
+			}
+		}
+
+		std::vector<LiveShadowDraw*> casters;
 
 		if (isTracked)
 		{
@@ -1072,31 +1028,11 @@ namespace scvk
 
 		if (casters.empty() && pass.casters.empty() && !isTerrainShadowed)
 		{
-			static bool hasLoggedEmpty = false;
-			if (IsDiagnosticLogEnabled() && !hasLoggedEmpty)
-			{
-				hasLoggedEmpty = true;
-				Log(LogCategory::Initialization, "liveshadow frame: no matched caster draws%s", hasPass ? " (registry pass had none)" : "");
-			}
-
 			liveShadowDraws.clear();
 			return;
 		}
 
-		static uint64_t diagnosticFrame = 0;
-		bool const isDiagnosticLogged = IsDiagnosticLogEnabled() && diagnosticFrame++ % 60 == 0;
-
-		if (!pass.casters.empty())
-		{
-			static bool hasLoggedFirstPass = false;
-			if (!hasLoggedFirstPass)
-			{
-				hasLoggedFirstPass = true;
-				Log(LogCategory::Initialization, "shadow registry: first pass reached the driver (%u casters, tone %.3f/%.3f/%.3f at %.3f, alpha scale %.3f, sun %s)", static_cast<unsigned>(pass.casters.size()), static_cast<double>(pass.colour[0]), static_cast<double>(pass.colour[1]), static_cast<double>(pass.colour[2]), static_cast<double>(pass.strength), static_cast<double>(pass.alphaScale), pass.sunValid ? "known" : "unknown");
-			}
-		}
-
-		if (!isReplaceMode && !liveShadowDraws.empty())
+		if (!isRegistryOn && !liveShadowDraws.empty())
 		{
 			wasLiveShadowEverCaptured = true;
 		}
@@ -1158,6 +1094,20 @@ namespace scvk
 			TransformDirection(worldToView, liveShadowSunWorld, shadowDirection);
 			isGameDirection = Dot(shadowDirection, shadowDirection) > 1.0e-12f;
 			Normalize(shadowDirection);
+
+			// The sun only moves with a rotation, which redraws the static view, so dynamic
+			// passes reuse it and agree with the static shadows
+			if (isGameDirection)
+			{
+				std::memcpy(liveShadowSunView, shadowDirection, sizeof(liveShadowSunView));
+			}
+
+			isLiveShadowSunViewValid = isGameDirection;
+		}
+		else if (isLiveShadowSunViewValid)
+		{
+			std::memcpy(shadowDirection, liveShadowSunView, sizeof(shadowDirection));
+			isGameDirection = true;
 		}
 
 		if (!isGameDirection)
@@ -1175,7 +1125,7 @@ namespace scvk
 		if (!hasLoggedDirection)
 		{
 			hasLoggedDirection = true;
-			Log(LogCategory::Initialization, "native shadows: sun ray %.4f/%.4f/%.4f from %s; %u draws estimate %.4f/%.4f/%.4f", static_cast<double>(shadowDirection[0]), static_cast<double>(shadowDirection[1]), static_cast<double>(shadowDirection[2]), isGameDirection ? "GetShadowDirection" : "the camera estimate", viewUpSamples, static_cast<double>(estimatedDirection[0]), static_cast<double>(estimatedDirection[1]), static_cast<double>(estimatedDirection[2]));
+			Log(LogCategory::Initialization, "live shadows: sun ray %.4f/%.4f/%.4f from %s; %u draws estimate %.4f/%.4f/%.4f", static_cast<double>(shadowDirection[0]), static_cast<double>(shadowDirection[1]), static_cast<double>(shadowDirection[2]), isGameDirection ? "GetShadowDirection" : "the camera estimate", viewUpSamples, static_cast<double>(estimatedDirection[0]), static_cast<double>(estimatedDirection[1]), static_cast<double>(estimatedDirection[2]));
 		}
 
 		// The view-space box everything casting lies in
@@ -1217,14 +1167,14 @@ namespace scvk
 			Normalize(sunWorld);
 			registryDraws.reserve(pass.casters.size());
 
-			for (NativeShadowRegistry::PassCaster const& passCaster : pass.casters)
+			for (ShadowRegistry::PassCaster const& passCaster : pass.casters)
 			{
-				NativeShadowRegistry::Caster const& caster = *passCaster.caster;
+				ShadowRegistry::Caster const& caster = *passCaster.caster;
 
 				RegistryDraw draw;
 				draw.caster      = &passCaster;
 				draw.hasQuad     = GroundQuad(caster, sunWorld, draw.quad);
-				draw.isQuadDrawn = draw.hasQuad && !caster.meshUVs;
+				draw.isQuadDrawn = draw.hasQuad && !caster.hasMeshCoordinates;
 
 				if (caster.indices.empty() && !draw.isQuadDrawn)
 				{
@@ -1308,11 +1258,6 @@ namespace scvk
 		bool const hasCasters = !casters.empty() || !registryDraws.empty();
 		if (!hasCasters && !isTerrainShadowed)
 		{
-			if (isDiagnosticLogged)
-			{
-				Log(LogCategory::Initialization, "liveshadow frame: registry %u gathered, none visible (culled=%u notex=%u)", static_cast<unsigned>(pass.casters.size()), registryCulled, registryMissingTexture);
-			}
-
 			liveShadowDraws.clear();
 			return;
 		}
@@ -1328,17 +1273,6 @@ namespace scvk
 		if (hasCasters && hasView)
 		{
 			Multiply(lightView, worldToView, lightWorld);
-		}
-
-		if (isDiagnosticLogged && hasCasters)
-		{
-			size_t networkCount = 0;
-			for (LiveShadowDraw const* caster : casters)
-			{
-				networkCount += caster->isNetwork ? 1u : 0u;
-			}
-
-			Log(LogCategory::Initialization, "liveshadow frame: draws=%u (network=%u prop=%u) match=%llu/%llu registry=%u partial=%u view=[%.3g %.3g %.3g]-[%.3g %.3g %.3g] depth=%.3g", static_cast<unsigned>(casters.size()), static_cast<unsigned>(networkCount), static_cast<unsigned>(casters.size() - networkCount), static_cast<unsigned long long>(liveShadowMatchCalls), static_cast<unsigned long long>(liveShadowMatchHits), static_cast<unsigned>(registryDraws.size()), liveShadowPartialPasses, static_cast<double>(boundsLow[0]), static_cast<double>(boundsLow[1]), static_cast<double>(boundsLow[2]), static_cast<double>(boundsHigh[0]), static_cast<double>(boundsHigh[1]), static_cast<double>(boundsHigh[2]), static_cast<double>(lightDepthRange));
 		}
 
 		// Draw the casters into the shadow map: one upload for the whole pass, then one
@@ -1384,7 +1318,7 @@ namespace scvk
 
 				for (RegistryDraw const& registryDraw : registryDraws)
 				{
-					NativeShadowRegistry::Caster const& caster = *registryDraw.caster->caster;
+					ShadowRegistry::Caster const& caster = *registryDraw.caster->caster;
 					size_t const count = caster.positions.size() / 3;
 
 					ShadowCasterDraw draw;
@@ -1395,19 +1329,19 @@ namespace scvk
 					draw.isRegistry   = true;
 
 					// True3D coordinates routinely run past 0 to 1, so those textures repeat
-					std::memcpy(draw.samplerParameters, (registryDraw.caster->wrap || caster.meshUVs) ? WRAP_SAMPLER : CLAMP_SAMPLER, sizeof(draw.samplerParameters));
+					std::memcpy(draw.samplerParameters, (registryDraw.caster->isWrapped || caster.hasMeshCoordinates) ? WRAP_SAMPLER : CLAMP_SAMPLER, sizeof(draw.samplerParameters));
 
 					std::memcpy(draw.constants, lightWorld, sizeof(lightWorld));
 					TextureRows(caster.projector, draw.constants + 16);
-					draw.constants[25] = caster.meshUVs ? DEFAULT_REGISTRY_ALPHA_REFERENCE : registryAlphaReference;
-					draw.constants[26] = caster.meshUVs ? 1.0f : 0.0f;
+					draw.constants[25] = caster.hasMeshCoordinates ? DEFAULT_REGISTRY_ALPHA_REFERENCE : registryAlphaReference;
+					draw.constants[26] = caster.hasMeshCoordinates ? 1.0f : 0.0f;
 					std::memcpy(draw.constants + 28, caster.uvBounds, sizeof(caster.uvBounds));
 
 					for (size_t vertex = 0; vertex < count; vertex++)
 					{
 						float const* const position = caster.positions.data() + vertex * 3;
-						float const u = caster.meshUVs ? caster.uvs[vertex * 2] : 0.0f;
-						float const v = caster.meshUVs ? caster.uvs[vertex * 2 + 1] : 0.0f;
+						float const u = caster.hasMeshCoordinates ? caster.coordinates[vertex * 2] : 0.0f;
+						float const v = caster.hasMeshCoordinates ? caster.coordinates[vertex * 2 + 1] : 0.0f;
 						vertices.push_back(ShadowVertex{ { position[0], position[1], position[2] }, { u, v } });
 					}
 
@@ -1462,19 +1396,29 @@ namespace scvk
 				TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
 
 				// Altitude, normal x and z (its y is up and recovered), and the flip of the
-				// cell this vertex is the lowest corner of
+				// cell this vertex is the lowest corner of. The map goes up as the ceiling and
+				// the umbra side by side, one texel each.
 				std::vector<float> vertices;
+				std::vector<float> ceilings;
 				try
 				{
 					vertices.resize(size_t{ field.verticesX } * field.verticesZ * 4);
+					ceilings.resize(map.ceiling.size() * 2);
 				}
 				catch (std::bad_alloc const&)
 				{
 					vertices.clear();
+					ceilings.clear();
 				}
 
-				if (!vertices.empty())
+				if (!vertices.empty() && !ceilings.empty())
 				{
+					for (size_t index = 0; index < map.ceiling.size(); index++)
+					{
+						ceilings[index * 2 + 0] = map.ceiling[index];
+						ceilings[index * 2 + 1] = map.umbra[index];
+					}
+
 					for (uint32_t z = 0; z < field.verticesZ; z++)
 					{
 						for (uint32_t x = 0; x < field.verticesX; x++)
@@ -1491,7 +1435,7 @@ namespace scvk
 						}
 					}
 
-					if (vulkan->UploadTerrainShadowMaps(map.ceiling.data(), map.width, map.height, vertices.data(), field.verticesX, field.verticesZ))
+					if (vulkan->UploadTerrainShadowMaps(ceilings.data(), map.width, map.height, vertices.data(), field.verticesX, field.verticesZ))
 					{
 						liveShadowTerrainGeneration = terrainGeneration;
 						liveShadowDeviceGeneration  = vulkan->DeviceGeneration();
@@ -1532,7 +1476,7 @@ namespace scvk
 
 			composite.terrainShade[0] = 1.0f;
 			composite.terrainShade[1] = TERRAIN_SHADOW_BIAS;
-			composite.terrainShade[2] = 1.0f / TERRAIN_SHADOW_SOFTNESS;
+			composite.terrainShade[2] = TERRAIN_SHADOW_SOFTNESS;
 
 			TerrainShadowMap::HeightField const& field = TerrainShadows::Terrain();
 			composite.terrainCell[0] = field.cellWidth;
@@ -1552,7 +1496,7 @@ namespace scvk
 		// The game's shadow colour and strength, faded with the lighting manager's own day
 		// and night weight
 		float daylight = 1.0f;
-		NativeShadowRegistry::ShadowDaylight(daylight);
+		LiveShadowHooks::ShadowDaylight(daylight);
 
 		composite.projection1[3] = (isLiveShadowToneValid ? liveShadowStrength : FALLBACK_SHADOW_OPACITY) * daylight;
 		if (isLiveShadowToneValid)
@@ -1572,7 +1516,7 @@ namespace scvk
 			flatLight = std::max(-sunWorld[1], 0.05f);
 		}
 
-		composite.sun[3] = ShouldShadeSunAwayFaces() ? 0.0f : 1.0f / flatLight;
+		composite.sun[3] = 1.0f / flatLight;
 
 		// The composite covers the pass's viewport: outside a partial pass's dirty
 		// rectangle the game keeps the pixels it has, and darkening them again would blend

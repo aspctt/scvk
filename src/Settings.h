@@ -27,16 +27,6 @@ namespace scvk
 {
 	//// Types
 
-	/** Which of the game-side shadow modules run. See NativeShadowMasks and NativeShadowRegistry. */
-	enum class NativeShadowMode
-	{
-		Off,      // SC4's own shadows only
-		Network,  // live True3D shadows of networks
-		Props,    // live True3D shadows of props and buildings
-		All,      // both: every live True3D shadow
-		Replace,  // all of them, and the shadow registry and the terrain's own shadows on top
-	};
-
 	/** What a launch option that turns something on or off says. See ReadFlagSwitch. */
 	enum class FlagSwitch
 	{
@@ -82,16 +72,17 @@ namespace scvk
 		// instead of one more for the flip model. See VulkanBackend::CreateSwapchain.
 		bool isFlipModelPreferred = true;
 
-		// -NativeShadowMasks:off|network|props|all|replace. Off by default, as in
-		// SCD3D11, leaving SC4's own shadows alone: while live shadows are on, every
-		// scroll, zoom and rotation makes the game redraw the whole city view rather than
-		// the strip that came into view. All draws every True3D prop and network piece
-		// live in the shadow map, the rest of the shadows left to SC4. Replace adds the
-		// registry, which takes over the shadow records SC4 draws as flat decals, and the
-		// terrain's own shadows; it is experimental, and in a city of dense parks and
-		// raised roads it laid blocks of shadow across the roads. -LiveShadows:on is
-		// Replace, under the name SCD3D11 now gives its one switch.
-		NativeShadowMode nativeShadowMode = NativeShadowMode::Off;
+		// -LiveShadows:on. Off by default, as in SCD3D11, leaving SC4's own shadows alone,
+		// because of what they cost in large cities. On, every True3D prop and network piece
+		// casts live in the shadow map, the shadow registry takes over the shadow records
+		// SC4 draws as flat decals, and the terrain casts its own shadows. See
+		// LiveShadowHooks, ShadowRegistry and TerrainShadows.
+		bool areLiveShadowsEnabled = false;
+
+		// -NetworkShadowMasks:on. With live shadows on, keeps the flat FSH shadow masks of
+		// prebuilt network pieces, which those pieces otherwise replace by casting live: the
+		// two would darken the same ground twice.
+		bool shouldKeepNetworkShadowMasks = false;
 	};
 
 	//// Public API
@@ -105,7 +96,7 @@ namespace scvk
 	 */
 	bool HasCommandLineSwitch(char const* name);
 
-	/** The text after a switch such as -NativeShadowMasks:, up to the next space, or false when absent. */
+	/** The text after a switch such as -MaxFPS:, up to the next space, or false when absent. */
 	bool GetCommandLineValue(char const* prefix, char* outValue, uint32_t capacity);
 
 	/**

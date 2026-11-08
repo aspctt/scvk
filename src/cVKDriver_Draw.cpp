@@ -36,8 +36,8 @@
 //// Dependencies
 
 #include "cVKDriver.h"
+#include "LiveShadowHooks.h"
 #include "Logger.h"
-#include "NativeShadowMasks.h"
 #include "VulkanBackend.h"
 
 #include <VertexFormatUtils.h>
@@ -281,7 +281,7 @@ namespace scvk
 
 		// Capture it for the shadow map, when the shadow modules asked for it. Only then
 		// is the index range worth finding.
-		if (NativeShadowMasks::LiveNetworkDrawActive() || NativeShadowMasks::HasLivePropMeshes())
+		if (LiveShadowHooks::NetworkDrawActive() || LiveShadowHooks::HasPropMeshes())
 		{
 			uint32_t lowest  = UINT32_MAX;
 			uint32_t highest = 0;

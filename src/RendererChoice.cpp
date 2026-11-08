@@ -29,11 +29,9 @@
 
 #include "RendererChoice.h"
 #include "FpsLimit.h"
-#include "NativeShadowDiagnostics.h"
-#include "NativeShadowExperiment.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
+#include "LiveShadowHooks.h"
 #include "SC4Version.h"
+#include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "VulkanBackend.h"
 
@@ -168,15 +166,12 @@ namespace scvk
 		ApplyFpsLimitSettings();
 
 		// Install the game-side shadow modules SCD3D11 has, each guarded by the exact
-		// bytes it patches. They are opt-in, as in SCD3D11: the live True3D shadows with
-		// -NativeShadowMasks:network, props or all, the registry and the terrain's shadows
-		// on top of them with replace, and the diagnostics only when asked for. scd3d11
-		// reads the same switches and patches the same code, so these wait until scvk is
-		// the one drawing.
-		NativeShadowMasks::Install();
-		NativeShadowRegistry::Install();
+		// bytes it patches. They are opt-in with -LiveShadows:on, as in SCD3D11, and the
+		// registry and the terrain's shadows only go in on top of the hooks. scd3d11 reads
+		// the same switch and patches the same code, so these wait until scvk is the one
+		// drawing.
+		LiveShadowHooks::Install();
+		ShadowRegistry::Install();
 		TerrainShadows::Install();
-		NativeShadowDiagnostics::Install();
-		NativeShadowExperiment::Install();
 	}
 }

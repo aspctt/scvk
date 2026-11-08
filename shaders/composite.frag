@@ -21,6 +21,10 @@
  * The shadow composite, SCD3D11's CompositePS: darkens the back buffer wherever the
  * scene depth lies in the shadow map's shadow or below the terrain's shadow ceiling.
  *
+ * The shadow is multiplied into the scene: it takes the sun's direct light away and keeps
+ * the ground's own colour, tinted by SimCity 4's shadow colour. Blending towards that
+ * colour instead washed large terrain shadows out in blue.
+ *
  * Each pixel's view position is rebuilt from the depth through the pass's own
  * projection. A shadow takes away the sun's direct light, so a face turned partly away
  * from the sun is darkened less and one turned fully away not at all; terrain pixels use
@@ -40,17 +44,17 @@ layout(set = 0, binding = 0, std140) uniform CompositeConstants
 	vec4 projection1;   // p[13], p[14], shadow map texel, opacity
 	vec4 viewport;      // the pass's viewport: x, y, width, height, from the top left
 	vec4 tone;          // the shadow colour
-	vec4 sun;           // the direction light travels in view space; w: 1 / N.L of flat ground, 0 for all faces
+	vec4 sun;           // the direction light travels in view space; w: 1 / N.L of flat ground
 	mat4 eyeToWorld;    // view space to world, for the terrain maps
 	vec4 terrainAxes;   // world xz to the map's along (xy) and across (zw) axes
 	vec4 terrainGrid;   // map uv = (along * x + y, across * z + w)
-	vec4 terrainShade;  // terrain map on, bias, 1 / softness, shadow map on
+	vec4 terrainShade;  // terrain map on, bias, minimum penumbra, shadow map on
 	vec4 terrainCell;   // cell width, how close to the terrain a terrain pixel lies, vertices x, z
 } constants;
 
 layout(set = 0, binding = 1) uniform sampler2D sceneDepth;
 layout(set = 0, binding = 2) uniform sampler2D shadowMap;
-layout(set = 0, binding = 3) uniform sampler2D terrainCeiling;
+layout(set = 0, binding = 3) uniform sampler2D terrainCeiling;  // ceiling, umbra
 layout(set = 0, binding = 4) uniform sampler2D terrainVertices; // altitude, normal x, normal z, cell flipped
 
 layout(location = 0) out vec4 outColour;
@@ -120,9 +124,9 @@ float TerrainSurface(vec2 xz, out vec3 normal)
 	return v.x;
 }
 
-// The ceiling filtered bilinearly and clamped to its edge, worked out here because linear
-// filtering of 32-bit float images is not something every device offers.
-float TerrainCeiling(vec2 uv)
+// The ceiling and the umbra filtered bilinearly and clamped to the edge, worked out here
+// because linear filtering of 32-bit float images is not something every device offers.
+vec2 TerrainCeiling(vec2 uv)
 {
 	ivec2 size   = textureSize(terrainCeiling, 0);
 	vec2  texel  = uv * vec2(size) - 0.5;
@@ -130,10 +134,10 @@ float TerrainCeiling(vec2 uv)
 	vec2  f      = texel - vec2(origin);
 
 	ivec2 last = size - 1;
-	float c00 = texelFetch(terrainCeiling, clamp(origin, ivec2(0), last), 0).r;
-	float c10 = texelFetch(terrainCeiling, clamp(origin + ivec2(1, 0), ivec2(0), last), 0).r;
-	float c01 = texelFetch(terrainCeiling, clamp(origin + ivec2(0, 1), ivec2(0), last), 0).r;
-	float c11 = texelFetch(terrainCeiling, clamp(origin + ivec2(1, 1), ivec2(0), last), 0).r;
+	vec2 c00 = texelFetch(terrainCeiling, clamp(origin, ivec2(0), last), 0).rg;
+	vec2 c10 = texelFetch(terrainCeiling, clamp(origin + ivec2(1, 0), ivec2(0), last), 0).rg;
+	vec2 c01 = texelFetch(terrainCeiling, clamp(origin + ivec2(0, 1), ivec2(0), last), 0).rg;
+	vec2 c11 = texelFetch(terrainCeiling, clamp(origin + ivec2(1, 1), ivec2(0), last), 0).rg;
 
 	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 }
@@ -170,32 +174,25 @@ void main()
 
 	// Darken fully where N.L is that of flat ground, what SimCity 4's shadow strength is
 	// set for, less on a face turned partly away, and not at all on one turned fully away
-	float facing = 1.0;
+	float light = dot(surfaceNormal, -constants.sun.xyz);
 
-	if (constants.sun.w != 0.0)
+	if (isTerrainMapUsed)
 	{
-		vec3 normal = surfaceNormal;
+		vec3  vertexNormal;
+		float ground      = TerrainSurface(world.xz, vertexNormal);
+		mat3  toWorld     = mat3(constants.eyeToWorld);
+		vec3  worldNormal = toWorld * surfaceNormal;
 
-		float light = dot(normal, -constants.sun.xyz);
-
-		if (isTerrainMapUsed)
+		if (abs(world.y - ground) < constants.terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
 		{
-			vec3  vertexNormal;
-			float ground      = TerrainSurface(world.xz, vertexNormal);
-			mat3  toWorld     = mat3(constants.eyeToWorld);
-			vec3  worldNormal = toWorld * normal;
-
-			if (abs(world.y - ground) < constants.terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
-			{
-				light = dot(vertexNormal, -normalize(toWorld * constants.sun.xyz));
-			}
+			light = dot(vertexNormal, -normalize(toWorld * constants.sun.xyz));
 		}
+	}
 
-		facing = clamp(light * constants.sun.w, 0.0, 1.0);
-		if (facing < 0.001)
-		{
-			discard;
-		}
+	float facing = clamp(light * constants.sun.w, 0.0, 1.0);
+	if (facing < 0.001)
+	{
+		discard;
 	}
 
 	// The casters' shadow, filtered over the nine texels around the pixel's
@@ -233,13 +230,15 @@ void main()
 		}
 	}
 
-	// The terrain's own shadow: a point below the ceiling the map holds for its (x, z).
-	// The larger of the two shadows wins, so they never stack.
+	// The terrain's own shadow: a point below the ceiling the map holds for its (x, z),
+	// fading in over the penumbra down to the umbra, which widens with the distance from the
+	// ridge. The larger of the two shadows wins, so they never stack.
 	if (isTerrainMapUsed)
 	{
-		vec2  axes    = vec2(dot(world.xz, constants.terrainAxes.xy), dot(world.xz, constants.terrainAxes.zw));
-		float ceiling = TerrainCeiling(axes * constants.terrainGrid.xz + constants.terrainGrid.yw);
-		shade = max(shade, clamp((ceiling - world.y - constants.terrainShade.y) * constants.terrainShade.z, 0.0, 1.0));
+		vec2  axes     = vec2(dot(world.xz, constants.terrainAxes.xy), dot(world.xz, constants.terrainAxes.zw));
+		vec2  ceiling  = TerrainCeiling(axes * constants.terrainGrid.xz + constants.terrainGrid.yw);
+		float penumbra = max(ceiling.x - ceiling.y, constants.terrainShade.z);
+		shade = max(shade, clamp((ceiling.x - world.y - constants.terrainShade.y) / penumbra, 0.0, 1.0));
 	}
 
 	shade *= facing;
@@ -248,5 +247,5 @@ void main()
 		discard;
 	}
 
-	outColour = vec4(constants.tone.rgb, shade * constants.projection1.w);
+	outColour = vec4(mix(vec3(1.0), constants.tone.rgb, shade * constants.projection1.w), 1.0);
 }

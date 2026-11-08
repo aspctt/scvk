@@ -88,8 +88,12 @@ namespace scvk
 
 		/**
 		 * The blend state of one colour attachment: written over what is there, or for the
-		 * shadow composite, over by the source alpha with the destination alpha left
-		 * alone, as SCD3D11's composite blends.
+		 * shadow composite, multiplied into it with the destination alpha left alone, as
+		 * SCD3D11's composite blends.
+		 *
+		 * A shadow takes the direct light away and keeps the ground's own colour, tinted by
+		 * the game's shadow colour. Blending towards that colour instead, as the composite
+		 * once did, washed large terrain shadows out in blue.
 		 */
 		VkPipelineColorBlendAttachmentState MakeBlend(bool isShadowBlend)
 		{
@@ -102,8 +106,8 @@ namespace scvk
 			}
 
 			attachment.blendEnable         = VK_TRUE;
-			attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-			attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+			attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
 			attachment.colorBlendOp        = VK_BLEND_OP_ADD;
 			attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
 			attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -809,7 +813,7 @@ namespace scvk
 		return true;
 	}
 
-	bool VulkanBackend::UploadTerrainShadowMaps(float const* ceiling, uint32_t ceilingWidth, uint32_t ceilingHeight, float const* vertices, uint32_t verticesX, uint32_t verticesZ)
+	bool VulkanBackend::UploadTerrainShadowMaps(float const* ceilings, uint32_t ceilingWidth, uint32_t ceilingHeight, float const* vertices, uint32_t verticesX, uint32_t verticesZ)
 	{
 		if (!CanDrawShadows())
 		{
@@ -818,10 +822,10 @@ namespace scvk
 
 		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
 
-		VkDeviceSize const ceilingBytes = VkDeviceSize{ ceilingWidth } * ceilingHeight * sizeof(float);
+		VkDeviceSize const ceilingBytes = VkDeviceSize{ ceilingWidth } * ceilingHeight * sizeof(float) * 2u;
 		VkDeviceSize const vertexBytes  = VkDeviceSize{ verticesX } * verticesZ * sizeof(float) * 4u;
 
-		return UploadFloatTexture(terrainCeilingImage, VK_FORMAT_R32_SFLOAT, ceilingWidth, ceilingHeight, ceiling, ceilingBytes) && UploadFloatTexture(terrainVertexImage, VK_FORMAT_R32G32B32A32_SFLOAT, verticesX, verticesZ, vertices, vertexBytes);
+		return UploadFloatTexture(terrainCeilingImage, VK_FORMAT_R32G32_SFLOAT, ceilingWidth, ceilingHeight, ceilings, ceilingBytes) && UploadFloatTexture(terrainVertexImage, VK_FORMAT_R32G32B32A32_SFLOAT, verticesX, verticesZ, vertices, vertexBytes);
 	}
 
 	void VulkanBackend::CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed)

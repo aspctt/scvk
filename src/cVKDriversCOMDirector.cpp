@@ -22,15 +22,13 @@
 #include "Benchmark.h"
 #include "cVKDriver.h"
 #include "FpsLimit.h"
+#include "LiveShadowHooks.h"
 #include "Logger.h"
-#include "NativeShadowDiagnostics.h"
-#include "NativeShadowExperiment.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
 #include "PrintScreen.h"
 #include "RendererChoice.h"
 #include "SC4Version.h"
 #include "SetupChecks.h"
+#include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
@@ -280,11 +278,9 @@ namespace scvk
 			StopBenchmark();
 			StopSetupChecks();
 
-			NativeShadowExperiment::Uninstall();
 			TerrainShadows::Uninstall();
-			NativeShadowRegistry::Uninstall();
-			NativeShadowMasks::Uninstall();
-			NativeShadowDiagnostics::Uninstall();
+			ShadowRegistry::Uninstall();
+			LiveShadowHooks::Uninstall();
 			ThumbnailFocusGuard::Uninstall();
 			PrintScreen::Uninstall();
 			return true;

@@ -53,8 +53,8 @@
 #include "cVKDriver.h"
 #include "Logger.h"
 #include "ModuleLog.h"
-#include "NativeShadowMasks.h"
-#include "NativeShadowRegistry.h"
+#include "LiveShadowHooks.h"
+#include "ShadowRegistry.h"
 #include "SC4Version.h"
 #include "Settings.h"
 #include "VulkanBackend.h"
@@ -161,10 +161,12 @@ namespace scvk
 		{
 			// A translated update shifts the backing store's pixels and redraws only the
 			// strips exposed. That knows a prop's own footprint but not its shadow's, so
-			// while the native network or prop shadows are on, translated updates, camera
-			// changes and partial shadow passes ask for the game's own full redraw. With
-			// -NativeShadowMasks:replace the strips are correct as drawn.
-			if (self != nullptr && NativeShadowMasks::RequiresCleanTranslatedRedraw())
+			// while live shadows are on, translated updates, camera changes and partial
+			// passes the shadows could not follow ask for the game's own full redraw. With
+			// ShadowRegistry installed the strips are correct as drawn, since every caster
+			// that can reach them is known in world space, and translated updates keep the
+			// game's fast path.
+			if (self != nullptr && LiveShadowHooks::Enabled())
 			{
 				// self is the game's cSC43DRender, its fields reached by their offsets
 				uint8_t* const bytes = static_cast<uint8_t*>(self);
@@ -174,7 +176,7 @@ namespace scvk
 				std::memcpy(&horizontal, bytes + 0xE0, sizeof(horizontal));
 				std::memcpy(&vertical, bytes + 0xE4, sizeof(vertical));
 
-				bool const isTranslated     = (horizontal != 0 || vertical != 0) && !NativeShadowRegistry::Enabled();
+				bool const isTranslated     = (horizontal != 0 || vertical != 0) && !ShadowRegistry::Enabled();
 				bool const isPartialShadow  = hookedDriver != nullptr && hookedDriver->ConsumeLiveShadowCleanRedraw();
 
 				// cSC43DRender+0x8c owns cSC4CameraControl, whose zoom and rotation are the
@@ -225,13 +227,13 @@ namespace scvk
 					if (isTranslated && !hasLoggedTranslation)
 					{
 						hasLoggedTranslation = true;
-						Log(LogCategory::Initialization, "native shadows: translated backing-store updates force a clean static redraw");
+						Log(LogCategory::Initialization, "live shadows: translated backing-store updates force a clean static redraw");
 					}
 
 					if (isCameraChanged && !hasLoggedCamera)
 					{
 						hasLoggedCamera = true;
-						Log(LogCategory::Initialization, "native shadows: camera zoom, rotation, yaw and pitch changes force a clean static redraw");
+						Log(LogCategory::Initialization, "live shadows: camera zoom, rotation, yaw and pitch changes force a clean static redraw");
 					}
 				}
 			}
@@ -466,7 +468,7 @@ namespace scvk
 		// The hook draws them into the static view before the game saves it to its backing
 		// store. With them off, the default, it would patch the game for an empty pass on
 		// every static view.
-		bool const areLiveShadowsOn = GetSettings().nativeShadowMode != NativeShadowMode::Off;
+		bool const areLiveShadowsOn = GetSettings().areLiveShadowsEnabled;
 
 		if (areLiveShadowsOn && PatchDrawPostStaticView(executable))
 		{

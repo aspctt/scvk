@@ -10,43 +10,58 @@
 
 #pragma once
 
+//// Dependencies
+
 #include "TerrainShadowMap.h"
 
-#include <cstdint>
+#include <stdint.h>
 
-// Terrain shadows, part of -NativeShadowMasks:replace: the loaded city's height
-// field, read through cISC4App -> cISC4City -> cISTETerrain, kept as a
-// TerrainShadowMap for cGDriver's live shadow composite. Everything here runs
-// on the render thread, from the static pass. See docs/true3d-shadows-terrain.md.
+/**
+ * Terrain shadows, part of -LiveShadows:on: the loaded city's height field, read through
+ * cISC4App, cISC4City and cISTETerrain, kept as a TerrainShadowMap for cVKDriver's live
+ * shadow composite. Everything here runs on the render thread, from the static pass.
+ *
+ * Carried over from SCD3D11. Only game version 641 is changed.
+ */
+namespace scvk::TerrainShadows
+{
+	//// Public API
 
-namespace scvk::TerrainShadows {
-	// SC4 already darkens terrain and models below the terrain's shadow, softly
-	// and at vertex resolution: cSC4LightingManager bends their lighting normals
-	// by how deep they lie under its own shadow-height grid. These shadows
-	// replace that, so Install makes that depth always zero, leaving the grids
-	// SC4 also sizes BAT shadows with untouched. Called after
-	// NativeShadowRegistry::Install, before SC4 lights anything.
-	void Install();
-	void Uninstall();
+	/**
+	 * Takes over the game's own terrain self-shading, once LiveShadowHooks is in place and
+	 * before the game lights anything.
+	 *
+	 * The game already darkens terrain and models below the terrain's shadow, softly and at
+	 * vertex resolution: cSC4LightingManager bends their lighting normals by how deep they
+	 * lie under its own shadow height grid. These shadows replace that, so Install makes
+	 * that depth always zero, leaving the grids the game also sizes BAT shadows with alone.
+	 * -TerrainShadows:off keeps the game's own, for comparing pictures.
+	 */
+	void Install(void);
 
-	// Part of -NativeShadowMasks:replace: true once the registry is installed.
-	bool Enabled();
+	/** Puts the game's self-shading back. */
+	void Uninstall(void);
 
-	// SC4's RenderShadows render property, the switch that also decides
-	// whether DrawOverlays calls DrawShadows. True when it cannot be read.
-	bool ShadowsRendered();
+	/** Whether the terrain's own shadows are drawn, which Install decided. */
+	bool Enabled(void);
 
-	// Brings the map up to date with the city's height field and the sun (the
-	// world direction the light travels). With redisplayChanges, asks SC4 to
-	// redraw wherever the shading changed, since a partial pass cannot reach
-	// those pixels itself. generation changes whenever the map does. Null
-	// without a city, or with the sun at or above the horizon.
-	TerrainShadowMap::Map const *Update(float const sun[3], bool redisplayChanges, uint64_t &generation);
+	/**
+	 * The game's RenderShadows render property, the switch that also decides whether
+	 * DrawOverlays calls DrawShadows. True when it cannot be read.
+	 */
+	bool ShadowsRendered(void);
 
-	// The height field the map returned by the last Update was built from.
-	TerrainShadowMap::HeightField const &Terrain();
+	/**
+	 * Brings the map up to date with the city's height field and the sun, the world
+	 * direction the light travels. generation changes whenever the map does.
+	 *
+	 * Returns null without a city, or with the sun at or above the horizon.
+	 */
+	TerrainShadowMap::Map const* Update(float const sun[3], uint64_t& generation);
 
-	// Altitude in the height field the last Update read; false outside the
-	// city or before a map exists.
-	bool Altitude(float x, float z, float &altitude);
-} // namespace scvk::TerrainShadows
+	/** The height field the map the last Update returned was built from. */
+	TerrainShadowMap::HeightField const& Terrain(void);
+
+	/** The altitude in the height field the last Update read. False outside the city or before a map exists. */
+	bool Altitude(float x, float z, float& altitude);
+}

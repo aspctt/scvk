@@ -165,39 +165,8 @@ namespace scvk
 			ReadFlagSetting("ViewportCull", settings.isViewportCullEnabled);
 			ReadFlagSetting("ReShade", settings.isReShadeIntegrationEnabled);
 
-			// The shadow modules, off unless a switch names a mode. SCD3D11 folded its modes
-			// into -LiveShadows, on alone or with :on, which is what Replace does here. A
-			// mode named as well wins, being the more exact of the two.
-			FlagSwitch const liveShadows = ReadFlagSwitch("LiveShadows");
-			if (liveShadows == FlagSwitch::On)
-			{
-				settings.nativeShadowMode = NativeShadowMode::Replace;
-			}
-			else if (liveShadows == FlagSwitch::Off)
-			{
-				settings.nativeShadowMode = NativeShadowMode::Off;
-			}
-
-			if (HasCommandLineSwitch("-NativeShadowMasks:off"))
-			{
-				settings.nativeShadowMode = NativeShadowMode::Off;
-			}
-			else if (HasCommandLineSwitch("-NativeShadowMasks:network"))
-			{
-				settings.nativeShadowMode = NativeShadowMode::Network;
-			}
-			else if (HasCommandLineSwitch("-NativeShadowMasks:props"))
-			{
-				settings.nativeShadowMode = NativeShadowMode::Props;
-			}
-			else if (HasCommandLineSwitch("-NativeShadowMasks:all"))
-			{
-				settings.nativeShadowMode = NativeShadowMode::All;
-			}
-			else if (HasCommandLineSwitch("-NativeShadowMasks:replace"))
-			{
-				settings.nativeShadowMode = NativeShadowMode::Replace;
-			}
+			ReadFlagSetting("LiveShadows", settings.areLiveShadowsEnabled);
+			ReadFlagSetting("NetworkShadowMasks", settings.shouldKeepNetworkShadowMasks);
 
 			ReadFlagSetting("FlipModel", settings.isFlipModelPreferred);
 

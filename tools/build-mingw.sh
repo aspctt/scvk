@@ -15,11 +15,9 @@
 #
 # The output is Release-mingw/scvk.dll (or Debug-mingw/scvk.dll).
 #
-# NativeShadowExperiment's hooks are built from GCC assembly here, the same instructions as
-# the MSVC ones. The other game-side shadow modules (-NativeShadowMasks, the registry and
-# the live shadow diagnostics) still hook the game with MSVC inline assembly and structured
-# exception handling, so they are left out of this build and stay off; everything else is
-# the same.
+# The game-side shadow modules (-LiveShadows: LiveShadowHooks, ShadowRegistry and
+# TerrainShadows) hook the game with MSVC inline assembly and structured exception
+# handling, so they are left out of this build and stay off; everything else is the same.
 
 set -euo pipefail
 

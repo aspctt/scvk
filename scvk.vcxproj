@@ -165,13 +165,18 @@
     <ClCompile Include="src\cVKDriversCOMDirector.cpp" />
     <ClCompile Include="src\FpsLimit.cpp" />
     <ClCompile Include="src\FrameCallback.cpp" />
+    <ClCompile Include="src\GamePatch.cpp" />
+    <ClCompile Include="src\LiveShadowHooks.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\ModuleLog.cpp" />
     <ClCompile Include="src\PrintScreen.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\SetupChecks.cpp" />
+    <ClCompile Include="src\ShadowRegistry.cpp" />
     <ClCompile Include="src\RendererChoice.cpp" />
+    <ClCompile Include="src\TerrainShadowMap.cpp" />
+    <ClCompile Include="src\TerrainShadows.cpp" />
     <ClCompile Include="src\TexturePixelConversion.cpp" />
     <ClCompile Include="src\ThumbnailFocusGuard.cpp" />
     <ClCompile Include="src\VideoMode.cpp" />
@@ -183,42 +188,6 @@
     <ClCompile Include="src\VulkanBackend_Regions.cpp" />
     <ClCompile Include="src\VulkanBackend_Textures.cpp" />
     <ClCompile Include="src\Watchdog.cpp" />
-  </ItemGroup>
-  <!--
-    Carried over from SCD3D11 nearly as they are: the game-side shadow modules. They keep
-    the warning level they were written for until the live shadow port rewrites them.
-  -->
-  <ItemGroup>
-    <ClCompile Include="src\NativeShadowDiagnostics.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\NativeShadowExperiment.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\NativeShadowMasks.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\NativeShadowRegistry.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\TerrainShadowMap.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-    <ClCompile Include="src\TerrainShadows.cpp">
-      <WarningLevel>Level3</WarningLevel>
-      <TreatWarningAsError>false</TreatWarningAsError>
-      <AdditionalOptions>%(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
   </ItemGroup>
   <!--
     Vendored sources keep the level they were written for. They are not ours to
@@ -252,17 +221,16 @@
     <ClInclude Include="src\cVKDriver.h" />
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\FrameCallback.h" />
+    <ClInclude Include="src\GamePatch.h" />
+    <ClInclude Include="src\LiveShadowHooks.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\ModuleLog.h" />
-    <ClInclude Include="src\NativeShadowDiagnostics.h" />
-    <ClInclude Include="src\NativeShadowExperiment.h" />
-    <ClInclude Include="src\NativeShadowMasks.h" />
-    <ClInclude Include="src\NativeShadowRegistry.h" />
     <ClInclude Include="src\PrintScreen.h" />
     <ClInclude Include="src\SC4Version.h" />
     <ClInclude Include="src\SCVKFrameCallback.h" />
     <ClInclude Include="src\Settings.h" />
     <ClInclude Include="src\ShaderBinaries.h" />
+    <ClInclude Include="src\ShadowRegistry.h" />
     <ClInclude Include="src\TerrainShadowMap.h" />
     <ClInclude Include="src\TerrainShadows.h" />
     <ClInclude Include="src\TexturePixelConversion.h" />
