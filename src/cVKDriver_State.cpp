@@ -32,6 +32,7 @@
 
 #include "cVKDriver.h"
 #include "Logger.h"
+#include "ShadowRegistry.h"
 #include "VulkanBackend.h"
 
 #include <algorithm>
@@ -254,6 +255,13 @@ namespace scvk
 		if (activeMatrix != PROJECTION_MATRIX && isGenerating)
 		{
 			isStageCoordinatesDirty = true;
+		}
+
+		// The shadow registry culls each static pass's casters against the projection its
+		// DrawShadows call runs under
+		if (activeMatrix == PROJECTION_MATRIX)
+		{
+			ShadowRegistry::NoteProjection(projectionMatrix);
 		}
 	}
 

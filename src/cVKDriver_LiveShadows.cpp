@@ -73,11 +73,6 @@ namespace scvk
 		// been read
 		constexpr float FALLBACK_SHADOW_OPACITY = 0.38f;
 
-		// A registry caster's ground quad sits this far above the occupant's placement
-		// height, so the terrain under it is behind it by more than the composite bias
-		// along the 45 degree sun.
-		constexpr float GROUND_LIFT_WORLD = 0.2f;
-
 		// Used when the game reports no alpha test scale, and for True3D props cast
 		// through their own coordinates.
 		constexpr float DEFAULT_REGISTRY_ALPHA_REFERENCE = 0.5f;
@@ -121,6 +116,68 @@ namespace scvk
 
 	namespace
 	{
+		int64_t ReadTicks(void)
+		{
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			return now.QuadPart;
+		}
+
+		/**
+		 * Adds the ticks until it goes out of scope to a live shadow total, while the log is at
+		 * debug level. Otherwise it costs one test, so it can sit in the path of every draw.
+		 */
+		class ShadowTimer
+		{
+		public:
+			explicit ShadowTimer(int64_t& ticks) : total(IsLogged(LOG_LEVEL_DEBUG) ? &ticks : nullptr), startTicks((total != nullptr) ? ReadTicks() : 0) {}
+
+			~ShadowTimer(void)
+			{
+				if (total != nullptr)
+				{
+					*total += ReadTicks() - startTicks;
+				}
+			}
+
+			ShadowTimer(ShadowTimer const&) = delete;
+			ShadowTimer& operator=(ShadowTimer const&) = delete;
+
+		private:
+			int64_t* total;
+			int64_t  startTicks;
+		};
+
+		/** Appends vertices kept as floats in ShadowVertex's layout, position then coordinate, in one copy. */
+		void AppendShadowVertices(std::vector<ShadowVertex>& vertices, float const* source, size_t count)
+		{
+			if (count == 0)
+			{
+				return;
+			}
+
+			size_t const first = vertices.size();
+			vertices.resize(first + count);
+			std::memcpy(vertices.data() + first, source, count * sizeof(ShadowVertex));
+		}
+
+		/** Whether two column-major projections agree in their x and y rows, all a cull reads. */
+		bool HaveSameScreenRows(float const* a, float const* b)
+		{
+			for (unsigned column = 0; column < 4; column++)
+			{
+				for (unsigned row = 0; row < 2; row++)
+				{
+					if (a[column * 4 + row] != b[column * 4 + row])
+					{
+						return false;
+					}
+				}
+			}
+
+			return true;
+		}
+
 		void TransformPoint(float const* matrix, float const point[3], float out[3])
 		{
 			out[0] = matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12];
@@ -306,46 +363,6 @@ namespace scvk
 			return ViewportOverlap::Partial;
 		}
 
-		/**
-		 * The ground quad a registry caster adds for silhouettes its mesh does not cover
-		 * from the sun: the caster's box pushed down the sun onto the plane at its
-		 * placement height.
-		 */
-		bool GroundQuad(ShadowRegistry::Caster const& caster, float const sun[3], float quad[4][3])
-		{
-			if (sun[1] > -1.0e-3f)
-			{
-				return false;
-			}
-
-			float const height = caster.baseHeight + GROUND_LIFT_WORLD;
-			float low[2]  = { FLT_MAX, FLT_MAX };
-			float high[2] = { -FLT_MAX, -FLT_MAX };
-
-			for (unsigned mask = 0; mask < 8; mask++)
-			{
-				float const corner[3] = { (mask & 1) ? caster.high[0] : caster.low[0], (mask & 2) ? caster.high[1] : caster.low[1], (mask & 4) ? caster.high[2] : caster.low[2] };
-				float const along = (height - corner[1]) / sun[1];
-				float const x = corner[0] + sun[0] * along;
-				float const z = corner[2] + sun[2] * along;
-
-				low[0]  = std::min(low[0], std::min(x, corner[0]));
-				low[1]  = std::min(low[1], std::min(z, corner[2]));
-				high[0] = std::max(high[0], std::max(x, corner[0]));
-				high[1] = std::max(high[1], std::max(z, corner[2]));
-			}
-
-			float const corners[4][2] = { { low[0], low[1] }, { high[0], low[1] }, { high[0], high[1] }, { low[0], high[1] } };
-			for (unsigned index = 0; index < 4; index++)
-			{
-				quad[index][0] = corners[index][0];
-				quad[index][1] = height;
-				quad[index][2] = corners[index][1];
-			}
-
-			return true;
-		}
-
 		/** The two rows of a column-major texture matrix a 2D sample reads. */
 		void TextureRows(float const* matrix, float* constants)
 		{
@@ -379,10 +396,14 @@ namespace scvk
 		}
 
 		uint32_t const coordinateSets = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord);
-		if (!LiveShadowHooks::HasPropMeshes() || vertices == nullptr || vertexCount == 0 || vertexStride < sizeof(float) * 3 || coordinateSets == 0)
+		if (!LiveShadowHooks::MayMatchPropMesh(vertexCount) || vertices == nullptr || vertexCount == 0 || vertexStride < sizeof(float) * 3 || coordinateSets == 0)
 		{
 			return false;
 		}
+
+		ShadowTimer const hashing(liveShadowStats.hashTicks);
+		liveShadowStats.hashedDraws++;
+		liveShadowStats.hashedVertices += vertexCount;
 
 		// Hash the positions and first coordinates, as the props were registered
 		uint32_t const coordinateOffset = RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0);
@@ -420,6 +441,8 @@ namespace scvk
 		{
 			return;
 		}
+
+		ShadowTimer const capturing(liveShadowStats.captureTicks);
 
 		// Leave out light and glow
 		//
@@ -553,6 +576,7 @@ namespace scvk
 		size_t const loggedIndices  = draw.indices.size();
 		bool const   isNetwork      = draw.isNetwork;
 		liveShadowDraws.push_back(std::move(draw));
+		liveShadowStats.captures++;
 
 		static bool hasLoggedProp    = false;
 		static bool hasLoggedNetwork = false;
@@ -578,11 +602,24 @@ namespace scvk
 		isLiveShadowTerrainViewValid = true;
 	}
 
-	bool cVKDriver::ConsumeLiveShadowCleanRedraw(void)
+	uint32_t cVKDriver::ConsumeLiveShadowCleanRedraw(void)
 	{
-		bool const isPending = isLiveShadowCleanRedrawPending;
-		isLiveShadowCleanRedrawPending = false;
-		return isPending;
+		uint32_t const causes = liveShadowCleanRedrawCauses;
+		liveShadowCleanRedrawCauses = 0;
+		return causes;
+	}
+
+	void cVKDriver::CountForcedStaticRedraw(uint32_t causes)
+	{
+		liveShadowStats.forcedRedraws++;
+
+		for (uint32_t cause = 0; cause < LIVE_SHADOW_REDRAW_CAUSES; cause++)
+		{
+			if ((causes & (uint32_t{ 1 } << cause)) != 0)
+			{
+				liveShadowStats.forcedRedrawCauses[cause]++;
+			}
+		}
 	}
 
 	bool cVKDriver::TrackLiveShadowWorldCasters(float const* eyeToWorld, float const* worldToView, float const* projection, float const sun[3], bool isSunKnown, bool isPartialPass)
@@ -776,6 +813,7 @@ namespace scvk
 			ShadowRegistry::RedisplayWorldRect(box[0], box[1], box[2], box[3]);
 		}
 
+		liveShadowStats.redisplays += static_cast<uint32_t>(redisplay.size());
 		return true;
 	}
 
@@ -810,6 +848,26 @@ namespace scvk
 			return;
 		}
 
+		// Time the pass for the summary, by kind
+		int64_t passTicks = 0;
+		{
+			ShadowTimer const drawing(passTicks);
+			DrawLivePropShadows(isStaticPass);
+		}
+
+		if (!isStaticPass)
+		{
+			liveShadowStats.dynamicTicks += passTicks;
+			return;
+		}
+
+		liveShadowStats.staticTicks       += passTicks;
+		liveShadowStats.slowestStaticTicks = std::max(liveShadowStats.slowestStaticTicks, passTicks);
+		liveShadowStats.worldCasters       = std::max(liveShadowStats.worldCasters, static_cast<uint32_t>(liveShadowWorldCasters.size()));
+	}
+
+	void cVKDriver::DrawLivePropShadows(bool isStaticPass)
+	{
 		// The game updates the static view in place for localised changes, handing over the
 		// dirty rectangle as a scissored viewport. A shadow is not local: casters inside
 		// throw onto receivers outside, and receivers inside are darkened by casters that
@@ -822,10 +880,20 @@ namespace scvk
 		bool const isPartialPass = IsSubViewport();
 		bool const isRegistryOn  = ShadowRegistry::Enabled();
 
+		if (isStaticPass && isPartialPass)
+		{
+			liveShadowStats.partialPasses++;
+		}
+		else if (isStaticPass)
+		{
+			liveShadowStats.fullPasses++;
+		}
+
 		// What the game's own DrawShadows calls in this pass gathered. Without them the tone
 		// and the sun are asked for directly, so a rotation cannot leave a stale sun behind.
 		ShadowRegistry::Pass pass;
 		bool const hasPass = ShadowRegistry::TakePass(pass);
+		liveShadowStats.passCasters += static_cast<uint32_t>(pass.casters.size());
 
 		if (hasPass)
 		{
@@ -856,6 +924,8 @@ namespace scvk
 
 		if (isStaticPass && isLiveShadowSunWorldValid && TerrainShadows::ShadowsRendered())
 		{
+			ShadowTimer const shading(liveShadowStats.terrainTicks);
+
 			try
 			{
 				terrainMap = TerrainShadows::Update(liveShadowSunWorld, terrainGeneration);
@@ -949,8 +1019,9 @@ namespace scvk
 
 		// The composite rebuilds view positions through the pass's own projection
 		float projection[16] = {};
-		bool const hasProjection = !liveShadowDraws.empty() || isLiveShadowSceneProjectionValid;
-		std::memcpy(projection, !liveShadowDraws.empty() ? liveShadowDraws.front().projection : liveShadowSceneProjection, sizeof(projection));
+		bool const isProjectionCaptured = !liveShadowDraws.empty();
+		bool const hasProjection        = isProjectionCaptured || isLiveShadowSceneProjectionValid;
+		std::memcpy(projection, isProjectionCaptured ? liveShadowDraws.front().projection : liveShadowSceneProjection, sizeof(projection));
 
 		// A strip at the city's edge often holds no shadow record and no terrain on the
 		// height field, so its view stays unknown. It drew no caster either, so the
@@ -965,6 +1036,8 @@ namespace scvk
 			{
 				float sun[3] = { liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2] };
 				Normalize(sun);
+
+				ShadowTimer const tracking(liveShadowStats.trackTicks);
 				isTracked = TrackLiveShadowWorldCasters(eyeToWorld, worldToView, projection, sun, isLiveShadowSunWorldValid, isPartialPass);
 			}
 
@@ -979,9 +1052,22 @@ namespace scvk
 		// the world-space set could not follow is.
 		bool const areCastersStale = isRegistryOn ? (isStaticPass && !isTracked && !isEmptyPartialPass && (!liveShadowDraws.empty() || !liveShadowWorldCasters.empty())) : wasLiveShadowEverCaptured;
 
+		if (isStaticPass && isPartialPass && areCastersStale)
+		{
+			liveShadowStats.untrackedPasses++;
+		}
+
 		if (isPartialPass && (areCastersStale || isTerrainChanged))
 		{
-			isLiveShadowCleanRedrawPending = true;
+			if (areCastersStale)
+			{
+				liveShadowCleanRedrawCauses |= RedrawCauseBit(LIVE_SHADOW_REDRAW_UNTRACKED_PARTIAL);
+			}
+
+			if (isTerrainChanged)
+			{
+				liveShadowCleanRedrawCauses |= RedrawCauseBit(LIVE_SHADOW_REDRAW_TERRAIN_CHANGED);
+			}
 
 			static bool hasLoggedPartial = false;
 			if (!hasLoggedPartial)
@@ -1158,6 +1244,8 @@ namespace scvk
 
 		if (hasView)
 		{
+			ShadowTimer const culling(liveShadowStats.cullTicks);
+
 			float sunWorld[3] = { liveShadowSunWorld[0], liveShadowSunWorld[1], liveShadowSunWorld[2] };
 			if (!isLiveShadowSunWorldValid)
 			{
@@ -1167,17 +1255,44 @@ namespace scvk
 			Normalize(sunWorld);
 			registryDraws.reserve(pass.casters.size());
 
+			float worldToClip[16] = {};
+			Multiply(projection, worldToView, worldToClip);
+
+			// The gather culled against the projection loaded when DrawShadows ran. Only its x
+			// and y rows matter to the cull, and the game moves the depth range between draws.
+			if (pass.isCulled && !HaveSameScreenRows(pass.projection, projection))
+			{
+				liveShadowStats.projectionMismatches++;
+
+				static bool hasLoggedProjection = false;
+				if (!hasLoggedProjection)
+				{
+					// Orthographic, so the x and y scales and offsets say which rectangle each covers
+					hasLoggedProjection = true;
+					Log(LogCategory::Initialization, "shadow registry: DrawShadows ran under another projection than its %s pass (%dx%d at %d,%d); gather %.5g %.5g %.5g %.5g, pass (%s) %.5g %.5g %.5g %.5g, loaded now %.5g %.5g %.5g %.5g", isPartialPass ? "partial" : "full", viewportWidth, viewportHeight, viewportX, viewportY, static_cast<double>(pass.projection[0]), static_cast<double>(pass.projection[5]), static_cast<double>(pass.projection[12]), static_cast<double>(pass.projection[13]), isProjectionCaptured ? "first capture" : "last draw", static_cast<double>(projection[0]), static_cast<double>(projection[5]), static_cast<double>(projection[12]), static_cast<double>(projection[13]), static_cast<double>(projectionMatrix[0]), static_cast<double>(projectionMatrix[5]), static_cast<double>(projectionMatrix[12]), static_cast<double>(projectionMatrix[13]));
+				}
+			}
+
 			for (ShadowRegistry::PassCaster const& passCaster : pass.casters)
 			{
 				ShadowRegistry::Caster const& caster = *passCaster.caster;
 
 				RegistryDraw draw;
 				draw.caster      = &passCaster;
-				draw.hasQuad     = GroundQuad(caster, sunWorld, draw.quad);
+				draw.hasQuad     = ShadowRegistry::GroundQuad(caster, sunWorld, draw.quad);
 				draw.isQuadDrawn = draw.hasQuad && !caster.hasMeshCoordinates;
 
 				if (caster.indices.empty() && !draw.isQuadDrawn)
 				{
+					continue;
+				}
+
+				// Reject a caster far from the pass first, through the one box holding it and its
+				// quad, before the twelve corners below. The gather already culled against this
+				// projection, so this catches a pass whose projection changed after DrawShadows.
+				if (ShadowRegistry::IsReachOutside(caster, draw.hasQuad, draw.quad, worldToClip))
+				{
+					registryCulled++;
 					continue;
 				}
 
@@ -1279,12 +1394,46 @@ namespace scvk
 		// draw per caster, since each carries its own transform, texture and test
 		if (hasCasters)
 		{
+			// Both kinds of caster keep their vertices in ShadowVertex's layout, so each goes
+			// into the upload in one copy, and the upload is sized before it is filled. The
+			// first version pushed every vertex on its own into vectors grown as they went.
+			static_assert(sizeof(ShadowVertex) == sizeof(float) * VERTEX_FLOATS, "captured vertices must be laid out as ShadowVertex");
+			static_assert(sizeof(ShadowVertex) == sizeof(float) * ShadowRegistry::VERTEX_FLOATS, "registry vertices must be laid out as ShadowVertex");
+
 			std::vector<ShadowVertex>     vertices;
 			std::vector<uint32_t>         indices;
 			std::vector<ShadowCasterDraw> draws;
 
 			try
 			{
+				ShadowTimer const uploading(liveShadowStats.uploadTicks);
+
+				// Size the upload. A registry caster without triangles casts from its quad alone,
+				// so its vertices stay out.
+				size_t vertexCount = 0;
+				size_t indexCount  = 0;
+
+				for (LiveShadowDraw const* caster : casters)
+				{
+					vertexCount += caster->vertices.size() / VERTEX_FLOATS;
+					indexCount  += caster->indices.size();
+				}
+
+				for (RegistryDraw const& registryDraw : registryDraws)
+				{
+					ShadowRegistry::Caster const& caster = *registryDraw.caster->caster;
+					size_t const quadVertices = registryDraw.isQuadDrawn ? 4 : 0;
+					size_t const quadIndices  = registryDraw.isQuadDrawn ? 6 : 0;
+					size_t const meshVertices = caster.indices.empty() ? 0 : caster.vertices.size() / ShadowRegistry::VERTEX_FLOATS;
+
+					vertexCount += meshVertices + quadVertices;
+					indexCount  += caster.indices.size() + quadIndices;
+				}
+
+				vertices.reserve(vertexCount);
+				indices.reserve(indexCount);
+				draws.reserve(casters.size() + registryDraws.size());
+
 				for (LiveShadowDraw const* caster : casters)
 				{
 					ShadowCasterDraw draw;
@@ -1302,12 +1451,7 @@ namespace scvk
 					draw.constants[26] = caster->isAlphaTested ? 1.0f : 0.0f;
 					draw.constants[27] = (caster->texture != 0) ? 1.0f : 0.0f;
 
-					for (size_t index = 0; index < caster->vertices.size(); index += VERTEX_FLOATS)
-					{
-						float const* const source = caster->vertices.data() + index;
-						vertices.push_back(ShadowVertex{ { source[0], source[1], source[2] }, { source[3], source[4] } });
-					}
-
+					AppendShadowVertices(vertices, caster->vertices.data(), caster->vertices.size() / VERTEX_FLOATS);
 					indices.insert(indices.end(), caster->indices.begin(), caster->indices.end());
 					draws.push_back(draw);
 				}
@@ -1319,7 +1463,7 @@ namespace scvk
 				for (RegistryDraw const& registryDraw : registryDraws)
 				{
 					ShadowRegistry::Caster const& caster = *registryDraw.caster->caster;
-					size_t const count = caster.positions.size() / 3;
+					size_t const meshVertices = caster.indices.empty() ? 0 : caster.vertices.size() / ShadowRegistry::VERTEX_FLOATS;
 
 					ShadowCasterDraw draw;
 					draw.firstIndex   = static_cast<uint32_t>(indices.size());
@@ -1337,19 +1481,14 @@ namespace scvk
 					draw.constants[26] = caster.hasMeshCoordinates ? 1.0f : 0.0f;
 					std::memcpy(draw.constants + 28, caster.uvBounds, sizeof(caster.uvBounds));
 
-					for (size_t vertex = 0; vertex < count; vertex++)
-					{
-						float const* const position = caster.positions.data() + vertex * 3;
-						float const u = caster.hasMeshCoordinates ? caster.coordinates[vertex * 2] : 0.0f;
-						float const v = caster.hasMeshCoordinates ? caster.coordinates[vertex * 2 + 1] : 0.0f;
-						vertices.push_back(ShadowVertex{ { position[0], position[1], position[2] }, { u, v } });
-					}
-
+					AppendShadowVertices(vertices, caster.vertices.data(), meshVertices);
 					indices.insert(indices.end(), caster.indices.begin(), caster.indices.end());
 
+					// The quad's vertices follow the mesh's, and its indices count from the draw's
+					// first vertex like the mesh's
 					if (registryDraw.isQuadDrawn)
 					{
-						uint32_t const first = static_cast<uint32_t>(count);
+						uint32_t const first = static_cast<uint32_t>(meshVertices);
 						for (auto const& corner : registryDraw.quad)
 						{
 							vertices.push_back(ShadowVertex{ { corner[0], corner[1], corner[2] }, { 0.0f, 0.0f } });
@@ -1380,6 +1519,11 @@ namespace scvk
 				liveShadowDraws.clear();
 				return;
 			}
+
+			liveShadowStats.mapRenders++;
+			liveShadowStats.capturedCasters += static_cast<uint32_t>(casters.size());
+			liveShadowStats.registryCasters += static_cast<uint32_t>(registryDraws.size());
+			liveShadowStats.uploadBytes     += uint64_t{ vertices.size() } * sizeof(ShadowVertex) + uint64_t{ indices.size() } * sizeof(uint32_t);
 		}
 
 		// The terrain's maps only change with the height field or the sun, so they are
@@ -1536,6 +1680,48 @@ namespace scvk
 		composite.viewport[3] = static_cast<float>(std::max(rectangle[3], 1));
 
 		vulkan->CompositeShadows(composite, rectangle, isTerrainBound);
+		liveShadowStats.composites++;
 		liveShadowDraws.clear();
+	}
+
+	void cVKDriver::LogLiveShadowSummary(void)
+	{
+		// Start the next summary whether or not this one is written, so the counts never run
+		// on for a whole session
+		LiveShadowStats const stats = liveShadowStats;
+		liveShadowStats = LiveShadowStats{};
+
+		ShadowRegistry::Stats const registry = ShadowRegistry::TakeStats();
+
+		if (!IsLogged(LOG_LEVEL_DEBUG) || !LiveShadowHooks::Enabled())
+		{
+			return;
+		}
+
+		uint32_t const passes = stats.fullPasses + stats.partialPasses;
+		if (passes == 0 && stats.composites == 0 && stats.hashedDraws == 0 && registry.registrations == 0)
+		{
+			return;
+		}
+
+		LARGE_INTEGER frequency{};
+		QueryPerformanceFrequency(&frequency);
+		if (frequency.QuadPart <= 0)
+		{
+			return;
+		}
+
+		// The tick counts are far below the range where a double loses whole ticks
+		double const millisecondsPerTick = 1000.0 / static_cast<double>(frequency.QuadPart);
+		auto const toMilliseconds = [millisecondsPerTick](int64_t ticks) { return static_cast<double>(ticks) * millisecondsPerTick; };
+
+		// Casters per map, for a count that reads the same however many maps were drawn
+		double const renders = static_cast<double>(std::max(stats.mapRenders, uint32_t{ 1 }));
+
+		LogDebug("live shadows: %u full + %u partial static passes (%u untracked); %u forced redraws (camera %u, untracked partial %u, terrain %u, translated %u); %u redisplays; %u map renders, avg %.0f captured + %.0f registry casters (%u gathered, %u tracked at most); %u composites", stats.fullPasses, stats.partialPasses, stats.untrackedPasses, stats.forcedRedraws, stats.forcedRedrawCauses[LIVE_SHADOW_REDRAW_CAMERA], stats.forcedRedrawCauses[LIVE_SHADOW_REDRAW_UNTRACKED_PARTIAL], stats.forcedRedrawCauses[LIVE_SHADOW_REDRAW_TERRAIN_CHANGED], stats.forcedRedrawCauses[LIVE_SHADOW_REDRAW_TRANSLATED], stats.redisplays, stats.mapRenders, static_cast<double>(stats.capturedCasters) / renders, static_cast<double>(stats.registryCasters) / renders, stats.passCasters, stats.worldCasters, stats.composites);
+
+		LogDebug("live shadows CPU ms: static %.1f (slowest pass %.1f), dynamic %.1f, of which track %.1f, terrain %.1f, registry cull %.1f, upload %.1f (%.1f MB); capture %.1f (%u draws), hash %.1f (%u draws, %llu vertices)", toMilliseconds(stats.staticTicks), toMilliseconds(stats.slowestStaticTicks), toMilliseconds(stats.dynamicTicks), toMilliseconds(stats.trackTicks), toMilliseconds(stats.terrainTicks), toMilliseconds(stats.cullTicks), toMilliseconds(stats.uploadTicks), static_cast<double>(stats.uploadBytes) / 1.0e6, toMilliseconds(stats.captureTicks), stats.captures, toMilliseconds(stats.hashTicks), stats.hashedDraws, static_cast<unsigned long long>(stats.hashedVertices));
+
+		LogDebug("live shadows registry: AddShadow %.1f ms (%u records, %u off the draw thread), DrawShadows gather %.1f ms, native %.1f ms; %u projection mismatches", toMilliseconds(registry.registerTicks), registry.registrations, registry.offThreadRegistrations, toMilliseconds(registry.gatherTicks), toMilliseconds(registry.nativeDrawTicks), stats.projectionMismatches);
 	}
 }

@@ -42,6 +42,22 @@ namespace scvk
 	// translation unit that only needs the driver interface.
 	class VulkanBackend;
 
+	/** Why live shadows had the game redraw the whole city view. Bit i of a mask is cause i. */
+	enum LiveShadowRedrawCause : uint32_t
+	{
+		LIVE_SHADOW_REDRAW_UNTRACKED_PARTIAL,  // a partial pass the world-space caster set could not follow
+		LIVE_SHADOW_REDRAW_TERRAIN_CHANGED,    // a partial pass saw a new terrain shadow map
+		LIVE_SHADOW_REDRAW_CAMERA,             // zoom, rotation, yaw or pitch changed
+		LIVE_SHADOW_REDRAW_TRANSLATED,         // a scroll, without ShadowRegistry
+		LIVE_SHADOW_REDRAW_CAUSES,
+	};
+
+	/** A redraw cause's bit in a mask of them. */
+	constexpr uint32_t RedrawCauseBit(LiveShadowRedrawCause cause)
+	{
+		return uint32_t{ 1 } << cause;
+	}
+
 	/**
 	 * scvk's implementation of SimCity 4's renderer interface.
 	 *
@@ -189,6 +205,56 @@ namespace scvk
 			float                 shadowHigh[3]    = {};
 			uint64_t              shape    = 0;
 			uint64_t              seenPass = 0;
+		};
+
+		/**
+		 * Live shadow counts and times since the last summary, which the debug log gets every
+		 * few hundred frames. The times are performance counter ticks, counted only while the
+		 * log is at debug level.
+		 */
+		struct LiveShadowStats
+		{
+			// Static passes, over the whole window or one dirty rectangle, and the partial
+			// ones the world-space caster set could not follow
+			uint32_t fullPasses      = 0;
+			uint32_t partialPasses   = 0;
+			uint32_t untrackedPasses = 0;
+
+			// Whole redraws the static view hook asked the game for, each counted once per
+			// cause, since one can have several
+			uint32_t forcedRedraws                              = 0;
+			uint32_t forcedRedrawCauses[LIVE_SHADOW_REDRAW_CAUSES] = {};
+
+			// Rectangles caster tracking asked the game to redraw, each a later partial pass
+			uint32_t redisplays = 0;
+
+			// Shadow maps drawn, with their captured and registry casters, the registry
+			// casters the gathers handed over, and the most casters tracked in world space
+			uint32_t mapRenders      = 0;
+			uint32_t capturedCasters = 0;
+			uint32_t registryCasters = 0;
+			uint32_t passCasters     = 0;
+			uint32_t worldCasters    = 0;
+			uint64_t uploadBytes     = 0;
+			uint32_t composites      = 0;
+
+			// Static passes whose gather culled under another projection than the pass drew with
+			uint32_t projectionMismatches = 0;
+
+			// Draws captured as casters, and draws hashed against the relaxed props' meshes
+			uint32_t captures       = 0;
+			uint32_t hashedDraws    = 0;
+			uint64_t hashedVertices = 0;
+
+			int64_t staticTicks        = 0;
+			int64_t slowestStaticTicks = 0;
+			int64_t dynamicTicks       = 0;
+			int64_t trackTicks         = 0;
+			int64_t terrainTicks       = 0;
+			int64_t cullTicks          = 0;
+			int64_t uploadTicks        = 0;
+			int64_t captureTicks       = 0;
+			int64_t hashTicks          = 0;
 		};
 
 	public:
@@ -403,7 +469,7 @@ namespace scvk
 		float    liveShadowSunView[3]           = {};
 		bool     isLiveShadowSunViewValid       = false;
 		uint64_t liveShadowLightsLeftOut        = 0;
-		bool     isLiveShadowCleanRedrawPending = false;
+		uint32_t liveShadowCleanRedrawCauses    = 0;  // LiveShadowRedrawCause bits
 		bool     wasLiveShadowEverCaptured      = false;
 		uint64_t liveShadowShadedTerrainGeneration = 0;
 		float    liveShadowSceneProjection[16]  = {};
@@ -413,6 +479,7 @@ namespace scvk
 		bool     isLiveShadowToneValid          = false;
 		uint64_t liveShadowTerrainGeneration    = 0;
 		uint32_t liveShadowDeviceGeneration     = 0;
+		LiveShadowStats liveShadowStats;
 
 		// The global ambient light colour and the diffuse material alpha, plus whether
 		// the vertex colour feeds either. Together these are all the lighting SimCity 4
@@ -660,6 +727,12 @@ namespace scvk
 		/** Snapshots the scene's orthographic projection for ReShade's shadow uniforms and the composite. */
 		void CaptureShadowUniforms(void);
 
+		/** RenderLivePropShadows' work, which the caller times. */
+		void DrawLivePropShadows(bool isStaticPass);
+
+		/** Writes the live shadow counts and times to the debug log and starts the next summary. */
+		void LogLiveShadowSummary(void);
+
 		// ReShade and the frame callbacks, in cVKDriver_ReShade.cpp
 
 		/** Registers scvk with ReShade, when it is loaded, and hooks the 3D view's draw. */
@@ -788,8 +861,14 @@ namespace scvk
 		/** Draws the live shadows of the pass just drawn, a static pass of the city view or the view as a whole. */
 		void RenderLivePropShadows(bool isStaticPass);
 
-		/** Whether a partial pass asked for the city view to be drawn whole next time, clearing the request. */
-		bool ConsumeLiveShadowCleanRedraw(void);
+		/**
+		 * Why the passes since the last call asked for the city view to be drawn whole next
+		 * time, as LiveShadowRedrawCause bits, clearing the request. Zero when none did.
+		 */
+		uint32_t ConsumeLiveShadowCleanRedraw(void);
+
+		/** Counts a whole redraw the static view hook asked the game for, with its causes. */
+		void CountForcedStaticRedraw(uint32_t causes);
 
 		/** Called before the device goes, so ReShade lets go of what it holds of it. */
 		void NotifyBeforeDeviceDestroy(void);

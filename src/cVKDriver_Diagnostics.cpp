@@ -1391,6 +1391,7 @@ namespace scvk
 		if (frameCounter % SHADOW_SUMMARY_FRAMES == 0)
 		{
 			LogShadowSummary();
+			LogLiveShadowSummary();
 		}
 
 		// Save pictures only when the log is kept for diagnostics

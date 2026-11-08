@@ -13,6 +13,7 @@
 //// Dependencies
 
 #include <memory>
+#include <stddef.h>
 #include <stdint.h>
 #include <vector>
 
@@ -33,6 +34,11 @@
  */
 namespace scvk::ShadowRegistry
 {
+	//// Constants
+
+	/** The floats of a caster vertex: world position, then the mesh's coordinate, zero unless hasMeshCoordinates. */
+	constexpr size_t VERTEX_FLOATS = 5;
+
 	//// Types
 
 	/** One shadow record the game made, kept in world space. */
@@ -42,10 +48,11 @@ namespace scvk::ShadowRegistry
 		void const* manager = nullptr;
 		void const* binding = nullptr;
 
-		// World positions, three floats per vertex
-		std::vector<float> positions;
+		// VERTEX_FLOATS per vertex, laid out as the driver's shadow pass reads them, so a pass
+		// copies them as they are
+		std::vector<float> vertices;
 
-		// A triangle list into the positions. Empty when the mesh's topology could not be
+		// A triangle list into the vertices. Empty when the mesh's topology could not be
 		// recovered, and the caster then casts from its ground quad alone.
 		std::vector<uint32_t> indices;
 
@@ -63,10 +70,9 @@ namespace scvk::ShadowRegistry
 		float baseHeight = 0.0f;
 
 		// A True3D prop the game itself would not shadow. It casts with its own coordinates,
-		// two floats per vertex, rather than through the projector, which only fits a
+		// kept in the vertices, rather than through the projector, which only fits a
 		// prerendered view.
-		bool               hasMeshCoordinates = false;
-		std::vector<float> coordinates;
+		bool hasMeshCoordinates = false;
 
 		// Taken out of DrawShadows but not cast: a relaxed prop the registry could not keep,
 		// which casts through the per-draw path instead
@@ -89,6 +95,10 @@ namespace scvk::ShadowRegistry
 	/** Everything the DrawShadows calls handed over since the last TakePass. */
 	struct Pass
 	{
+		// The projection the gather culled the casters against, when isCulled is set
+		float projection[16] = {};
+		bool  isCulled       = false;
+
 		// DrawShadows' first argument: eye space to world, the texture generation transform
 		// the game composes with each record's projector
 		float eyeToWorld[16] = {};
@@ -106,6 +116,21 @@ namespace scvk::ShadowRegistry
 		std::vector<PassCaster> casters;
 	};
 
+	/** What the hooks did since the last TakeStats. The times are counted only while the log is at debug level. */
+	struct Stats
+	{
+		uint32_t registrations = 0;
+
+		// AddShadow calls made on another thread than DrawShadows
+		uint32_t offThreadRegistrations = 0;
+
+		// Performance counter ticks in AddShadow's registration, DrawShadows' gather, and
+		// the game's own DrawShadows for the records the registry left it
+		int64_t registerTicks   = 0;
+		int64_t gatherTicks     = 0;
+		int64_t nativeDrawTicks = 0;
+	};
+
 	//// Public API
 
 	/** Hooks the game's shadow records, once LiveShadowHooks is in place. Returns whether it is. */
@@ -120,8 +145,35 @@ namespace scvk::ShadowRegistry
 	/** Marks the next AddShadow on this thread as a relaxed True3D prop, to be kept with its own coordinates. */
 	void ExpectMeshCaster(void);
 
+	/**
+	 * The driver's projection, whenever it changes. A static pass's DrawShadows runs under
+	 * that pass's projection, so the gather culls the pass's casters against it rather than
+	 * handing over thousands the pass cannot see. Render thread only.
+	 */
+	void NoteProjection(float const projection[16]);
+
 	/** Moves out the pass gathered since the last call. False when no DrawShadows call ran in between. */
 	bool TakePass(Pass& pass);
+
+	/** Moves out the hooks' counts and times since the last call. */
+	Stats TakeStats(void);
+
+	/**
+	 * The ground quad a caster adds for silhouettes its mesh does not cover from the sun,
+	 * such as tree cards and thin LOD shells: its box pushed down the sun onto the plane at
+	 * its placement height. The sun is the normalised world direction light travels. Every
+	 * point of the quad shares its coordinate with the terrain point below it along the sun,
+	 * so on flat ground it reproduces the game's projected shadow. False when the sun is at or
+	 * above the horizon.
+	 */
+	bool GroundQuad(Caster const& caster, float const sun[3], float quad[4][3]);
+
+	/**
+	 * Whether the world box holding a caster and its quad, when it has one, lies outside the
+	 * NDC square of worldToClip, an affine column-major matrix. Nothing the caster shades is in
+	 * that view then.
+	 */
+	bool IsReachOutside(Caster const& caster, bool hasQuad, float const quad[4][3], float const* worldToClip);
 
 	/**
 	 * Asks the game to redraw the terrain cells under a world rectangle in x and z, the way

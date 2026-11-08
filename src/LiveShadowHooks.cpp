@@ -164,6 +164,10 @@ namespace scvk::LiveShadowHooks
 		// FNV-1a over 32-bit words, as cVKDriver hashes a draw
 		constexpr uint64_t HASH_OFFSET = 0xCBF29CE484222325ull;
 		constexpr uint64_t HASH_PRIME  = 0x100000001B3ull;
+
+		// The bit set of recorded prop vertex counts: 4096 bits, in words of 32
+		constexpr uint32_t PROP_COUNT_BITS  = 4096;
+		constexpr uint32_t PROP_COUNT_WORDS = PROP_COUNT_BITS / 32;
 	}
 
 	//// State
@@ -202,6 +206,11 @@ namespace scvk::LiveShadowHooks
 		std::mutex            propMutex;
 		std::vector<uint64_t> propMeshes;
 		std::atomic<bool>     isAnyPropMeshRecorded{ false };
+
+		// The vertex counts of those meshes, folded modulo PROP_COUNT_BITS into a bit set read
+		// without the lock. Only a draw of a recorded size is worth hashing, and hashing every
+		// draw once any prop was recorded cost a hash of every vertex the game drew.
+		std::atomic<uint32_t> propVertexCounts[PROP_COUNT_WORDS] = {};
 
 		// Model instances owned by prebuilt network pieces, each with the occupant that owns
 		// it so a hit can be checked. Read on every cS3DModelInstance draw and written only
@@ -290,6 +299,18 @@ namespace scvk::LiveShadowHooks
 			hash = (hash ^ word) * HASH_PRIME;
 		}
 
+		/** The word of the prop count bit set a vertex count folds into. */
+		uint32_t PropCountWord(uint32_t vertexCount)
+		{
+			return (vertexCount % PROP_COUNT_BITS) / 32;
+		}
+
+		/** The bit within its word a vertex count folds into. */
+		uint32_t PropCountBit(uint32_t vertexCount)
+		{
+			return uint32_t{ 1 } << (vertexCount % 32);
+		}
+
 		void RecordPropMesh(uint32_t count, void const* positionStream, void const* coordinateStream)
 		{
 			// Copy both streams out of the game, all or nothing
@@ -326,6 +347,7 @@ namespace scvk::LiveShadowHooks
 
 			propMeshes.insert(found, signature);
 			isAnyPropMeshRecorded.store(true, std::memory_order_relaxed);
+			propVertexCounts[PropCountWord(count)].fetch_or(PropCountBit(count), std::memory_order_relaxed);
 			propMeshesRegistered++;
 
 			Log(LogCategory::Initialization, "live shadows: registered prop mesh sig=%08X%08X verts=%u", static_cast<unsigned>(signature >> 32), static_cast<unsigned>(signature & 0xFFFFFFFFu), count);
@@ -412,6 +434,11 @@ namespace scvk::LiveShadowHooks
 				std::lock_guard<std::mutex> lock(propMutex);
 				propMeshes.clear();
 				isAnyPropMeshRecorded.store(false, std::memory_order_relaxed);
+
+				for (std::atomic<uint32_t>& word : propVertexCounts)
+				{
+					word.store(0, std::memory_order_relaxed);
+				}
 			}
 
 			{
@@ -780,6 +807,11 @@ namespace scvk::LiveShadowHooks
 	bool HasPropMeshes(void)
 	{
 		return isInstalled && isAnyPropMeshRecorded.load(std::memory_order_relaxed);
+	}
+
+	bool MayMatchPropMesh(uint32_t vertexCount)
+	{
+		return isInstalled && (propVertexCounts[PropCountWord(vertexCount)].load(std::memory_order_relaxed) & PropCountBit(vertexCount)) != 0;
 	}
 
 	bool MatchPropSignature(uint64_t signature)

@@ -176,8 +176,10 @@ namespace scvk
 				std::memcpy(&horizontal, bytes + 0xE0, sizeof(horizontal));
 				std::memcpy(&vertical, bytes + 0xE4, sizeof(vertical));
 
-				bool const isTranslated     = (horizontal != 0 || vertical != 0) && !ShadowRegistry::Enabled();
-				bool const isPartialShadow  = hookedDriver != nullptr && hookedDriver->ConsumeLiveShadowCleanRedraw();
+				// Why the view is drawn whole, as LiveShadowRedrawCause bits, starting with the
+				// passes that asked for it
+				bool const isTranslated = (horizontal != 0 || vertical != 0) && !ShadowRegistry::Enabled();
+				uint32_t   causes       = (hookedDriver != nullptr) ? hookedDriver->ConsumeLiveShadowCleanRedraw() : 0;
 
 				// cSC43DRender+0x8c owns cSC4CameraControl, whose zoom and rotation are the
 				// integers at +0x108 and +0x10c, written before Draw is entered. Camera
@@ -216,8 +218,25 @@ namespace scvk
 					hasCameraState  = true;
 				}
 
-				if (isTranslated || isCameraChanged || isPartialShadow)
+				if (isTranslated)
 				{
+					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_TRANSLATED);
+				}
+
+				if (isCameraChanged)
+				{
+					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_CAMERA);
+				}
+
+				if (causes != 0)
+				{
+					// Only a store that was still valid makes this an extra redraw, since the game
+					// may have dropped it already
+					if (hookedDriver != nullptr && bytes[0x65] != 0)
+					{
+						hookedDriver->CountForcedStaticRedraw(causes);
+					}
+
 					// cSC43DRender::mbBackingStoreValid
 					bytes[0x65] = 0;
 

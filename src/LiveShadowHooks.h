@@ -43,6 +43,9 @@ namespace scvk::LiveShadowHooks
 	/** Whether any relaxed prop's mesh has been recorded, cheap enough to ask on every draw. */
 	bool HasPropMeshes(void);
 
+	/** False when no recorded prop mesh has this many vertices, so a draw of that size cannot match and need not be hashed. */
+	bool MayMatchPropMesh(uint32_t vertexCount);
+
 	/** Whether a draw's mesh, hashed as RegisterPropMesh hashes it, is a relaxed prop's. */
 	bool MatchPropSignature(uint64_t signature);
 

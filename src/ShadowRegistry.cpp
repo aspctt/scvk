@@ -72,6 +72,7 @@
 #include "ShadowRegistry.h"
 #include "GamePatch.h"
 #include "LiveShadowHooks.h"
+#include "Logger.h"
 #include "ModuleLog.h"
 #include "SC4Version.h"
 #include "Settings.h"
@@ -83,7 +84,6 @@
 #include <mutex>
 #include <new>
 #include <string.h>
-#include <unordered_map>
 #include <unordered_set>
 
 #if defined(_MSC_VER)
@@ -148,6 +148,25 @@ namespace scvk::ShadowRegistry
 
 			// A relaxed prop LiveShadowHooks let through, sorted by what its mesh shows
 			bool isRelaxedProp = false;
+		};
+
+		/**
+		 * A registered caster, with copies of what the gather reads for every id it looks up,
+		 * so culling one never touches the caster itself.
+		 */
+		struct Entry
+		{
+			// Null where no caster has this id
+			std::shared_ptr<Caster const> caster;
+
+			void const* binding    = nullptr;
+			float       low[3]     = {};
+			float       high[3]    = {};
+			float       baseHeight = 0.0f;
+			bool        isSuppressedOnly = false;
+
+			// The serial of the pass this caster last joined
+			uint32_t passSerial = 0;
 		};
 
 		/** The size of a terrain's cell grid. */
@@ -239,6 +258,18 @@ namespace scvk::ShadowRegistry
 		constexpr uint32_t MAXIMUM_INDICES        = 0x40000;
 		constexpr size_t   MAXIMUM_IDS_PER_PASS   = size_t{ 1 } << 20;
 
+		// Casters are kept in an array indexed by overlay id, and ids from here up are left to
+		// the game. The ids are slots in the manager's record array, far below this.
+		constexpr uint32_t MAXIMUM_CASTER_IDS = uint32_t{ 1 } << 20;
+
+		// A registry caster's ground quad sits this far above the occupant's placement
+		// height, so the terrain under it is behind it by more than the composite bias along
+		// the 45 degree sun
+		constexpr float GROUND_LIFT_WORLD = 0.2f;
+
+		// The sun's y below which it is under the horizon and casts ground quads
+		constexpr float HORIZON_SUN_Y = -1.0e-3f;
+
 		// The game's SimGL primitives, as AppendTriangles reads them
 		constexpr uint32_t PRIMITIVE_TRIANGLES      = 0;
 		constexpr uint32_t PRIMITIVE_TRIANGLE_STRIP = 1;
@@ -279,12 +310,31 @@ namespace scvk::ShadowRegistry
 		// call that follows on the same thread
 		thread_local bool isMeshCasterExpected = false;
 
-		std::mutex                                             casterMutex;
-		std::unordered_map<uint32_t, std::shared_ptr<Caster const>> casters;
-		void const*                                            casterManager = nullptr;
-		Pass                                                   pendingPass;
-		bool                                                   isPassPending = false;
-		std::unordered_set<uint32_t>                           passIds;
+		std::mutex casterMutex;
+
+		// Indexed by overlay id. AddShadow's ids are slots in the manager's record array, so
+		// they are small and dense, and a gather looking up thousands of them a pass reads an
+		// array instead of chasing the nodes of a hash map, as it first did.
+		std::vector<Entry> casters;
+		size_t             casterCount     = 0;
+		uint32_t           highestCasterId = 0;
+		void const*        casterManager   = nullptr;
+		Pass               pendingPass;
+		bool               isPassPending   = false;
+
+		// Bumped whenever the pending pass starts over, so a caster joins each pass once.
+		// Entries start at 0, below the first serial.
+		uint32_t passSerial = 1;
+
+		// The driver's current projection, for culling. Render thread only, as are the
+		// DrawShadows calls that read it.
+		float currentProjection[16] = {};
+		bool  isProjectionKnown     = false;
+
+		// The hooks' counts and times since the last TakeStats, and the thread DrawShadows
+		// last ran on
+		Stats hookStats;
+		DWORD drawThreadId = 0;
 
 		// Counts for the log at shutdown
 		unsigned registeredCount     = 0;
@@ -316,6 +366,163 @@ namespace scvk::ShadowRegistry
 			{
 				Log(LogCategory::Initialization, "shadow registry: DrawShadows call left native (%s, manager %p, registry %p)", reason, manager, casterManager);
 			}
+		}
+
+		int64_t ReadTicks(void)
+		{
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			return now.QuadPart;
+		}
+
+		/** The entry holding the caster at an id, or null where there is none. The lock must be held. */
+		Entry* FindEntry(int32_t id)
+		{
+			if (id < 0 || static_cast<size_t>(id) >= casters.size())
+			{
+				return nullptr;
+			}
+
+			// The id was checked to be positive above
+			Entry& entry = casters[static_cast<size_t>(id)];
+			return entry.caster ? &entry : nullptr;
+		}
+
+		/** Drops the caster at an id. The lock must be held. Returns whether there was one. */
+		bool EraseCaster(int32_t id)
+		{
+			Entry* const entry = FindEntry(id);
+			if (entry == nullptr)
+			{
+				return false;
+			}
+
+			*entry = Entry{};
+			casterCount--;
+			return true;
+		}
+
+		/** The inverse of an affine column-major matrix. False for any other, or a singular one. */
+		bool InvertAffine(float const* m, float out[16])
+		{
+			if (m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f)
+			{
+				return false;
+			}
+
+			// The 3x3 part's inverse is its cofactors over the determinant, and the cofactor
+			// rows are the cross products of its columns
+			float const columns[3][3] = { { m[0], m[1], m[2] }, { m[4], m[5], m[6] }, { m[8], m[9], m[10] } };
+			float rows[3][3] = {};
+
+			for (unsigned row = 0; row < 3; row++)
+			{
+				float const* const a = columns[(row + 1) % 3];
+				float const* const b = columns[(row + 2) % 3];
+				rows[row][0] = a[1] * b[2] - a[2] * b[1];
+				rows[row][1] = a[2] * b[0] - a[0] * b[2];
+				rows[row][2] = a[0] * b[1] - a[1] * b[0];
+			}
+
+			float const determinant = columns[0][0] * rows[0][0] + columns[0][1] * rows[0][1] + columns[0][2] * rows[0][2];
+			if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12f)
+			{
+				return false;
+			}
+
+			for (unsigned row = 0; row < 3; row++)
+			{
+				for (unsigned column = 0; column < 3; column++)
+				{
+					out[column * 4 + row] = rows[row][column] / determinant;
+				}
+
+				out[row * 4 + 3] = 0.0f;
+			}
+
+			// The translation goes back through the inverted 3x3 part
+			for (unsigned row = 0; row < 3; row++)
+			{
+				out[12 + row] = -(out[row] * m[12] + out[4 + row] * m[13] + out[8 + row] * m[14]);
+			}
+
+			out[15] = 1.0f;
+			return true;
+		}
+
+		/** GroundQuad for a box and placement height, which the gather has without the caster. */
+		bool BoxGroundQuad(float const low[3], float const high[3], float baseHeight, float const sun[3], float quad[4][3])
+		{
+			if (sun[1] > HORIZON_SUN_Y)
+			{
+				return false;
+			}
+
+			// The box's bottom and top land this far along the sun, and the footprint spans the
+			// box and both landings. An earlier version pushed all eight corners down the sun
+			// one by one, which gives the same footprint for several times the work.
+			float const height    = baseHeight + GROUND_LIFT_WORLD;
+			float const alongLow  = (height - low[1]) / sun[1];
+			float const alongHigh = (height - high[1]) / sun[1];
+			float footLow[2]  = {};
+			float footHigh[2] = {};
+
+			for (unsigned axis = 0; axis < 2; axis++)
+			{
+				unsigned const world  = axis * 2;
+				float const    atLow  = sun[world] * alongLow;
+				float const    atHigh = sun[world] * alongHigh;
+				footLow[axis]  = low[world] + std::min({ 0.0f, atLow, atHigh });
+				footHigh[axis] = high[world] + std::max({ 0.0f, atLow, atHigh });
+			}
+
+			float const corners[4][2] = { { footLow[0], footLow[1] }, { footHigh[0], footLow[1] }, { footHigh[0], footHigh[1] }, { footLow[0], footHigh[1] } };
+			for (unsigned index = 0; index < 4; index++)
+			{
+				quad[index][0] = corners[index][0];
+				quad[index][1] = height;
+				quad[index][2] = corners[index][1];
+			}
+
+			return true;
+		}
+
+		/** IsReachOutside for a box, which the gather has without the caster. */
+		bool IsBoxReachOutside(float const low[3], float const high[3], bool hasQuad, float const quad[4][3], float const* worldToClip)
+		{
+			float reachLow[3]  = { low[0], low[1], low[2] };
+			float reachHigh[3] = { high[0], high[1], high[2] };
+
+			// The quad's first corner is its low one and its third its high one
+			if (hasQuad)
+			{
+				for (unsigned axis = 0; axis < 3; axis++)
+				{
+					reachLow[axis]  = std::min(reachLow[axis], quad[0][axis]);
+					reachHigh[axis] = std::max(reachHigh[axis], quad[2][axis]);
+				}
+			}
+
+			// The matrix is affine, so the box's NDC extent is its centre and half size mapped
+			// through it, without transforming each corner
+			for (unsigned axis = 0; axis < 2; axis++)
+			{
+				float centre = worldToClip[12 + axis];
+				float extent = 0.0f;
+
+				for (unsigned k = 0; k < 3; k++)
+				{
+					centre += worldToClip[k * 4 + axis] * (reachLow[k] + reachHigh[k]) * 0.5f;
+					extent += std::fabs(worldToClip[k * 4 + axis]) * (reachHigh[k] - reachLow[k]) * 0.5f;
+				}
+
+				if (centre + extent < -1.0f || centre - extent > 1.0f)
+				{
+					return true;
+				}
+			}
+
+			return false;
 		}
 
 #if defined(_MSC_VER) && defined(_M_IX86)
@@ -556,7 +763,7 @@ namespace scvk::ShadowRegistry
 
 			for (uint32_t vertex = 0; vertex < count; vertex++)
 			{
-				float const* const world = caster.positions.data() + size_t{ vertex } * 3;
+				float const* const world = caster.vertices.data() + size_t{ vertex } * VERTEX_FLOATS;
 				double const du = double{ m[0] * world[0] + m[4] * world[1] + m[8] * world[2] + m[12] } - coordinates[size_t{ vertex } * 2 + 0];
 				double const dv = double{ m[1] * world[0] + m[5] * world[1] + m[9] * world[2] + m[13] } - coordinates[size_t{ vertex } * 2 + 1];
 				squared += du * du + dv * dv;
@@ -568,7 +775,7 @@ namespace scvk::ShadowRegistry
 		void Forget(int32_t id)
 		{
 			std::lock_guard<std::mutex> lock(casterMutex);
-			casters.erase(static_cast<uint32_t>(id));
+			EraseCaster(id);
 		}
 
 		/**
@@ -576,7 +783,7 @@ namespace scvk::ShadowRegistry
 		 * when that reproduces its coordinates, through its own coordinates when its
 		 * triangles are known, and otherwise through the per-draw path.
 		 */
-		void SortRelaxedProp(AddShadowCall const& call, Caster& caster, std::vector<float>& coordinates, bool isIndexed)
+		void SortRelaxedProp(AddShadowCall const& call, Caster& caster, std::vector<float> const& coordinates, bool isIndexed)
 		{
 			// The ground under the prop's middle, or its own lowest point where that is unknown
 			void* terrain = nullptr;
@@ -604,8 +811,13 @@ namespace scvk::ShadowRegistry
 			}
 			else if (isIndexed)
 			{
+				// Into the vertices beside the positions, where the shadow pass reads them
 				caster.hasMeshCoordinates = true;
-				caster.coordinates        = std::move(coordinates);
+				for (uint32_t vertex = 0; vertex < vertexCount; vertex++)
+				{
+					memcpy(caster.vertices.data() + size_t{ vertex } * VERTEX_FLOATS + 3, coordinates.data() + size_t{ vertex } * 2, sizeof(float) * 2);
+				}
+
 				meshCasterCount++;
 			}
 			else
@@ -622,12 +834,15 @@ namespace scvk::ShadowRegistry
 		/** Keeps the record an AddShadow call made, or forgets its id where the record cannot be read. */
 		void Register(AddShadowCall const& call)
 		{
-			if (call.binding == nullptr || call.positions == nullptr || call.coordinates == nullptr || call.transform == nullptr || call.count < 3 || static_cast<uint32_t>(call.count) > MAXIMUM_VERTICES)
+			// The id is the record's slot index, never negative
+			if (call.binding == nullptr || call.positions == nullptr || call.coordinates == nullptr || call.transform == nullptr || call.count < 3 || static_cast<uint32_t>(call.count) > MAXIMUM_VERTICES || static_cast<uint32_t>(call.id) >= MAXIMUM_CASTER_IDS)
 			{
 				Forget(call.id);
 				return;
 			}
 
+			bool const    isTiming    = IsLogged(LOG_LEVEL_DEBUG);
+			int64_t const startTicks  = isTiming ? ReadTicks() : 0;
 			uint32_t const vertexCount = static_cast<uint32_t>(call.count);
 			auto caster = std::make_shared<Caster>();
 			caster->id      = static_cast<uint32_t>(call.id);
@@ -647,8 +862,9 @@ namespace scvk::ShadowRegistry
 				return;
 			}
 
-			// Place the mesh in the world and bound it and its coordinates
-			caster->positions.resize(local.size());
+			// Place the mesh in the world and bound it and its coordinates. The coordinates only
+			// go into the vertices for a caster cast through them, and stay zero otherwise.
+			caster->vertices.resize(size_t{ vertexCount } * VERTEX_FLOATS);
 			for (unsigned axis = 0; axis < 3; axis++)
 			{
 				caster->low[axis]  = FLT_MAX;
@@ -662,7 +878,7 @@ namespace scvk::ShadowRegistry
 
 			for (uint32_t vertex = 0; vertex < vertexCount; vertex++)
 			{
-				float* const world = caster->positions.data() + size_t{ vertex } * 3;
+				float* const world = caster->vertices.data() + size_t{ vertex } * VERTEX_FLOATS;
 				ToWorld(transform, local.data() + size_t{ vertex } * 3, world);
 
 				for (unsigned axis = 0; axis < 3; axis++)
@@ -709,14 +925,47 @@ namespace scvk::ShadowRegistry
 				}
 
 				casters.clear();
-				passIds.clear();
+				casterCount = 0;
+				passSerial++;
 				pendingPass.casters.clear();
 				casterManager = call.manager;
 			}
 
-			uint32_t const casterId = caster->id;
-			casters[casterId] = std::move(caster);
+			// Grow by half again rather than to the id, so a city filling its slots in order
+			// does not reallocate the array for each one
+			size_t const slot = static_cast<size_t>(call.id);
+			if (slot >= casters.size())
+			{
+				casters.resize(std::max(slot + 1, casters.size() + casters.size() / 2));
+			}
+
+			Entry& entry = casters[slot];
+			if (!entry.caster)
+			{
+				casterCount++;
+			}
+
+			entry = Entry{};
+			entry.binding          = caster->binding;
+			entry.baseHeight       = caster->baseHeight;
+			entry.isSuppressedOnly = caster->isSuppressedOnly;
+			memcpy(entry.low, caster->low, sizeof(entry.low));
+			memcpy(entry.high, caster->high, sizeof(entry.high));
+			entry.caster = std::move(caster);
+
+			highestCasterId = std::max(highestCasterId, static_cast<uint32_t>(call.id));
 			registeredCount++;
+
+			if (isTiming)
+			{
+				hookStats.registrations++;
+				hookStats.registerTicks += ReadTicks() - startTicks;
+
+				if (GetCurrentThreadId() != drawThreadId)
+				{
+					hookStats.offThreadRegistrations++;
+				}
+			}
 
 			if (isIndexed)
 			{
@@ -738,8 +987,9 @@ namespace scvk::ShadowRegistry
 		/**
 		 * Takes a pass's overlay ids from a DrawShadows call. The registry's own records move
 		 * into the pass, and every other id, along with any record that no longer matches
-		 * what was registered, stays in kept for the game to draw. False leaves the caller to
-		 * draw the original list.
+		 * what was registered, stays in kept for the game to draw. Records that cannot reach
+		 * the pass's view are dropped from both. False leaves the caller to draw the original
+		 * list.
 		 */
 		bool Gather(void* manager, float const* eyeToWorld, IdList const* ids, std::vector<int32_t>& kept)
 		{
@@ -785,6 +1035,41 @@ namespace scvk::ShadowRegistry
 				return false;
 			}
 
+			uint8_t const* records = nullptr;
+			if (!ReadGameMemory(static_cast<uint8_t const*>(manager) + MANAGER_RECORDS, records) || records == nullptr)
+			{
+				NoteNotGathered("record table unreadable", manager);
+				return false;
+			}
+
+			// The x and y rows of world to clip, for culling against the pass's own view
+			//
+			// The game hands a strip pass thousands of casters, nearly all far from it. Only an
+			// orthographic projection with a known sun culls; anything else hands every caster
+			// over, as before.
+			float const* const p = currentProjection;
+			float worldToEye[16]  = {};
+			float worldToClip[16] = {};
+			float sunWorld[3]     = { sun[0], sun[1], sun[2] };
+			float const sunLength = std::sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+			bool const  isCulled  = hasSun && sunLength > 1.0e-6f && isProjectionKnown && p[3] == 0.0f && p[7] == 0.0f && p[11] == 0.0f && p[15] == 1.0f && InvertAffine(matrix, worldToEye);
+
+			if (isCulled)
+			{
+				for (float& value : sunWorld)
+				{
+					value /= sunLength;
+				}
+
+				for (unsigned column = 0; column < 4; column++)
+				{
+					for (unsigned row = 0; row < 2; row++)
+					{
+						worldToClip[column * 4 + row] = p[row] * worldToEye[column * 4] + p[4 + row] * worldToEye[column * 4 + 1] + p[8 + row] * worldToEye[column * 4 + 2] + p[12 + row] * worldToEye[column * 4 + 3];
+					}
+				}
+			}
+
 			std::lock_guard<std::mutex> lock(casterMutex);
 			if (manager != casterManager)
 			{
@@ -792,7 +1077,7 @@ namespace scvk::ShadowRegistry
 				return false;
 			}
 
-			if (casters.empty())
+			if (casterCount == 0)
 			{
 				NoteNotGathered("registry empty", manager);
 				return false;
@@ -804,34 +1089,55 @@ namespace scvk::ShadowRegistry
 			size_t written = 0;
 			for (size_t read = 0; read < kept.size(); read++)
 			{
-				int32_t const id = kept[read];
-				auto const found = (id >= 0) ? casters.find(static_cast<uint32_t>(id)) : casters.end();
-				if (found == casters.end())
+				int32_t const id    = kept[read];
+				Entry* const  entry = FindEntry(id);
+				if (entry == nullptr)
 				{
 					kept[written++] = id;
 					continue;
 				}
 
-				Caster const&  caster = *found->second;
-				uint8_t const* record = RecordAddress(manager, id);
+				// Cull from the entry alone, before the record is read. A record the game reused
+				// without RemoveOverlay is then only noticed once it comes into view.
+				if (isCulled)
+				{
+					float quad[4][3] = {};
+					bool const hasQuad = BoxGroundQuad(entry->low, entry->high, entry->baseHeight, sunWorld, quad);
+					if (IsBoxReachOutside(entry->low, entry->high, hasQuad, quad, worldToClip))
+					{
+						continue;
+					}
+				}
+
+				// The in-use word, the flags and the binding in one guarded read, instead of a
+				// guarded read each. FindEntry checked the id to be positive.
+				uint8_t header[RECORD_BINDING + sizeof(void*)] = {};
 				int32_t     inUse         = 0;
 				uint32_t    flags         = 0;
 				void const* binding       = nullptr;
 				void const* textureObject = nullptr;
 				uint32_t    texture       = 0;
 
-				if (record == nullptr || !ReadGameMemory(record, inUse) || !ReadGameMemory(record + RECORD_FLAGS, flags) || !ReadGameMemory(record + RECORD_BINDING, binding) || inUse != RECORD_IN_USE || binding != caster.binding)
+				bool const isReadable = CopyGameMemory(records + static_cast<size_t>(id) * RECORD_SIZE, header, sizeof(header));
+				if (isReadable)
+				{
+					memcpy(&inUse, header, sizeof(inUse));
+					memcpy(&flags, header + RECORD_FLAGS, sizeof(flags));
+					memcpy(&binding, header + RECORD_BINDING, sizeof(binding));
+				}
+
+				if (!isReadable || inUse != RECORD_IN_USE || binding != entry->binding)
 				{
 					// The slot was freed or reused by something that never went through
 					// AddShadow, such as a decal. It is not the registry's any more.
 					staleRecordCount++;
-					casters.erase(found);
+					EraseCaster(id);
 					kept[written++] = id;
 					continue;
 				}
 
 				// A disabled record, which the game skips too
-				if ((flags & SHADOW_DRAW_FLAGS) != SHADOW_DRAW_FLAGS || caster.isSuppressedOnly)
+				if ((flags & SHADOW_DRAW_FLAGS) != SHADOW_DRAW_FLAGS || entry->isSuppressedOnly)
 				{
 					continue;
 				}
@@ -842,9 +1148,12 @@ namespace scvk::ShadowRegistry
 					continue;
 				}
 
-				if (passIds.insert(caster.id).second)
+				// The serial keeps a caster listed twice in one pass from joining it twice, where
+				// a set of the pass's ids cost an allocation per caster
+				if (entry->passSerial != passSerial)
 				{
-					pendingPass.casters.push_back(PassCaster{ found->second, texture, (flags & WRAP_FLAG) != 0 });
+					entry->passSerial = passSerial;
+					pendingPass.casters.push_back(PassCaster{ entry->caster, texture, (flags & WRAP_FLAG) != 0 });
 				}
 			}
 
@@ -860,6 +1169,12 @@ namespace scvk::ShadowRegistry
 			memcpy(pendingPass.colour, colour, sizeof(colour));
 			pendingPass.strength   = strength;
 			pendingPass.alphaScale = alphaScale;
+			pendingPass.isCulled   = isCulled;
+			if (isCulled)
+			{
+				memcpy(pendingPass.projection, currentProjection, sizeof(pendingPass.projection));
+			}
+
 			isPassPending = true;
 			return true;
 		}
@@ -871,14 +1186,16 @@ namespace scvk::ShadowRegistry
 			return static_cast<int32_t>(std::clamp(index, 0.0, static_cast<double>(cellCount)));
 		}
 
+		/** Drops every caster and gives the array's memory back. */
 		void ClearCasters(void)
 		{
 			std::lock_guard<std::mutex> lock(casterMutex);
-			casters.clear();
+			std::vector<Entry>().swap(casters);
+			casterCount   = 0;
 			casterManager = nullptr;
 			pendingPass   = Pass{};
 			isPassPending = false;
-			passIds.clear();
+			passSerial++;
 		}
 	}
 
@@ -950,7 +1267,7 @@ namespace scvk::ShadowRegistry
 			}
 
 			std::lock_guard<std::mutex> lock(casterMutex);
-			if (manager == casterManager && casters.erase(static_cast<uint32_t>(id)) != 0)
+			if (manager == casterManager && EraseCaster(id))
 			{
 				removedCount++;
 			}
@@ -962,6 +1279,9 @@ namespace scvk::ShadowRegistry
 			static std::vector<int32_t> kept;
 			drawCallCount++;
 
+			bool const    isTiming   = IsLogged(LOG_LEVEL_DEBUG);
+			int64_t const startTicks = isTiming ? ReadTicks() : 0;
+
 			bool isGathered = false;
 			try
 			{
@@ -971,20 +1291,25 @@ namespace scvk::ShadowRegistry
 			{
 			}
 
-			if (!isGathered)
-			{
-				original(manager, eyeToWorld, drawContext, ids);
-				return;
-			}
+			int64_t const gatheredTicks = isTiming ? ReadTicks() : 0;
 
 			// DrawShadows reads only begin and end, and returns at once when they are equal
 			IdList filtered{};
-			if (!kept.empty())
+			if (isGathered && !kept.empty())
 			{
 				filtered = IdList{ kept.data(), kept.data() + kept.size(), kept.data() + kept.size() };
 			}
 
-			original(manager, eyeToWorld, drawContext, &filtered);
+			original(manager, eyeToWorld, drawContext, isGathered ? &filtered : ids);
+
+			if (isTiming)
+			{
+				int64_t const drawnTicks = ReadTicks();
+				std::lock_guard<std::mutex> lock(casterMutex);
+				drawThreadId = GetCurrentThreadId();
+				hookStats.gatherTicks     += gatheredTicks - startTicks;
+				hookStats.nativeDrawTicks += drawnTicks - gatheredTicks;
+			}
 		}
 
 #if defined(_MSC_VER) && defined(_M_IX86)
@@ -1193,13 +1518,13 @@ namespace scvk::ShadowRegistry
 		size_t remaining = 0;
 		{
 			std::lock_guard<std::mutex> lock(casterMutex);
-			remaining = casters.size();
+			remaining = casterCount;
 		}
 
 		ClearCasters();
 
 		Log(LogCategory::Initialization, "shadow registry uninstalled: relaxed props: %u True3D kept with their UVs, %u prerendered through the projector, %u floating left unshadowed, %u left to per-draw capture", meshCasterCount, prerenderedCount, floatingPropCount, meshFallbackCount);
-		Log(LogCategory::Initialization, "shadow registry uninstalled: %u registered (%u indexed, %u ground quad only), %u removed, %u stale, %u passes, %u live at exit; DrawShadows calls %u (%u gathered, %u left native)", registeredCount, indexedCount, quadOnlyCount, removedCount, staleRecordCount, passCount, static_cast<unsigned>(remaining), drawCallCount, gatheredCount, notGatheredCount);
+		Log(LogCategory::Initialization, "shadow registry uninstalled: %u registered (%u indexed, %u ground quad only), %u removed, %u stale, %u passes, %u live at exit; DrawShadows calls %u (%u gathered, %u left native); highest id %u", registeredCount, indexedCount, quadOnlyCount, removedCount, staleRecordCount, passCount, static_cast<unsigned>(remaining), drawCallCount, gatheredCount, notGatheredCount, highestCasterId);
 	}
 
 	bool Enabled(void)
@@ -1210,6 +1535,17 @@ namespace scvk::ShadowRegistry
 	void ExpectMeshCaster(void)
 	{
 		isMeshCasterExpected = isInstalled;
+	}
+
+	void NoteProjection(float const projection[16])
+	{
+		if (!isInstalled)
+		{
+			return;
+		}
+
+		memcpy(currentProjection, projection, sizeof(currentProjection));
+		isProjectionKnown = true;
 	}
 
 	bool TakePass(Pass& pass)
@@ -1223,9 +1559,27 @@ namespace scvk::ShadowRegistry
 		pass = std::move(pendingPass);
 		pendingPass   = Pass{};
 		isPassPending = false;
-		passIds.clear();
+		passSerial++;
 		passCount++;
 		return true;
+	}
+
+	Stats TakeStats(void)
+	{
+		std::lock_guard<std::mutex> lock(casterMutex);
+		Stats const taken = hookStats;
+		hookStats = Stats{};
+		return taken;
+	}
+
+	bool GroundQuad(Caster const& caster, float const sun[3], float quad[4][3])
+	{
+		return BoxGroundQuad(caster.low, caster.high, caster.baseHeight, sun, quad);
+	}
+
+	bool IsReachOutside(Caster const& caster, bool hasQuad, float const quad[4][3], float const* worldToClip)
+	{
+		return IsBoxReachOutside(caster.low, caster.high, hasQuad, quad, worldToClip);
 	}
 
 	bool RedisplayWorldRect(float minimumX, float minimumZ, float maximumX, float maximumZ)
