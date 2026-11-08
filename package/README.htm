@@ -77,12 +77,11 @@ gives a window and <code>-f</code> exclusive fullscreen, at the size in the game
 options, and <code>-r</code> sets a size of its own. <code>-borderless:off</code>
 keeps the mode in the game's options. With sc4-graphics-options installed, its
 <code>WindowMode</code> decides instead.</li>
-<li><code>-NativeShadowMasks:all</code> turns on live shadows for True3D props and
-network pieces. They are off by default, since while they are on every scroll,
-zoom and turn makes the game redraw the whole city.
-<code>-NativeShadowMasks:replace</code> adds the experimental shadow registry and
-terrain shadows, and <code>-LiveShadows:on</code>, scd3d11's name for it, does the
-same.</li>
+<li><code>-LiveShadows:on</code> turns on live shadows: buildings, trees, props and
+network pieces shade each other, slopes and walls, and hills shade the land behind
+them. They are off by default, since they cost frame rate in large cities, most of
+all while scrolling. <code>-NetworkShadowMasks:on</code> keeps the flat shadow masks
+of prebuilt network pieces, which otherwise go.</li>
 <li><code>-d:Vulkan</code> picks scvk for this launch, whatever scd3d11 or
 <code>Driver=</code> in <code>SC4GraphicsOptions.ini</code> would choose.</li>
 <li><code>-MaxFPS:&lt;n&gt;</code> sets the game's frame rate caps, which are 30 at

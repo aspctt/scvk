@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Live shadows come with one switch, `-LiveShadows:on`, as in scd3d11: True3D props and network pieces cast live, the shadow registry takes over the game's building, tree and pole shadows, and hills cast terrain shadows
+- Live shadows darken the scene by multiplying, so large terrain shadows no longer wash out in blue
+- Terrain shadows get softer edges further from the hill casting them
+- Under live shadows prebuilt network pieces lose their flat shadow masks, since they cast live, and `-NetworkShadowMasks:on` keeps them
+
+### Removed
+
+- `-NativeShadowMasks` and its modes, which `-LiveShadows:on` replaces
+- The live shadow diagnostics and experiments behind `-LiveShadowDiag`, `-NativeShadowDiag`, `-LiveShadowAllFaces`, `-LiveShadowKeepPartial` and `-NativeShadowExperiment`
+
 ## [0.6.0] - 2026-11-05
 
 ### Added

@@ -129,17 +129,15 @@ with any renderer.
 ### Live shadows
 
 SimCity 4 draws most shadows as flat pictures laid on the ground. scd3d11 added live
-shadows, which draw True3D props and network pieces into a shadow map from the sun, so
-their shadows follow slopes and fall across other buildings. scvk carries them over and
-leaves them off by default, as scd3d11 does. While they are on, every scroll, zoom and
-turn makes the game redraw the whole city instead of the strip that came into view.
+shadows, which draw everything that casts into a shadow map from the game's own sun, so
+shadows follow slopes, fall across walls and roofs and no longer stack where they
+overlap. scvk carries them over and leaves them off by default, as scd3d11 does,
+because they cost frame rate in large cities, most of all while scrolling.
 
-`-NativeShadowMasks:network`, `props` or `all` turns them on for network pieces, props
-or both. `-NativeShadowMasks:replace` adds the shadow registry, which takes over the
-game's own shadows of buildings, trees and poles, and replaces the terrain's own
-shading as well. It is experimental, and in a city of dense parks and raised roads it
-laid blocks of shadow across the roads. `-LiveShadows:on` is the same as `replace`,
-under the name scd3d11 uses now.
+`-LiveShadows:on` turns them on. Buildings, trees, props, poles and network pieces then
+shade each other, and hills shade the land behind them, with softer edges further from
+the ridge. Prebuilt network pieces lose their flat shadow masks, since they cast live
+and the two would darken the same ground twice. `-NetworkShadowMasks:on` keeps them.
 
 ### ReShade
 
@@ -164,8 +162,8 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
 | `-ReShade:off` | Leaves ReShade drawing over the interface |
 | `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
-| `-NativeShadowMasks:<mode>` | Turns on [live shadows](#live-shadows) |
-| `-LiveShadows:on` or `-LiveShadows:off` | The same as `-NativeShadowMasks:replace` or `off` |
+| `-LiveShadows:on` | Turns on [live shadows](#live-shadows) |
+| `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
 | `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |
