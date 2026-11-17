@@ -142,6 +142,11 @@ never shadows itself again. Prebuilt network pieces lose their flat shadow masks
 they cast live and the two would darken the same ground twice. `-NetworkShadowMasks:on`
 keeps them.
 
+In a city, the `LiveShadows` cheat (Ctrl+X) pauses live shadows and brings back the
+game's own, network shadow masks included, so the two can be compared. Typed again, it
+resumes them. With live shadows on, `scvk.log` also notes the game's shadow settings and
+warns when one leaves buildings or props without a shadow.
+
 ### ReShade
 
 Installed for Vulkan, ReShade draws its effects over the whole frame, interface

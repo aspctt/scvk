@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - At `LogLevel=debug`, `scvk.log` sums up the live shadows' passes, casters and times every few hundred frames
+- The `LiveShadows` cheat pauses live shadows in a city and brings back SC4's own, as in scd3d11, and resumes them
+- With live shadows on, `scvk.log` notes SC4's shadow settings and warns when they leave buildings or props without a shadow
 
 ### Changed
 
