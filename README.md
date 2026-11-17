@@ -128,11 +128,12 @@ preferences.
 
 scvk also uses a `-r` size as given. Without `-CustomResolution:enabled`, the game
 swaps a size it does not know for one of its own, so `-r1920x1080` became 1800x1440.
-`-CustomResolution:disabled` keeps the game's size.
+`-CustomResolution:disabled` keeps the game's size. A size Windows does not list,
+such as a 1500x900 window, crashed the game at startup, since the game wants its size
+in the renderer's list of modes, so scvk adds it there, as scd3d11 does. Exclusive
+fullscreen at a size the display does not offer runs in a window instead.
 
-With sc4-graphics-options installed, its settings decide both instead. A fullscreen
-size the display does not offer still drops the game to 16 bits at a smaller size,
-with any renderer.
+With sc4-graphics-options installed, its settings decide both instead.
 
 ### Live shadows
 

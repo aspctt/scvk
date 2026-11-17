@@ -39,7 +39,9 @@
 
 #include <GZCLSIDDefs.h>
 #include <GZServPtrs.h>
+#include <cGZDisplayMetrics.h>
 #include <cIGZCOM.h>
+#include <cIGZGraphicSystem.h>
 #include <cIGZFrameWork.h>
 #include <cIGZMessage2.h>
 #include <cIGZMessageServer2.h>
@@ -57,6 +59,11 @@ namespace scvk
 		// The fixed function interface exposes two texture stages, and the combiner state
 		// the game sends is written against that assumption.
 		constexpr uint32_t TEXTURE_STAGE_COUNT = 2;
+
+		// The size the game asks for joins the mode list at this depth, which scvk draws in
+		// whatever the mode says, up to this many pixels a side. See AppendRequestedVideoModes.
+		constexpr uint32_t REQUESTED_MODE_DEPTH   = 32;
+		constexpr uint32_t LARGEST_REQUESTED_SIZE = 16384;
 
 		// The names the game's own OpenGL driver gives its window, whose class ID scvk
 		// claims. SC4GraphicsOptions recognises the game's window by them, and its
@@ -661,6 +668,41 @@ namespace scvk
 			mode.isFullscreen = false;
 			videoModes.push_back(mode);
 		}
+
+		/**
+		 * Adds the size the game asks for, at 32 bits, when Windows did not list it. The
+		 * 16-bit twins added after the reported modes then cover it at 16 bits too.
+		 */
+		void AppendRequestedVideoModes(std::vector<sGDMode>& videoModes)
+		{
+			cIGZGraphicSystemPtr graphicSystem;
+			if (!graphicSystem)
+			{
+				return;
+			}
+
+			// The request the game stored before Init (0x989e30), from -r or its preferences,
+			// which GetGameMetrics (0x98e1d0) copies out
+			cGZDisplayMetrics requested{};
+			graphicSystem->GetGameMetrics(requested);
+
+			// Leave out a size no image can take
+			//
+			// Vulkan only promises 4096 pixels a side, and desktop cards take 16384 or more. A
+			// larger request is left to the game's own search, as before.
+			if (requested.width == 0 || requested.height == 0 || requested.width > LARGEST_REQUESTED_SIZE || requested.height > LARGEST_REQUESTED_SIZE)
+			{
+				return;
+			}
+
+			size_t const listedCount = videoModes.size();
+			AppendVideoModePair(videoModes, requested.width, requested.height, REQUESTED_MODE_DEPTH);
+
+			if (videoModes.size() != listedCount)
+			{
+				LogInfo("Added %ux%u to the video modes, the size the game asks for, which Windows does not list.", requested.width, requested.height);
+			}
+		}
 	}
 
 	void cVKDriver::BuildDriverInformation(void)
@@ -774,6 +816,14 @@ namespace scvk
 
 			AppendVideoModePair(videoModes, displayMode.dmPelsWidth, displayMode.dmPelsHeight, depth);
 		}
+
+		// Offer the size the game asks for, when Windows did not list it
+		//
+		// The game's search (0x98e1f0) wants a mode of exactly the size it asks for, so a
+		// 1500x900 window from -r crashed the game at startup (0x98e9a6) before any mode was
+		// set. A window takes any size, and exclusive fullscreen at a size the display
+		// refuses runs windowed instead (CreateRenderWindow). scd3d11 adds the same pair.
+		AppendRequestedVideoModes(videoModes);
 
 		// Offer every size at 16 bits as well
 		//

@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `-Tearing`, an scd3d11 switch, is no longer taken for a mistyped scvk one in `scvk.log`
+- A `-r` size Windows does not list, such as a 1500x900 window, no longer crashes the game at startup
 
 ## [0.6.0] - 2026-11-05
 
