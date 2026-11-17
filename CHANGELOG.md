@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With live shadows on, `scvk.log` notes SC4's shadow settings and warns when they leave buildings or props without a shadow
 - `-MaxFPS:screen`, scd3d11's default, which follows the display's refresh rate as scvk's own default does
 - After a failed start leaves SimCity 4 on its Software driver, scvk takes the game back to its DirectX slot once, as scd3d11 does, unless `-d:` or `Driver=` chose the driver
+- With `-VSync:off`, scvk holds the frame rate to twice the display's refresh rate, as scd3d11 does, and `-MaxFPS:off` lifts that too
 
 ### Changed
 

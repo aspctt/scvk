@@ -170,6 +170,7 @@
     <ClCompile Include="src\LiveShadowHooks.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\ModuleLog.cpp" />
+    <ClCompile Include="src\PresentLimit.cpp" />
     <ClCompile Include="src\PrintScreen.cpp" />
     <ClCompile Include="src\SC4Version.cpp" />
     <ClCompile Include="src\Settings.cpp" />
@@ -229,6 +230,7 @@
     <ClInclude Include="src\LiveShadowHooks.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\ModuleLog.h" />
+    <ClInclude Include="src\PresentLimit.h" />
     <ClInclude Include="src\PrintScreen.h" />
     <ClInclude Include="src\SC4Version.h" />
     <ClInclude Include="src\SCVKFrameCallback.h" />

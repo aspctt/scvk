@@ -22,6 +22,7 @@
 //// Dependencies
 
 #include "VulkanApi.h"
+#include "PresentLimit.h"
 
 #include <string>
 #include <unordered_map>
@@ -627,6 +628,7 @@ namespace scvk
 		std::vector<VkSemaphore>   renderFinishedSemaphores;
 		bool                       isPresentationPaused = false;
 		VkResult                   lastPresentResult    = VK_SUCCESS;
+		PresentLimiter             presentLimiter;
 
 		// What the game draws into. The back buffer and depth buffer are the size of the
 		// video mode and outlive the swapchain, which is the size of the window.

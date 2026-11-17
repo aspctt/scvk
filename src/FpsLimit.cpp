@@ -249,6 +249,16 @@ namespace scvk
 			return choice;
 		}
 
+		/**
+		 * The cap choice, made once. Reading it logs a MaxFPS that is no value, and the
+		 * present limit asks for it every frame.
+		 */
+		CapChoice const& GetCapChoice(void)
+		{
+			static CapChoice const choice = ChooseFrameRateCap();
+			return choice;
+		}
+
 		/** Writes bytes of the game's code, restoring the page protection after. */
 		bool WriteBytes(uintptr_t address, uint8_t const* bytes, size_t count)
 		{
@@ -386,7 +396,7 @@ namespace scvk
 		//
 		// The running city's 15 ms minimum of simulation stays, since lowering it would
 		// slow the city down.
-		CapChoice const choice = ChooseFrameRateCap();
+		CapChoice const& choice = GetCapChoice();
 
 		// Only patch the build the addresses came from
 		uint16_t const gameVersion = GetGameVersion();
@@ -476,5 +486,11 @@ namespace scvk
 		}
 
 		LogInfo("Another plugin has already changed these speed caps, which stay as they are: %s.", leftAlone.c_str());
+	}
+
+	bool IsMaxFpsOff(void)
+	{
+		CapChoice const& choice = GetCapChoice();
+		return choice.isExplicit && choice.cap <= 0;
 	}
 }

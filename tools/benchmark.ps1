@@ -7,7 +7,7 @@
 # -GameArguments has to be called from inside PowerShell. Through a child pwsh the switch
 # loses its quotes and reads as a parameter name:
 #
-#   & tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -GameArguments "-VSync:off"
+#   & tools/benchmark.ps1 -Region "Blackfall" -City "Ostton" -GameArguments "-VSync:off", "-MaxFPS:off"
 #
 # Every launch goes through Steam and needs its confirmation click; the rest runs by
 # itself. scvk opens the region and the city, pauses it, plays the scenes, writes
@@ -92,7 +92,8 @@ param(
 
 	# More of the game's own launch options, for every run. With VSync on, scvk's lighter
 	# scenes sit at the monitor's refresh rate, so -VSync:off shows the cost of a change
-	# above it. The game's DirectX driver ignores that switch.
+	# above it, and -MaxFPS:off lifts the limit scvk and scd3d11 keep at twice that rate.
+	# The game's DirectX driver ignores both switches.
 	[string[]]$GameArguments = @()
 )
 

@@ -3731,6 +3731,18 @@ namespace scvk
 			WriteCapture(isCapturingRegion, regionWidth, regionHeight);
 		}
 
+		// Hold presents to twice the refresh rate while VSync is off
+		//
+		// After the submit, so the card works through the frame during the wait, and also
+		// while the window is minimised, which still draws every frame. The window is typed
+		// as above.
+		{
+			NoteRenderPhase("Present: holding to the present limit");
+
+			PhaseScope const holding(*this, FRAME_PHASE_SWAPCHAIN);
+			presentLimiter.Wait(static_cast<HWND>(windowHandle));
+		}
+
 		// Present it
 		VkResult result = VK_SUCCESS;
 

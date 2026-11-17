@@ -171,7 +171,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | Option | Effect |
 |---|---|
 | `-d:Vulkan` | Picks scvk for this launch, whatever scd3d11 or `Driver=` in `SC4GraphicsOptions.ini` would choose |
-| `-VSync:off` | Lets the frame rate go past the display's refresh rate |
+| `-VSync:off` | Lets the frame rate go past the display's refresh rate, up to twice it |
 | `-GPU:default` | Uses the first graphics card Vulkan lists, the way Windows picks, instead of preferring a dedicated one |
 | `-GPU:<n>` | Uses the nth graphics card in `scvk.log`'s list, counted from 1 |
 | `-FlipModel:off` | Presents a window or borderless game with one image fewer, as exclusive fullscreen does |
@@ -179,7 +179,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
 | `-LiveShadows:on` | Turns on [live shadows](#live-shadows) |
 | `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
-| `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in) |
+| `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in), and `off` also lifts the limit `-VSync:off` keeps |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
@@ -223,6 +223,11 @@ A running city still gets at least 15 ms of simulation every frame, which keeps 
 near 60 frames a second whatever the cap. Raised caps take simulation time at Rhino
 and Cheetah, so a heavy city can simulate more slowly, and `-MaxFPS:off` is the way
 back.
+
+With `-VSync:off`, scvk holds the frame rate to twice the display's refresh rate, as
+scd3d11 does. The region view and a paused city would otherwise run at well over a
+thousand frames a second, which no display shows and which only makes heat. Every
+refresh still gets a new frame, and `-MaxFPS:off` lifts this limit too.
 
 This lives in scvk because frame pacing and presentation are one concern. Once
 the swapchain exists, the present mode and this cap have to agree, and keeping
@@ -387,12 +392,12 @@ its `DDraw.dll` and `D3DImm.dll` in `Apps` beside `SimCity 4.exe` and DirectX ne
 them gone, so the two go in separate sessions. scd3d11's DLL goes into Plugins for its
 own runs only, copied from `-Scd3d11Path`. `-Variant` names runs that differ by a
 launch option, so the report keeps them apart from the plain ones. With VSync on, the
-lighter scenes sit at the monitor's refresh rate, so `-VSync:off` shows how far past it
-each renderer goes. `-GameArguments` only keeps its quotes when the script is called
+lighter scenes sit at the monitor's refresh rate, so `-VSync:off -MaxFPS:off` shows how
+far past it each renderer goes. `-GameArguments` only keeps its quotes when the script is called
 from inside PowerShell:
 
 ```
-& tools/benchmark.ps1 -City "Ostton" -Renderers DirectX, scvk, scd3d11 -Scd3d11Path <SCD3D11.dll> -GameArguments "-VSync:off"
+& tools/benchmark.ps1 -City "Ostton" -Renderers DirectX, scvk, scd3d11 -Scd3d11Path <SCD3D11.dll> -GameArguments "-VSync:off", "-MaxFPS:off"
 ```
 
 The other renderers' runs keep scvk loaded without its renderer, so all of them get
