@@ -190,7 +190,7 @@ namespace scvk
 		// Switches only SCD3D11 reads. A launcher set up for it may well carry them.
 		constexpr char const* SCD3D11_SWITCHES[] =
 		{
-			"DrawStats", "Doctor", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize",
+			"DrawStats", "Doctor", "UpdateCheck", "VertexCacheSegments", "VertexCacheSize", "Tearing",
 		};
 
 		constexpr char const* SCVK_SETTINGS[]      = { "MaxFPS", "Use32BitDepth", "LogLevel", "DoctorDialog" };

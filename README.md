@@ -172,7 +172,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
 | `-LiveShadows:on` | Turns on [live shadows](#live-shadows) |
 | `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
-| `-MaxFPS:<n>` or `-MaxFPS:off` | Sets the [speed caps](#fps-limits-built-in) |
+| `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in) |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
@@ -208,8 +208,9 @@ The speed caps go up to the display's refresh rate, so
 [sc4-disable-fps-limits](https://github.com/caspervg/sc4-disable-fps-limits) is
 not required, though it remains compatible, and caps it has already changed stay as
 it set them. `-MaxFPS:<n>` sets the caps to a number of your own, and `-MaxFPS:off`
-keeps the game's. `MaxFPS` in `scvk.ini` does the same, where 0 keeps the game's
-caps, as it did in 0.2.
+keeps the game's. `-MaxFPS:screen`, scd3d11's default, is scvk's too and follows the
+refresh rate. `MaxFPS` in `scvk.ini` does the same, where 0 keeps the game's caps, as
+it did in 0.2.
 
 A running city still gets at least 15 ms of simulation every frame, which keeps it
 near 60 frames a second whatever the cap. Raised caps take simulation time at Rhino

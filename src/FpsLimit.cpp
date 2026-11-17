@@ -80,6 +80,10 @@ namespace scvk
 		// other cap plugins write a single byte, so scvk stops there too.
 		constexpr int LARGEST_CAP = 255;
 
+		// scd3d11's default MaxFPS, which follows the display's refresh rate as scvk's own
+		// default does
+		constexpr char const* SCREEN_VALUE = "screen";
+
 		// The simulator's frame tick (0x703E70) pads every frame with simulation and idle
 		// work until the frame has lasted 1000 / rate milliseconds, at least 15 of them
 		// padding. While the city is paused, or hidden-paused while the camera moves, the
@@ -196,6 +200,13 @@ namespace scvk
 			char value[16] = {};
 			if (GetCommandLineValue("-MaxFPS:", value, sizeof(value)))
 			{
+				if (_stricmp(value, SCREEN_VALUE) == 0)
+				{
+					choice.cap    = AutomaticFrameRateCap();
+					choice.source = "the display's refresh rate, as -MaxFPS:screen asks";
+					return choice;
+				}
+
 				if (ParseFrameRateCap(value, choice.cap))
 				{
 					choice.isExplicit = true;
@@ -212,6 +223,13 @@ namespace scvk
 			{
 				char setting[16] = {};
 				ReadIniValue(settingsPath, "scvk", "MaxFPS", "", setting, sizeof(setting));
+
+				if (_stricmp(setting, SCREEN_VALUE) == 0)
+				{
+					choice.cap    = AutomaticFrameRateCap();
+					choice.source = "the display's refresh rate, as MaxFPS=screen in scvk.ini asks";
+					return choice;
+				}
 
 				if (setting[0] != '\0')
 				{
