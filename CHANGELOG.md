@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terrain shadows get softer edges further from the hill casting them
 - Under live shadows prebuilt network pieces lose their flat shadow masks, since they cast live, and `-NetworkShadowMasks:on` keeps them
 - Live shadows skip the casters a pass cannot see, and gather and upload the rest with less work
+- Live shadows have smoother edges and keep thin leaves and poles, and roofs and walls no longer shadow themselves in stripes
+- Live shadows fit their map to what the view can see, and redrawn strips no longer stand out from the rest of the view
 
 ### Removed
 

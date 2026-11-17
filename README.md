@@ -83,7 +83,8 @@ buffer too, and surfaces that sit very close together band as they do on DirectX
 
 The depth buffer has an 8-bit stencil as well, which the game never uses but
 SC4RenderServices does, from 0.8.3 on, to draw terrain decals back over shadows once
-per pixel. Not every card pairs 16-bit depth with a stencil, and on those scvk takes a
+per pixel. Live shadows mark prerendered buildings in its top bit, which
+SC4RenderServices leaves free. Not every card pairs 16-bit depth with a stencil, and on those scvk takes a
 24-bit or 32-bit one and rounds every depth to 16 bits itself.
 
 `-DepthBuffer:32` or `Use32BitDepth=true` in `scvk.ini` gives a 32-bit depth buffer,
@@ -136,8 +137,10 @@ because they cost frame rate in large cities, most of all while scrolling.
 
 `-LiveShadows:on` turns them on. Buildings, trees, props, poles and network pieces then
 shade each other, and hills shade the land behind them, with softer edges further from
-the ridge. Prebuilt network pieces lose their flat shadow masks, since they cast live
-and the two would darken the same ground twice. `-NetworkShadowMasks:on` keeps them.
+the ridge. A prerendered building already has its own shadows painted into it, so it
+never shadows itself again. Prebuilt network pieces lose their flat shadow masks, since
+they cast live and the two would darken the same ground twice. `-NetworkShadowMasks:on`
+keeps them.
 
 ### ReShade
 
