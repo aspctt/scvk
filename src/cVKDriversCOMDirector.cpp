@@ -22,6 +22,7 @@
 #include "Benchmark.h"
 #include "cVKDriver.h"
 #include "FpsLimit.h"
+#include "LiveShadowCheat.h"
 #include "LiveShadowHooks.h"
 #include "Logger.h"
 #include "PrintScreen.h"
@@ -270,6 +271,13 @@ namespace scvk
 		{
 			RunSetupChecks();
 			StartBenchmark();
+
+			// The cheat box is up by now, and only a game scvk draws has live shadows to pause
+			if (AreGameChangesApplied())
+			{
+				LiveShadowCheat::Install();
+			}
+
 			return true;
 		}
 
@@ -277,6 +285,7 @@ namespace scvk
 		{
 			StopBenchmark();
 			StopSetupChecks();
+			LiveShadowCheat::Uninstall();
 
 			TerrainShadows::Uninstall();
 			ShadowRegistry::Uninstall();

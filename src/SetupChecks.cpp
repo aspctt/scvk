@@ -29,10 +29,13 @@
 #include "SetupChecks.h"
 #include "AccountRedaction.h"
 #include "Benchmark.h"
+#include "LiveShadowHooks.h"
 #include "Logger.h"
+#include "RenderProperties.h"
 #include "RendererChoice.h"
 #include "SC4Version.h"
 #include "Settings.h"
+#include "ShadowRegistry.h"
 
 #include <GZServPtrs.h>
 #include <cIGZCmdLine.h>
@@ -97,6 +100,21 @@ namespace scvk
 			char const* const* keys;
 			size_t             keyCount;
 		};
+
+		/** The game's render properties that decide which shadows exist at all. */
+		struct ShadowSettings
+		{
+			// The Shadows graphics option, from 0 for Low to SHADOW_QUALITY_HIGH
+			int32_t quality = 5;
+
+			// Without RenderShadows the game never draws a shadow record
+			bool areShadowsRendered      = true;
+			bool areFloraShadowsRendered = true;
+
+			// Either one overrides every texture's filter
+			bool isPointSamplingForced = false;
+			bool isBilinearForced      = false;
+		};
 	}
 
 	//// Constants
@@ -117,6 +135,11 @@ namespace scvk
 		constexpr DWORD FIXED_FILE_INFORMATION_SIGNATURE = 0xfeef04bd;
 
 		constexpr uint16_t SUPPORTED_GAME_VERSION = 641;
+
+		// The Shadows graphics option is 0 for Low, 3 for Medium and 5 for High, and props
+		// only get a shadow from Medium up (CreateOccupantShadow reads it at 0x0049132C)
+		constexpr int32_t SHADOW_QUALITY_MEDIUM = 3;
+		constexpr int32_t SHADOW_QUALITY_HIGH   = 5;
 
 		constexpr uint32_t MESSAGE_POST_REGION_INIT = 0xCBB5BB45;
 		constexpr uint32_t GZIID_MESSAGE_TARGET2    = 0x452294AA;
@@ -1134,23 +1157,81 @@ namespace scvk
 			}
 		}
 
-		void ShowDialog(std::string const& text)
+		/** A bool render property's value, read once by its name. */
+		bool ReadNamedBool(cISC4RenderProperties* properties, char const* name, bool& value)
 		{
-			// Use the game's own dialog where it is known to be
-			//
-			// The address is a plain number, which has to become a pointer to be read and
-			// then a function pointer to be called.
-			uint8_t const* const dialogStart = reinterpret_cast<uint8_t const*>(GAME_DIALOG_ADDRESS_641);
-			if (GetGameVersion() == SUPPORTED_GAME_VERSION && memcmp(dialogStart, GAME_DIALOG_START, sizeof(GAME_DIALOG_START)) == 0)
-			{
-				using GameDialog = bool (__cdecl*)(cIGZString const& caption, cIGZString const& message);
-				GameDialog const showDialog = reinterpret_cast<GameDialog>(GAME_DIALOG_ADDRESS_641);
+			int32_t id = 0;
+			return RenderProperties::FindBool(properties, name, id) && RenderProperties::ReadBool(properties, id, value);
+		}
 
-				showDialog(cRZBaseString("scvk"), cRZBaseString(text.c_str()));
+		bool ReadShadowSettings(ShadowSettings& settings)
+		{
+			cISC4RenderProperties* const properties = RenderProperties::Find();
+			if (properties == nullptr)
+			{
+				return false;
+			}
+
+			int32_t qualityId = 0;
+			if (!RenderProperties::FindInt(properties, "ShadowQuality", qualityId) || !RenderProperties::ReadInt(properties, qualityId, settings.quality))
+			{
+				return false;
+			}
+
+			return ReadNamedBool(properties, "RenderShadows", settings.areShadowsRendered)
+				&& ReadNamedBool(properties, "RenderFloraShadows", settings.areFloraShadowsRendered)
+				&& ReadNamedBool(properties, "ForcePointSampling", settings.isPointSamplingForced)
+				&& ReadNamedBool(properties, "ForceBilinear", settings.isBilinearForced);
+		}
+
+		/**
+		 * Says when live shadows are on and cannot do all they should: their patches kept
+		 * out by another plugin, or the game's settings leaving casters without a shadow.
+		 */
+		void CheckLiveShadows(void)
+		{
+			// Only a game scvk draws has the patches, and another version of the game is
+			// reported by CheckGame
+			if (!GetSettings().areLiveShadowsEnabled || !AreGameChangesApplied() || GetGameVersion() != SUPPORTED_GAME_VERSION)
+			{
 				return;
 			}
 
-			MessageBoxA(nullptr, text.c_str(), "scvk", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+			if (!LiveShadowHooks::Enabled())
+			{
+				ReportSetupProblem("-LiveShadows:on is set, but another plugin has changed the game code it patches, so live shadows stay off. The \"live shadows:\" lines in scvk.log say where.");
+				return;
+			}
+
+			if (!ShadowRegistry::Enabled())
+			{
+				LogWarn("Buildings, flora and BAT props keep SC4's flat shadows, because another plugin has changed the game code scvk patches for them. The \"shadow registry:\" lines in scvk.log say where.");
+			}
+
+			ShadowSettings settings;
+			if (!ReadShadowSettings(settings))
+			{
+				LogInfo("SC4's shadow settings could not be read.");
+				return;
+			}
+
+			char const* const option = (settings.quality >= SHADOW_QUALITY_HIGH) ? "High" : (settings.quality >= SHADOW_QUALITY_MEDIUM) ? "Medium" : "Low";
+			LogInfo("SC4's Shadows option is %s (%d), flora shadows are %s.", option, settings.quality, settings.areFloraShadowsRendered ? "on" : "off");
+
+			if (!settings.areShadowsRendered)
+			{
+				LogWarn("SC4's RenderShadows property is off, so buildings, flora and props cast no shadow, live or not. An edited Graphics Rules.sgr can do this.");
+			}
+
+			if (settings.quality < SHADOW_QUALITY_MEDIUM)
+			{
+				LogWarn("SC4's Shadows option is Low, so props such as trees, light poles and fences cast no shadow, live or not. Set Shadows to Medium or High in SC4's graphics options.");
+			}
+
+			if (settings.isPointSamplingForced || settings.isBilinearForced)
+			{
+				LogInfo("SC4 forces %s filtering on every texture, so live shadows cannot tell prerendered models from True3D ones and shade them all alike.", settings.isPointSamplingForced ? "nearest" : "bilinear");
+			}
 		}
 
 		/** Shows the waiting problems once the region view is up. Static, so its count is only for show. */
@@ -1227,7 +1308,7 @@ namespace scvk
 					text += FormatMessageText("And %zu more in scvk.log.", problems.size() - shownCount);
 				}
 
-				ShowDialog(text);
+				ShowGameDialog(text);
 				return true;
 			}
 
@@ -1255,6 +1336,7 @@ namespace scvk
 		CheckCommandLine();
 		CheckSettingsFile();
 		CheckGraphicsOptions();
+		CheckLiveShadows();
 
 		// Wait for the region view, where the game can show a dialog and a player can read it
 		//
@@ -1282,6 +1364,25 @@ namespace scvk
 		}
 
 		isListening = false;
+	}
+
+	void ShowGameDialog(std::string const& text)
+	{
+		// Use the game's own dialog where it is known to be
+		//
+		// The address is a plain number, which has to become a pointer to be read and then
+		// a function pointer to be called.
+		uint8_t const* const dialogStart = reinterpret_cast<uint8_t const*>(GAME_DIALOG_ADDRESS_641);
+		if (GetGameVersion() == SUPPORTED_GAME_VERSION && memcmp(dialogStart, GAME_DIALOG_START, sizeof(GAME_DIALOG_START)) == 0)
+		{
+			using GameDialog = bool (__cdecl*)(cIGZString const& caption, cIGZString const& message);
+			GameDialog const showDialog = reinterpret_cast<GameDialog>(GAME_DIALOG_ADDRESS_641);
+
+			showDialog(cRZBaseString("scvk"), cRZBaseString(text.c_str()));
+			return;
+		}
+
+		MessageBoxA(nullptr, text.c_str(), "scvk", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
 	}
 
 	void ReportSetupProblem(char const* format, ...)

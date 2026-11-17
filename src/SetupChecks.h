@@ -23,6 +23,10 @@
 
 #pragma once
 
+//// Dependencies
+
+#include <string>
+
 namespace scvk
 {
 	//// Public API
@@ -46,4 +50,10 @@ namespace scvk
 	 * see. It may be called before RunSetupChecks. Takes printf arguments.
 	 */
 	void ReportSetupProblem(char const* format, ...);
+
+	/**
+	 * Shows text in the game's own notification dialog, which works in every window mode,
+	 * or in a Windows message box where that dialog is not where version 641 has it.
+	 */
+	void ShowGameDialog(std::string const& text);
 }

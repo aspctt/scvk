@@ -183,6 +183,13 @@ namespace scvk::LiveShadowHooks
 
 		bool isInstalled = false;
 
+		// Whether the network gate went in, which -NetworkShadowMasks:on keeps out
+		bool areNetworkMasksRemoved = false;
+
+		// Set by the LiveShadows cheat on the game's main thread and read by every draw, so
+		// the draws read it without a lock
+		std::atomic<bool> isPaused{ false };
+
 		// Where the stubs jump and call, in this process. The stubs read them as memory
 		// operands, so they stay plain variables.
 		uint8_t* prebuiltDrawRejoin      = nullptr;
@@ -762,7 +769,8 @@ namespace scvk::LiveShadowHooks
 			return false;
 		}
 
-		isInstalled = true;
+		isInstalled            = true;
+		areNetworkMasksRemoved = !shouldKeepMasks;
 		Log(LogCategory::Initialization, "live shadows installed: prebuilt network pieces and True3D props, %s", shouldKeepMasks ? "network shadow masks kept" : "network shadow masks removed");
 		return true;
 #else
@@ -787,7 +795,9 @@ namespace scvk::LiveShadowHooks
 			}
 		}
 
-		isInstalled = false;
+		isInstalled            = false;
+		areNetworkMasksRemoved = false;
+		isPaused.store(false);
 		ClearRecords();
 
 		Log(LogCategory::Initialization, "live shadows uninstalled: %u network draws, %u prop meshes, %u native prop calls suppressed", networkDraws, propMeshesRegistered, propCallsSuppressed);
@@ -799,19 +809,54 @@ namespace scvk::LiveShadowHooks
 		return isInstalled;
 	}
 
+	bool Paused(void)
+	{
+		return isInstalled && isPaused.load(std::memory_order_relaxed);
+	}
+
+	bool TogglePause(void)
+	{
+		if (!isInstalled)
+		{
+			return false;
+		}
+
+		bool const shouldPause = !isPaused.load();
+
+		// Put the network shadow masks back with the game's other shadows, since the pieces
+		// they belong to cast nothing live while paused
+		//
+		// The gate only runs on the main thread as it draws, and the cheat arrives there
+		// between frames, so the code never changes under it. Resuming leaves the gate out
+		// when another plugin changed the same bytes in the meantime.
+		if (areNetworkMasksRemoved)
+		{
+			bool const isGateChanged = shouldPause ? networkGate.Restore() : (networkGate.IsOriginal() && networkGate.Write());
+			if (!isGateChanged)
+			{
+				Log(LogCategory::Initialization, "live shadows: network shadow mask gate left as it is, site 0x%08lX was changed", networkGate.GameAddress());
+			}
+		}
+
+		isPaused.store(shouldPause);
+		Log(LogCategory::Initialization, shouldPause ? "live shadows: paused, SC4 draws its own shadows" : "live shadows: resumed");
+		return shouldPause;
+	}
+
 	bool NetworkDrawActive(void)
 	{
-		return isInstalled && networkDrawDepth != 0;
+		// A paused session captures nothing
+		return isInstalled && !isPaused.load(std::memory_order_relaxed) && networkDrawDepth != 0;
 	}
 
 	bool HasPropMeshes(void)
 	{
-		return isInstalled && isAnyPropMeshRecorded.load(std::memory_order_relaxed);
+		return isInstalled && !isPaused.load(std::memory_order_relaxed) && isAnyPropMeshRecorded.load(std::memory_order_relaxed);
 	}
 
 	bool MayMatchPropMesh(uint32_t vertexCount)
 	{
-		return isInstalled && (propVertexCounts[PropCountWord(vertexCount)].load(std::memory_order_relaxed) & PropCountBit(vertexCount)) != 0;
+		return isInstalled && !isPaused.load(std::memory_order_relaxed) && (propVertexCounts[PropCountWord(vertexCount)].load(std::memory_order_relaxed) & PropCountBit(vertexCount)) != 0;
 	}
 
 	bool MatchPropSignature(uint64_t signature)

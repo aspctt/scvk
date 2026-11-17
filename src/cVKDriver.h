@@ -50,6 +50,7 @@ namespace scvk
 		LIVE_SHADOW_REDRAW_TERRAIN_CHANGED,    // a partial pass saw a new terrain shadow map
 		LIVE_SHADOW_REDRAW_CAMERA,             // zoom, rotation, yaw or pitch changed
 		LIVE_SHADOW_REDRAW_TRANSLATED,         // a scroll, without ShadowRegistry
+		LIVE_SHADOW_REDRAW_PAUSED,             // the LiveShadows cheat paused or resumed them
 		LIVE_SHADOW_REDRAW_CAUSES,
 	};
 

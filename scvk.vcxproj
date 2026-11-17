@@ -166,6 +166,7 @@
     <ClCompile Include="src\FpsLimit.cpp" />
     <ClCompile Include="src\FrameCallback.cpp" />
     <ClCompile Include="src\GamePatch.cpp" />
+    <ClCompile Include="src\LiveShadowCheat.cpp" />
     <ClCompile Include="src\LiveShadowHooks.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\ModuleLog.cpp" />
@@ -174,6 +175,7 @@
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\SetupChecks.cpp" />
     <ClCompile Include="src\ShadowRegistry.cpp" />
+    <ClCompile Include="src\RenderProperties.cpp" />
     <ClCompile Include="src\RendererChoice.cpp" />
     <ClCompile Include="src\TerrainShadowMap.cpp" />
     <ClCompile Include="src\TerrainShadows.cpp" />
@@ -222,6 +224,7 @@
     <ClInclude Include="src\FpsLimit.h" />
     <ClInclude Include="src\FrameCallback.h" />
     <ClInclude Include="src\GamePatch.h" />
+    <ClInclude Include="src\LiveShadowCheat.h" />
     <ClInclude Include="src\LiveShadowHooks.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\ModuleLog.h" />
@@ -237,6 +240,7 @@
     <ClInclude Include="src\ThumbnailFocusGuard.h" />
     <ClInclude Include="src\version.h" />
     <ClInclude Include="src\SetupChecks.h" />
+    <ClInclude Include="src\RenderProperties.h" />
     <ClInclude Include="src\RendererChoice.h" />
     <ClInclude Include="src\VideoMode.h" />
     <ClInclude Include="src\ViewportCull.h" />

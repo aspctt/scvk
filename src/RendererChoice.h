@@ -53,4 +53,7 @@ namespace scvk
 	 * Calling it again changes nothing.
 	 */
 	void ApplyGameChanges(void);
+
+	/** Whether ApplyGameChanges has run, which means scvk is the renderer drawing. */
+	bool AreGameChangesApplied(void);
 }

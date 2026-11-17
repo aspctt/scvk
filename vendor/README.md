@@ -23,7 +23,7 @@ interface declaration.
 
 ## Provenance
 
-### gzcom-dll (57 files)
+### gzcom-dll (59 files)
 
 <https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
 (C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
@@ -50,6 +50,7 @@ interfaces.
 | `include/cISC4Simulator.h`, `include/cISC4View3DWin.h`, `include/cIGZWin.h` | Pausing the city and moving the camera |
 | `include/cIGZMessage2.h`, `include/cIGZMessageServer2.h`, `include/cIGZMessageTarget2.h`, `include/cIGZSystemService.h` | The game's messages, and a tick from its main loop |
 | `include/GZServPtrs.h`, `include/GZServDecls.h`, `include/cRZSysServPtr.h` | Typed access to the game's services |
+| `include/cIGZCheatCodeManager.h`, `include/cIGZMessage2Standard.h` | The game's cheat box, for the LiveShadows cheat |
 | `include/cISC4City.h`, `include/cISC4RenderProperties.h`, `include/cISTETerrain.h`, `include/cISTETerrainMap.h`, `include/SC4Rect.h` | The city, its terrain and its render properties, which the shadow modules carried over from SCD3D11 read |
 | `include/SC4String.h`, `src/SC4String.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
 | `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/cGZDisplayMetrics.h`, `include/cIGZCmdLine.h` | The game's saved preferences, launch options and requested video mode, for correcting the video mode |

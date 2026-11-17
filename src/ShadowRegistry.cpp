@@ -165,6 +165,10 @@ namespace scvk::ShadowRegistry
 			float       baseHeight = 0.0f;
 			bool        isSuppressedOnly = false;
 
+			// A relaxed prop, which the game would not have shadowed itself. Its record exists
+			// only for live shadows.
+			bool isRelaxedProp = false;
+
 			// The serial of the pass this caster last joined
 			uint32_t passSerial = 0;
 		};
@@ -965,6 +969,7 @@ namespace scvk::ShadowRegistry
 			entry.binding          = caster->binding;
 			entry.baseHeight       = caster->baseHeight;
 			entry.isSuppressedOnly = caster->isSuppressedOnly;
+			entry.isRelaxedProp    = call.isRelaxedProp;
 			memcpy(entry.low, caster->low, sizeof(entry.low));
 			memcpy(entry.high, caster->high, sizeof(entry.high));
 			entry.caster = std::move(caster);
@@ -1001,6 +1006,98 @@ namespace scvk::ShadowRegistry
 		}
 
 		/**
+		 * Copies the overlay ids out of the game's list for a DrawShadows call. False, with
+		 * the reason, when the list is empty or cannot be read.
+		 */
+		bool CopyPassIds(IdList const* ids, std::vector<int32_t>& out, char const*& failure)
+		{
+			out.clear();
+
+			IdList list{};
+			if (!ReadGameMemory(ids, list) || list.begin == nullptr || list.end <= list.begin)
+			{
+				failure = "empty or unreadable id list";
+				return false;
+			}
+
+			size_t const count = static_cast<size_t>(list.end - list.begin);
+			if (count > MAXIMUM_IDS_PER_PASS)
+			{
+				failure = "id list too long";
+				return false;
+			}
+
+			out.resize(count);
+			if (!CopyGameMemory(list.begin, out.data(), count * sizeof(int32_t)))
+			{
+				failure = "id list unreadable";
+				return false;
+			}
+
+			return true;
+		}
+
+		/**
+		 * Copies a pass's overlay ids into kept without the relaxed props' records, for the
+		 * game to draw its own shadows while the LiveShadows cheat pauses live ones. False
+		 * when the list has none of them, or cannot be read, and the game can draw it as it
+		 * is.
+		 */
+		bool DropRelaxedProps(void* manager, IdList const* ids, std::vector<int32_t>& kept)
+		{
+			char const* failure = nullptr;
+			if (!CopyPassIds(ids, kept, failure))
+			{
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock(casterMutex);
+			uint8_t const* records = nullptr;
+			if (manager != casterManager || casterCount == 0 || !ReadGameMemory(static_cast<uint8_t const*>(manager) + MANAGER_RECORDS, records) || records == nullptr)
+			{
+				return false;
+			}
+
+			size_t written = 0;
+			for (size_t read = 0; read < kept.size(); read++)
+			{
+				int32_t const      id    = kept[read];
+				Entry const* const entry = FindEntry(id);
+
+				// Drop the record only while it is still the prop's, not a slot the game gave
+				// to something else without RemoveOverlay. FindEntry checked the id to be
+				// positive.
+				if (entry != nullptr && entry->isRelaxedProp)
+				{
+					uint8_t header[RECORD_BINDING + sizeof(void*)] = {};
+					int32_t     inUse   = 0;
+					void const* binding = nullptr;
+
+					if (CopyGameMemory(records + static_cast<size_t>(id) * RECORD_SIZE, header, sizeof(header)))
+					{
+						memcpy(&inUse, header, sizeof(inUse));
+						memcpy(&binding, header + RECORD_BINDING, sizeof(binding));
+					}
+
+					if (inUse == RECORD_IN_USE && binding == entry->binding)
+					{
+						continue;
+					}
+				}
+
+				kept[written++] = id;
+			}
+
+			if (written == kept.size())
+			{
+				return false;
+			}
+
+			kept.resize(written);
+			return true;
+		}
+
+		/**
 		 * Takes a pass's overlay ids from a DrawShadows call. The registry's own records move
 		 * into the pass, and every other id, along with any record that no longer matches
 		 * what was registered, stays in kept for the game to draw. Records that cannot reach
@@ -1009,27 +1106,10 @@ namespace scvk::ShadowRegistry
 		 */
 		bool Gather(void* manager, float const* eyeToWorld, IdList const* ids, std::vector<int32_t>& kept)
 		{
-			kept.clear();
-
-			// Copy the ids out of the game's list
-			IdList list{};
-			if (!ReadGameMemory(ids, list) || list.begin == nullptr || list.end <= list.begin)
+			char const* failure = nullptr;
+			if (!CopyPassIds(ids, kept, failure))
 			{
-				NoteNotGathered("empty or unreadable id list", manager);
-				return false;
-			}
-
-			size_t const count = static_cast<size_t>(list.end - list.begin);
-			if (count > MAXIMUM_IDS_PER_PASS)
-			{
-				NoteNotGathered("id list too long", manager);
-				return false;
-			}
-
-			kept.resize(count);
-			if (!CopyGameMemory(list.begin, kept.data(), count * sizeof(int32_t)))
-			{
-				NoteNotGathered("id list unreadable", manager);
+				NoteNotGathered(failure, manager);
 				return false;
 			}
 
@@ -1293,6 +1373,32 @@ namespace scvk::ShadowRegistry
 		{
 			// Only the render thread draws overlays, so one list is enough
 			static std::vector<int32_t> kept;
+
+			// While the LiveShadows cheat pauses live shadows the game draws its own, but not
+			// the records it would never have made
+			//
+			// DrawShadows reads only begin and end, and returns at once when they are equal.
+			if (LiveShadowHooks::Paused())
+			{
+				bool isDropped = false;
+				try
+				{
+					isDropped = DropRelaxedProps(manager, ids, kept);
+				}
+				catch (std::bad_alloc const&)
+				{
+				}
+
+				IdList dropped{};
+				if (isDropped && !kept.empty())
+				{
+					dropped = IdList{ kept.data(), kept.data() + kept.size(), kept.data() + kept.size() };
+				}
+
+				original(manager, eyeToWorld, drawContext, isDropped ? &dropped : ids);
+				return;
+			}
+
 			drawCallCount++;
 
 			bool const    isTiming   = IsLogged(LOG_LEVEL_DEBUG);

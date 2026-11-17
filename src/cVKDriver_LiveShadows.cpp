@@ -942,6 +942,15 @@ namespace scvk
 			return;
 		}
 
+		// Paused by the LiveShadows cheat, the game draws its own shadows. What the frame
+		// that paused them captured goes, and the terrain view is found again on resuming.
+		if (LiveShadowHooks::Paused())
+		{
+			liveShadowDraws.clear();
+			isLiveShadowTerrainViewValid = false;
+			return;
+		}
+
 		// Time the pass for the summary, by kind
 		int64_t passTicks = 0;
 		{
@@ -994,6 +1003,15 @@ namespace scvk
 			std::memcpy(liveShadowColour, pass.colour, sizeof(liveShadowColour));
 			liveShadowStrength    = pass.strength;
 			isLiveShadowToneValid = true;
+
+			// The game reads these from its lighting exemplar once a city opens, so the setup
+			// checks cannot. %f takes doubles.
+			static bool hasLoggedLighting = false;
+			if (!hasLoggedLighting)
+			{
+				hasLoggedLighting = true;
+				Log(LogCategory::Initialization, "live shadows: SC4's lighting gives shadow strength %.2f and threshold %.2f (0.40 and 0.55 without a lighting mod)", static_cast<double>(pass.strength), static_cast<double>(pass.alphaScale));
+			}
 		}
 		else if (isStaticPass && LiveShadowHooks::ShadowParams(liveShadowColour, liveShadowStrength))
 		{

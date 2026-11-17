@@ -53,6 +53,7 @@
 #include "GamePatch.h"
 #include "LiveShadowHooks.h"
 #include "ModuleLog.h"
+#include "RenderProperties.h"
 #include "Settings.h"
 
 #include <GZServPtrs.h>
@@ -223,43 +224,6 @@ namespace scvk::TerrainShadows
 				return false;
 			}
 		}
-
-		/**
-		 * The id of a bool render property. The render property interface had not been
-		 * called from a DLL before, so the id is only used once its name reads back.
-		 */
-		bool FindBoolProperty(cISC4RenderProperties* properties, char const* name, int32_t& id)
-		{
-			__try
-			{
-				int32_t const found = properties->BoolPropertyIDFromName(name);
-				char const* const readBack = properties->NameFromBoolPropertyID(found);
-				if (readBack == nullptr || _stricmp(readBack, name) != 0)
-				{
-					return false;
-				}
-
-				id = found;
-				return true;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return false;
-			}
-		}
-
-		bool ReadBoolProperty(cISC4RenderProperties* properties, int32_t id, bool& value)
-		{
-			__try
-			{
-				value = properties->BoolValue(id);
-				return true;
-			}
-			__except (EXCEPTION_EXECUTE_HANDLER)
-			{
-				return false;
-			}
-		}
 #else
 		bool ReadTerrainGeometry(cISTETerrain*, uint32_t&, uint32_t&, int32_t&, float&)
 		{
@@ -272,16 +236,6 @@ namespace scvk::TerrainShadows
 		}
 
 		bool ReadVertexRecords(cISTETerrain*, size_t, float const*, uint8_t*, float*)
-		{
-			return false;
-		}
-
-		bool FindBoolProperty(cISC4RenderProperties*, char const*, int32_t&)
-		{
-			return false;
-		}
-
-		bool ReadBoolProperty(cISC4RenderProperties*, int32_t, bool&)
 		{
 			return false;
 		}
@@ -451,8 +405,7 @@ namespace scvk::TerrainShadows
 
 	bool ShadowsRendered(void)
 	{
-		cISC4AppPtr app;
-		cISC4RenderProperties* const properties = app ? app->GetRenderProperties() : nullptr;
+		cISC4RenderProperties* const properties = RenderProperties::Find();
 		if (properties == nullptr)
 		{
 			return true;
@@ -462,15 +415,15 @@ namespace scvk::TerrainShadows
 		if (renderShadowsId == PROPERTY_NOT_LOOKED_UP)
 		{
 			int32_t id = PROPERTY_UNREADABLE;
-			renderShadowsId = FindBoolProperty(properties, "RenderShadows", id) ? id : PROPERTY_UNREADABLE;
+			renderShadowsId = RenderProperties::FindBool(properties, "RenderShadows", id) ? id : PROPERTY_UNREADABLE;
 
 			bool value = true;
-			bool const isRead = renderShadowsId >= 0 && ReadBoolProperty(properties, renderShadowsId, value);
+			bool const isRead = renderShadowsId >= 0 && RenderProperties::ReadBool(properties, renderShadowsId, value);
 			Log(LogCategory::Initialization, "terrain shadows: RenderShadows render property %s%s", isRead ? "is " : "could not be read, shadows assumed on", isRead ? (value ? "on" : "off") : "");
 		}
 
 		bool value = true;
-		return renderShadowsId < 0 || !ReadBoolProperty(properties, renderShadowsId, value) || value;
+		return renderShadowsId < 0 || !RenderProperties::ReadBool(properties, renderShadowsId, value) || value;
 	}
 
 	TerrainShadowMap::Map const* Update(float const sun[3], uint64_t& generation)

@@ -37,6 +37,15 @@ namespace scvk::LiveShadowHooks
 	/** Whether the hooks are in place, which is what turns live shadows on. */
 	bool Enabled(void);
 
+	/**
+	 * Whether the LiveShadows cheat has paused live shadows. Nothing casts live while they
+	 * are, and the game draws its own shadows again, network shadow masks included.
+	 */
+	bool Paused(void);
+
+	/** Pauses live shadows, or resumes them. Returns whether they are paused now. */
+	bool TogglePause(void);
+
 	/** Whether a prebuilt network piece or its model is being drawn on this thread. */
 	bool NetworkDrawActive(void);
 

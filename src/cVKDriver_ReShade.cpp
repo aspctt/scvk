@@ -228,6 +228,14 @@ namespace scvk
 					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_CAMERA);
 				}
 
+				// Pausing or resuming them changes every shadow in view
+				static bool wasPaused = false;
+				if (LiveShadowHooks::Paused() != wasPaused)
+				{
+					wasPaused = !wasPaused;
+					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_PAUSED);
+				}
+
 				if (causes != 0)
 				{
 					// Only a store that was still valid makes this an extra redraw, since the game

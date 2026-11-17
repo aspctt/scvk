@@ -174,4 +174,9 @@ namespace scvk
 		ShadowRegistry::Install();
 		TerrainShadows::Install();
 	}
+
+	bool AreGameChangesApplied(void)
+	{
+		return isGameChanged;
+	}
 }
