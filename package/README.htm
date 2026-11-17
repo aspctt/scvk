@@ -86,8 +86,9 @@ of prebuilt network pieces, which otherwise go.</li>
 <code>Driver=</code> in <code>SC4GraphicsOptions.ini</code> would choose.</li>
 <li><code>-MaxFPS:&lt;n&gt;</code> sets the game's frame rate caps, which are 30 at
 Turtle speed, 20 at Rhino and 15 at Cheetah. scvk raises them to the display's
-refresh rate by default, and <code>-MaxFPS:off</code> keeps the game's. A paused
-city is never held at 30 whatever this says.</li>
+refresh rate by default, as <code>-MaxFPS:screen</code> does, and
+<code>-MaxFPS:off</code> keeps the game's. A paused city is never held at 30 whatever
+this says.</li>
 <li><code>-DepthBuffer:32</code> gives the depth buffer 32 bits instead of the 16 the
 DirectX renderer uses. Surfaces that sit very close together stop banding, but lights
 laid exactly on a model can leave thin lines after scrolling.
@@ -95,7 +96,8 @@ laid exactly on a model can leave thin lines after scrolling.
 and <code>-Depth16:on</code> do the same.</li>
 <li><code>-VSync:off</code>, <code>-GPU:default</code>, <code>-FlipModel:off</code>,
 <code>-ViewportCull:off</code> and <code>-ReShade:off</code> work as they do in
-scd3d11.</li>
+scd3d11. With <code>-VSync:off</code> the frame rate goes up to twice the display's
+refresh rate, and <code>-MaxFPS:off</code> lifts that too.</li>
 <li><code>-GPU:&lt;n&gt;</code> uses the nth graphics card in the list in
 <code>scvk.log</code>, counted from 1.</li>
 <li><code>-DoctorDialog:off</code> keeps setup problems in <code>scvk.log</code>
