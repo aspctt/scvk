@@ -175,6 +175,7 @@
     <ClCompile Include="src\Settings.cpp" />
     <ClCompile Include="src\SetupChecks.cpp" />
     <ClCompile Include="src\ShadowRegistry.cpp" />
+    <ClCompile Include="src\SoftwareMode.cpp" />
     <ClCompile Include="src\RenderProperties.cpp" />
     <ClCompile Include="src\RendererChoice.cpp" />
     <ClCompile Include="src\TerrainShadowMap.cpp" />
@@ -234,6 +235,7 @@
     <ClInclude Include="src\Settings.h" />
     <ClInclude Include="src\ShaderBinaries.h" />
     <ClInclude Include="src\ShadowRegistry.h" />
+    <ClInclude Include="src\SoftwareMode.h" />
     <ClInclude Include="src\TerrainShadowMap.h" />
     <ClInclude Include="src\TerrainShadows.h" />
     <ClInclude Include="src\TexturePixelConversion.h" />

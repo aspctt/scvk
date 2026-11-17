@@ -63,6 +63,13 @@ one version lower, so the game picks scvk without any settings while a renderer
 built for that slot, such as [scd3d11](https://github.com/caspervg/scd3d11), still
 takes it.
 
+When a hardware driver fails to start, SimCity 4 switches to its Software driver and
+lets its graphics rules choose again at the next start, and where they choose Software
+it stays there. scvk takes the game back to its DirectX slot once after each such
+failure, as scd3d11 does, unless `-d:` or `Driver=` in `SC4GraphicsOptions.ini` chose
+the driver. `scvk-software.txt` next to `scvk.dll` marks the try, so a start that keeps
+failing leaves the game on Software, and `-d:DirectX` tries scvk again.
+
 The interface the game expects, `cIGZGDriver`, is a fixed function API: roughly
 OpenGL 1.2 with extensions, including a matrix stack, alpha test, fog, and
 two-stage texture environment combiners. Vulkan has none of that. So scvk is

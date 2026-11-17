@@ -24,6 +24,7 @@
 #include "Logger.h"
 #include "RendererChoice.h"
 #include "Settings.h"
+#include "SoftwareMode.h"
 #include "cVKDriver.h"
 
 #include <cGZDisplayMetrics.h>
@@ -366,6 +367,9 @@ namespace scvk
 			{
 				RequestVulkanDriver(video);
 			}
+
+			// Bring the game back from a Software driver a failed start left it on
+			SoftwareMode::Leave(video);
 
 			// Leave the mode to whatever renderer is drawing instead
 			//

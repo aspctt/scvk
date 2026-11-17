@@ -36,6 +36,7 @@
 #include "SC4Version.h"
 #include "Settings.h"
 #include "ShadowRegistry.h"
+#include "SoftwareMode.h"
 
 #include <GZServPtrs.h>
 #include <cIGZCmdLine.h>
@@ -506,7 +507,21 @@ namespace scvk
 			}
 
 			uint32_t const driverClass = driver->GetGZCLSID();
-			if (driverClass == SOFTWARE_DRIVER_GZCLSID)
+			std::string failure;
+			if (driverClass == SOFTWARE_DRIVER_GZCLSID && SoftwareMode::FindEarlierFailure(failure))
+			{
+				// Only scvk notes why it failed, so a start that gave no reason was another
+				// driver's or ended before scvk could say
+				if (failure.empty())
+				{
+					ReportSetupProblem("SimCity 4 stays on its software driver, since its last start with a hardware driver failed. -d:DirectX tries scvk again.");
+				}
+				else
+				{
+					ReportSetupProblem("SimCity 4 stays on its software driver, since scvk failed at its last start: %s. -d:DirectX tries scvk again.", failure.c_str());
+				}
+			}
+			else if (driverClass == SOFTWARE_DRIVER_GZCLSID)
 			{
 				ReportSetupProblem("SimCity 4 is drawing with its own software driver, not scvk. -d:DirectX, or Driver=DirectX in SC4GraphicsOptions.ini, goes back.");
 			}

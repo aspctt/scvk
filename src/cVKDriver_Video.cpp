@@ -30,6 +30,7 @@
 #include "PrintScreen.h"
 #include "RendererChoice.h"
 #include "Settings.h"
+#include "SoftwareMode.h"
 #include "ThumbnailFocusGuard.h"
 #include "VideoMode.h"
 #include "VulkanBackend.h"
@@ -1031,6 +1032,7 @@ namespace scvk
 			if (!StartVulkan())
 			{
 				LogError("Vulkan is unavailable, so scvk is declining to act as the renderer. The game will fall back to another driver.");
+				SoftwareMode::NoteStartFailure("Vulkan did not start");
 				SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 				return false;
 			}
@@ -1046,6 +1048,7 @@ namespace scvk
 		if (modeCount == 0)
 		{
 			LogCritical("FATAL: no usable video modes were enumerated. The game will fall back to software.");
+			SoftwareMode::NoteStartFailure("it found no video modes");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return false;
 		}
@@ -1191,6 +1194,7 @@ namespace scvk
 		if (!StartVulkan())
 		{
 			LogCritical("Vulkan: unavailable, and the game has already picked this driver; nothing will be drawn.");
+			SoftwareMode::NoteStartFailure("Vulkan did not start");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return;
 		}
@@ -1201,6 +1205,7 @@ namespace scvk
 		// swapchain after that, so this is the earliest point any of it can exist.
 		if (!CreateRenderWindow(mode, windowProcedure))
 		{
+			SoftwareMode::NoteStartFailure("its window could not be made");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return;
 		}
@@ -1222,6 +1227,7 @@ namespace scvk
 		if (!vulkan->CreateSurfaceAndDevice(windowHandle, mode.width, mode.height))
 		{
 			LogCritical("Vulkan: could not attach to the window; nothing will be drawn.");
+			SoftwareMode::NoteStartFailure("Vulkan could not draw into its window");
 			SetLastError(DriverError::CREATE_CONTEXT_FAILED);
 			return;
 		}
@@ -1231,6 +1237,9 @@ namespace scvk
 		isReShadeEffectsThisFrame    = false;
 		liveShadowWorldCasters.clear();
 		isLiveShadowWorldValid = false;
+
+		// The start worked, so an earlier failed one no longer keeps the game on Software
+		SoftwareMode::NoteStarted();
 
 		StartRenderWatchdog(windowHandle);
 		SetViewport();
