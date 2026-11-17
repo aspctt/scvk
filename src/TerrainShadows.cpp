@@ -63,6 +63,7 @@
 #include <cISTETerrain.h>
 
 #include <windows.h>
+#include <algorithm>
 #include <cmath>
 #include <string.h>
 #include <utility>
@@ -118,6 +119,8 @@ namespace scvk::TerrainShadows
 
 		TerrainShadowMap::HeightField field;
 		TerrainShadowMap::HeightField scratchField;
+		float                         fieldLowest   = 0.0f;
+		float                         fieldHighest  = 0.0f;
 		TerrainShadowMap::Map         map;
 		bool                          isMapValid    = false;
 		void const*                   mapTerrain    = nullptr;
@@ -523,6 +526,13 @@ namespace scvk::TerrainShadows
 		bool const isNewCity = terrain != mapTerrain;
 
 		std::swap(field, scratchField);
+
+		// Keep the field's altitude range, which only changes with the field, for the live
+		// shadows to fit their map to what a view can see
+		auto const range = std::minmax_element(field.altitudes.begin(), field.altitudes.end());
+		fieldLowest  = (range.first != field.altitudes.end()) ? *range.first : 0.0f;
+		fieldHighest = (range.second != field.altitudes.end()) ? *range.second : 0.0f;
+
 		map        = std::move(next);
 		isMapValid = true;
 		mapTerrain = terrain;
@@ -559,6 +569,18 @@ namespace scvk::TerrainShadows
 		}
 
 		altitude = TerrainShadowMap::Altitude(field, x, z);
+		return true;
+	}
+
+	bool AltitudeRange(float& lowest, float& highest)
+	{
+		if (!isMapValid || field.altitudes.empty())
+		{
+			return false;
+		}
+
+		lowest  = fieldLowest;
+		highest = fieldHighest;
 		return true;
 	}
 }

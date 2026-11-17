@@ -23,6 +23,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <cIGZGDriver.h>
@@ -462,6 +463,7 @@ namespace scvk
 		bool     isLiveShadowWorldValid         = false;
 		uint64_t liveShadowPassSerial           = 0;
 		float    liveShadowTerrainView[16]      = {};
+		float    liveShadowTerrainProjection[16] = {};
 		float    liveShadowTerrainVertex[3]     = {};
 		bool     isLiveShadowTerrainViewValid   = false;
 		float    liveShadowSunWorld[3]          = {};
@@ -480,6 +482,16 @@ namespace scvk
 		uint64_t liveShadowTerrainGeneration    = 0;
 		uint32_t liveShadowDeviceGeneration     = 0;
 		LiveShadowStats liveShadowStats;
+
+		// The size of a shadow map texel in the last full static pass, in view units, which
+		// partial and dynamic passes keep so that what they redraw matches the rest
+		float    liveShadowFullPassTexel        = 0.0f;
+
+		// Each occupant's number in this pass, from 1, and the world box around all its
+		// registry casters: low x, y, z, 0, then high x, y, z, 0. Kept between passes so
+		// that they keep their capacity.
+		std::unordered_map<void const*, uint32_t> liveShadowOccupantNumbers;
+		std::vector<float>                        liveShadowOccupantBoxes;
 
 		// The global ambient light colour and the diffuse material alpha, plus whether
 		// the vertex colour feeds either. Together these are all the lighting SimCity 4

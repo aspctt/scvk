@@ -24,6 +24,7 @@
 //// Dependencies
 
 #include "cVKDriver.h"
+#include "LiveShadowHooks.h"
 #include "Logger.h"
 #include "ModuleLog.h"
 #include "PrintScreen.h"
@@ -1206,6 +1207,10 @@ namespace scvk
 
 		// Only now is it certain that scvk draws, so the game's code changes here
 		ApplyGameChanges();
+
+		// Live shadows read which pixels are prerendered models', which every draw marks
+		// once they are on
+		vulkan->SetPaintedMarking(LiveShadowHooks::Enabled());
 
 		// ReShade makes its effect runtime with the swapchain, so the add-on registers
 		// first; the same step hooks the 3D view's draw for the live shadows

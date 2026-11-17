@@ -25,6 +25,14 @@
  * maps the point onto the prerendered texture, the rectangle clips it, and the alpha is
  * tested against the shadow's reference. A True3D prop has real coordinates instead and
  * is tested through them.
+ *
+ * Every texel reads the texture's base level. A shadow map texel covers several texture
+ * texels, so a mip would average thin leaves and poles below the alpha cut, and the game's
+ * own DrawShadows filters without mipmaps anyway.
+ *
+ * Beside its depth, each map texel keeps the occupant number of the registry caster that
+ * drew it, from 1, or 0 for a captured caster. The composite reads it so that a prerendered
+ * model never shadows itself, since its picture already holds its own shadows.
  */
 
 #version 450
@@ -45,6 +53,8 @@ layout(set = 1, binding = 0) uniform sampler   sourceSampler;
 
 layout(location = 0) in vec2 textureCoordinate;
 layout(location = 1) in vec3 worldPosition;
+
+layout(location = 0) out uint outOccupant;
 
 bool PassesAlphaTest(float alpha)
 {
@@ -73,13 +83,17 @@ void main()
 {
 	if (IS_REGISTRY)
 	{
+		// The occupant's number for this pass, which the driver passes as a float
+		uint occupant = uint(push.material.x);
+
 		if (push.material.z != 0.0)
 		{
-			if (texture(sampler2D(sourceImage, sourceSampler), textureCoordinate).a < push.material.y)
+			if (textureLod(sampler2D(sourceImage, sourceSampler), textureCoordinate, 0.0).a < push.material.y)
 			{
 				discard;
 			}
 
+			outOccupant = occupant;
 			return;
 		}
 
@@ -87,18 +101,22 @@ void main()
 		vec2 projected = vec2(dot(push.rowS, world), dot(push.rowT, world));
 		vec2 inside = step(push.uvBounds.xy, projected) * step(projected, push.uvBounds.zw);
 
-		if (inside.x * inside.y < 0.5 || texture(sampler2D(sourceImage, sourceSampler), projected).a < push.material.y)
+		if (inside.x * inside.y < 0.5 || textureLod(sampler2D(sourceImage, sourceSampler), projected, 0.0).a < push.material.y)
 		{
 			discard;
 		}
 
+		outOccupant = occupant;
 		return;
 	}
 
-	float alpha = (push.material.w != 0.0) ? texture(sampler2D(sourceImage, sourceSampler), textureCoordinate).a : 1.0;
+	float alpha = (push.material.w != 0.0) ? textureLod(sampler2D(sourceImage, sourceSampler), textureCoordinate, 0.0).a : 1.0;
 
 	if (!PassesAlphaTest(alpha))
 	{
 		discard;
 	}
+
+	// A captured caster is no prerendered model, so it has no occupant
+	outOccupant = 0u;
 }

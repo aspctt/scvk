@@ -41,7 +41,7 @@ layout(push_constant) uniform ShadowConstants
 	vec4 rowT;
 
 	// Captured casters: alpha function, reference, alpha test enabled, textured.
-	// Registry casters: unused, alpha reference, has its own coordinates, unused.
+	// Registry casters: occupant number, alpha reference, has its own coordinates, unused.
 	vec4 material;
 
 	// Registry casters: the projected texture's rectangle, u and v minimum then maximum.

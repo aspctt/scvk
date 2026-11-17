@@ -30,6 +30,11 @@
  * from the sun is darkened less and one turned fully away not at all; terrain pixels use
  * the vertex normals SimCity 4 lights the terrain with rather than their facets'.
  *
+ * A prerendered model has its shading and its own shadows painted into its texture, and
+ * its depth is a box around the picture that ignores how the picture is turned. The driver
+ * marks its pixels in the stencil, and they take the shadow as flat ground does and never
+ * take their own model's.
+ *
  * The depth is Direct3D's, 0 to 1, and the shadow map is laid out as SCD3D11's: the
  * caster pass flips y so that both read the same.
  */
@@ -39,13 +44,13 @@
 layout(set = 0, binding = 0, std140) uniform CompositeConstants
 {
 	mat4 lightMatrix;
-	vec4 material;      // x: the depth bias in light space
+	vec4 material;      // depth bias in light space, normal offset in view units, occupant box margin, occupant boxes bound
 	vec4 projection0;   // p[0], p[5], p[10], p[12]
 	vec4 projection1;   // p[13], p[14], shadow map texel, opacity
 	vec4 viewport;      // the pass's viewport: x, y, width, height, from the top left
 	vec4 tone;          // the shadow colour
 	vec4 sun;           // the direction light travels in view space; w: 1 / N.L of flat ground
-	mat4 eyeToWorld;    // view space to world, for the terrain maps
+	mat4 eyeToWorld;    // view space to world
 	vec4 terrainAxes;   // world xz to the map's along (xy) and across (zw) axes
 	vec4 terrainGrid;   // map uv = (along * x + y, across * z + w)
 	vec4 terrainShade;  // terrain map on, bias, minimum penumbra, shadow map on
@@ -54,10 +59,27 @@ layout(set = 0, binding = 0, std140) uniform CompositeConstants
 
 layout(set = 0, binding = 1) uniform sampler2D sceneDepth;
 layout(set = 0, binding = 2) uniform sampler2D shadowMap;
-layout(set = 0, binding = 3) uniform sampler2D terrainCeiling;  // ceiling, umbra
-layout(set = 0, binding = 4) uniform sampler2D terrainVertices; // altitude, normal x, normal z, cell flipped
+layout(set = 0, binding = 3) uniform sampler2D terrainCeiling;    // ceiling, umbra
+layout(set = 0, binding = 4) uniform sampler2D terrainVertices;   // altitude, normal x, normal z, cell flipped
+layout(set = 0, binding = 5) uniform usampler2D sceneStencil;     // the depth buffer's stencil
+layout(set = 0, binding = 6) uniform usampler2D shadowOccupants;  // each map texel's caster's occupant number, 0 for none
+
+// Occupant n's world box: its low corner at 2n - 2 and its high corner at 2n - 1
+layout(set = 0, binding = 7, std430) readonly buffer OccupantBoxes
+{
+	vec4 corners[];
+} occupantBoxes;
 
 layout(location = 0) out vec4 outColour;
+
+// The stencil bit the driver sets on a prerendered model's pixels. SC4RenderServices keeps
+// its decal numbers in the seven bits below it.
+const uint PAINTED_STENCIL_BIT = 0x80u;
+
+// A pixel further than this above the drawn terrain is moved off its surface before the
+// shadow lookup. The terrain casts nothing into the map, and the registry casters' ground
+// quads lie 0.2 above it, so the terrain stays where it is.
+const float TERRAIN_RECEIVER_GAP = 0.3;
 
 float SceneDepth(ivec2 pixel)
 {
@@ -124,6 +146,23 @@ float TerrainSurface(vec2 xz, out vec3 normal)
 	return v.x;
 }
 
+// Whether the caster in a shadow map texel is the occupant a painted pixel belongs to: the
+// texel keeps its caster's occupant number, and a pixel inside that occupant's box, with a
+// margin for the depth buffer's steps, is the occupant's own. A number past the boxes
+// handed over is read as no occupant rather than past the buffer's end.
+bool IsOwnOccupant(ivec2 texel, vec3 world)
+{
+	uint occupant = texelFetch(shadowOccupants, texel, 0).r;
+	if (occupant == 0u || occupant * 2u > uint(occupantBoxes.corners.length()))
+	{
+		return false;
+	}
+
+	vec3 low  = occupantBoxes.corners[occupant * 2u - 2u].xyz - constants.material.z;
+	vec3 high = occupantBoxes.corners[occupant * 2u - 1u].xyz + constants.material.z;
+	return all(greaterThanEqual(world, low)) && all(lessThanEqual(world, high));
+}
+
 // The ceiling and the umbra filtered bilinearly and clamped to the edge, worked out here
 // because linear filtering of 32-bit float images is not something every device offers.
 vec2 TerrainCeiling(vec2 uv)
@@ -154,7 +193,7 @@ void main()
 
 	vec3 viewPosition = ViewPosition(pixel, depth);
 	bool isTerrainMapUsed = constants.terrainShade.x != 0.0;
-	vec3 world = isTerrainMapUsed ? (constants.eyeToWorld * vec4(viewPosition, 1.0)).xyz : vec3(0.0);
+	vec3 world = (constants.eyeToWorld * vec4(viewPosition, 1.0)).xyz;
 
 	// Beyond the city's edge lies the game's backdrop, below the terrain and so under its
 	// shadow ceiling. Nothing out there casts, and shading it only leaves patches where
@@ -165,6 +204,8 @@ void main()
 		discard;
 	}
 
+	bool isPainted = (texelFetch(sceneStencil, pixel, 0).r & PAINTED_STENCIL_BIT) != 0u;
+
 	// The surface's normal, rebuilt from the neighbouring depths, facing the camera
 	vec3 surfaceNormal = normalize(cross(SurfaceStep(pixel, viewPosition, ivec2(0, 1)), SurfaceStep(pixel, viewPosition, ivec2(1, 0))));
 	if (surfaceNormal.z < 0.0)
@@ -172,21 +213,29 @@ void main()
 		surfaceNormal = -surfaceNormal;
 	}
 
-	// Darken fully where N.L is that of flat ground, what SimCity 4's shadow strength is
-	// set for, less on a face turned partly away, and not at all on one turned fully away
-	float light = dot(surfaceNormal, -constants.sun.xyz);
+	// How far the pixel lies from the drawn terrain, and the game's lighting normal there
+	vec3  vertexNormal = vec3(0.0, 1.0, 0.0);
+	float terrainGap   = 1.0e9;
 
 	if (isTerrainMapUsed)
 	{
-		vec3  vertexNormal;
-		float ground      = TerrainSurface(world.xz, vertexNormal);
-		mat3  toWorld     = mat3(constants.eyeToWorld);
-		vec3  worldNormal = toWorld * surfaceNormal;
+		terrainGap = abs(world.y - TerrainSurface(world.xz, vertexNormal));
+	}
 
-		if (abs(world.y - ground) < constants.terrainCell.y && worldNormal.y > 0.3 * length(worldNormal))
-		{
-			light = dot(vertexNormal, -normalize(toWorld * constants.sun.xyz));
-		}
+	// Darken fully where N.L is that of flat ground, what SimCity 4's shadow strength is
+	// set for, less on a face turned partly away, and not at all on one turned fully away.
+	// A painted pixel's faces say nothing about its picture, so it counts as flat ground.
+	float light = isPainted ? 1.0 / constants.sun.w : dot(surfaceNormal, -constants.sun.xyz);
+
+	// The terrain is lit through vertex normals interpolated across each triangle. The
+	// facets' own normals would switch the shadow on and off along every crease, so
+	// terrain pixels, and painted ones on the terrain, use the game's.
+	mat3 toWorld     = mat3(constants.eyeToWorld);
+	vec3 worldNormal = toWorld * surfaceNormal;
+
+	if (terrainGap < constants.terrainCell.y && (isPainted || worldNormal.y > 0.3 * length(worldNormal)))
+	{
+		light = dot(vertexNormal, -normalize(toWorld * constants.sun.xyz));
 	}
 
 	float facing = clamp(light * constants.sun.w, 0.0, 1.0);
@@ -195,34 +244,56 @@ void main()
 		discard;
 	}
 
-	// The casters' shadow, filtered over the nine texels around the pixel's
+	// The casters' shadow
 	float shade = 0.0;
 
 	if (constants.terrainShade.w != 0.0)
 	{
-		// Look the shadow up from just off the surface, along its normal
+		// Look the shadow up from off the surface, along its normal
 		//
-		// A caster is also a receiver: a raised road deck or a ramp lies in the shadow
-		// map as well as on screen, and compared with its own depth, rounded to texels
-		// a few metres wide, it shadowed itself in bands on the side facing the sun.
-		// Pushing the lookup out by one and a half texels, the reach of the 3x3 filter,
-		// keeps every sample off the surface the pixel is on, while a real caster above
-		// it still covers it. One texel is 2 / size in the light's clip space, which the
-		// light matrix's first row scales from view space.
-		float texelWorld = 2.0 * constants.projection1.z / length(vec3(constants.lightMatrix[0][0], constants.lightMatrix[1][0], constants.lightMatrix[2][0]));
-		vec3  lookup     = viewPosition + surfaceNormal * (1.5 * texelWorld);
+		// A surface that casts finds its own depth in the map, one filter tap away in any
+		// direction, and shadowed itself in stripes. Moved out along its normal by as much
+		// as its slope to the light needs, it no longer does, while a real caster above it
+		// still covers it. A face turned straight at the sun does not move at all.
+		vec3 receiver = viewPosition;
 
-		vec4 light    = constants.lightMatrix * vec4(lookup, 1.0);
-		vec2 shadowUV = light.xy * vec2(0.5, -0.5) + 0.5;
-
-		if (all(greaterThanEqual(shadowUV, vec2(0.0))) && all(lessThanEqual(shadowUV, vec2(1.0))) && light.z >= 0.0 && light.z <= 1.0)
+		if (terrainGap > TERRAIN_RECEIVER_GAP)
 		{
-			for (int y = -1; y <= 1; y++)
+			float facingSun = clamp(dot(surfaceNormal, -constants.sun.xyz), 0.0, 1.0);
+			receiver += surfaceNormal * (constants.material.y * sqrt(1.0 - facingSun * facingSun));
+		}
+
+		vec4 lightPosition = constants.lightMatrix * vec4(receiver, 1.0);
+		vec2 shadowUV      = lightPosition.xy * vec2(0.5, -0.5) + 0.5;
+
+		if (all(greaterThanEqual(shadowUV, vec2(0.0))) && all(lessThanEqual(shadowUV, vec2(1.0))) && lightPosition.z >= 0.0 && lightPosition.z <= 1.0)
+		{
+			// Filter over a box three texels wide around the receiver
+			//
+			// Each texel counts by how much of it the box covers. The outer ones are only
+			// partly in, so the shadow fades smoothly across texels instead of stepping, and
+			// the weights add up to nine.
+			ivec2 size    = textureSize(shadowMap, 0);
+			vec2  centre  = shadowUV * vec2(size) - 0.5;
+			ivec2 first   = ivec2(floor(centre)) - 1;
+			vec2  part    = centre - floor(centre);
+			vec4  weightX = vec4(1.0 - part.x, 1.0, 1.0, part.x);
+			vec4  weightY = vec4(1.0 - part.y, 1.0, 1.0, part.y);
+
+			// A prerendered model never shadows itself, since its picture already does
+			bool isSelfTested = isPainted && constants.material.w != 0.0;
+
+			for (int y = 0; y < 4; y++)
 			{
-				for (int x = -1; x <= 1; x++)
+				for (int x = 0; x < 4; x++)
 				{
-					float caster = textureLod(shadowMap, shadowUV + vec2(x, y) * constants.projection1.z, 0.0).r;
-					shade += (light.z > caster + constants.material.x) ? 1.0 : 0.0;
+					ivec2 tap = clamp(first + ivec2(x, y), ivec2(0), size - 1);
+					bool  isBehind = lightPosition.z > texelFetch(shadowMap, tap, 0).r + constants.material.x;
+
+					if (isBehind && !(isSelfTested && IsOwnOccupant(tap, world)))
+					{
+						shade += weightX[x] * weightY[y];
+					}
 				}
 			}
 

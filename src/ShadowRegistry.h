@@ -69,6 +69,10 @@ namespace scvk::ShadowRegistry
 		// The occupant's placement height, where its ground quad sits
 		float baseHeight = 0.0f;
 
+		// The occupant whose shadow this is. The game makes one record for each texture tile
+		// of a model, and they all belong to it. Null when unknown.
+		void const* occupant = nullptr;
+
 		// A True3D prop the game itself would not shadow. It casts with its own coordinates,
 		// kept in the vertices, rather than through the projector, which only fits a
 		// prerendered view.

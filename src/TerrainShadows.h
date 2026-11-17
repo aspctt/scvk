@@ -64,4 +64,7 @@ namespace scvk::TerrainShadows
 
 	/** The altitude in the height field the last Update read. False outside the city or before a map exists. */
 	bool Altitude(float x, float z, float& altitude);
+
+	/** The lowest and highest altitude in that height field. False before a map exists. */
+	bool AltitudeRange(float& lowest, float& highest);
 }

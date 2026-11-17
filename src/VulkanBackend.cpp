@@ -899,9 +899,12 @@ namespace scvk
 		// Each frame in flight gets its own command pool, reset as a whole once the GPU has
 		// finished the frame, its fence, the semaphore its swapchain image arrives on, and
 		// a pool for descriptor sets it uses once
+		// The shadow composite's set is the largest: one uniform block, six images and one
+		// storage buffer
 		VkDescriptorPoolSize const transientSizes[] = {
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, TRANSIENT_SETS_PER_FRAME },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TRANSIENT_SETS_PER_FRAME * 4u },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, TRANSIENT_SETS_PER_FRAME * 6u },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, TRANSIENT_SETS_PER_FRAME },
 		};
 
 		for (FrameSlot& slot : frameSlots)
@@ -1312,6 +1315,28 @@ namespace scvk
 			return false;
 		}
 
+		// Give the stencil a view of its own for the shadow composite
+		//
+		// A view can show only one aspect of a depth and stencil image to a shader, and the
+		// composite reads both. Without it the shadows are unavailable, which no device
+		// should see: every one has a sampleable depth format with a stencil.
+		if (hasStencil && isDepthSampleable)
+		{
+			VkImageViewCreateInfo stencilInformation{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+			stencilInformation.image    = depthBuffer.image;
+			stencilInformation.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			stencilInformation.format   = depthBuffer.format;
+			stencilInformation.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+			stencilInformation.subresourceRange.levelCount = 1;
+			stencilInformation.subresourceRange.layerCount = 1;
+
+			if (vkCreateImageView(device, &stencilInformation, nullptr, &stencilView) != VK_SUCCESS)
+			{
+				stencilView = VK_NULL_HANDLE;
+				LogWarn("Vulkan: the stencil cannot be read, so the shadow passes are unavailable.");
+			}
+		}
+
 		LogInfo("Vulkan: back buffer and depth buffer ready, %ux%u, depth format %d%s%s%s.", renderWidth, renderHeight, depthBuffer.format, hasStencil ? ", stencil" : "", isDepthQuantised ? ", rounded to 16 bits" : "", isDepthSampleable ? ", sampleable" : "");
 
 		// Create the passes and their framebuffers
@@ -1356,6 +1381,12 @@ namespace scvk
 		if (colourOnlyFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, colourOnlyFramebuffer, nullptr); colourOnlyFramebuffer = VK_NULL_HANDLE; }
 		if (renderPass != VK_NULL_HANDLE)            { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
 		if (colourOnlyPass != VK_NULL_HANDLE)        { vkDestroyRenderPass(device, colourOnlyPass, nullptr); colourOnlyPass = VK_NULL_HANDLE; }
+
+		if (stencilView != VK_NULL_HANDLE)
+		{
+			vkDestroyImageView(device, stencilView, nullptr);
+			stencilView = VK_NULL_HANDLE;
+		}
 
 		DestroyRenderImage(backBuffer);
 		DestroyRenderImage(depthBuffer);

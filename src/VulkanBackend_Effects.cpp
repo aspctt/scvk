@@ -23,8 +23,9 @@
  * into the frame themselves.
  *
  * The shadow passes follow SCD3D11's live shadows: casters drawn into a 2048 square depth
- * map from the sun, then a full-screen pass that darkens what the scene depth puts in
- * their shadow or below the terrain's.
+ * map from the sun, with the occupant number of each texel's caster beside it, then a
+ * full-screen pass that darkens what the scene depth puts in their shadow or below the
+ * terrain's.
  */
 
 //// Dependencies
@@ -45,10 +46,23 @@ namespace scvk
 		// The shadow map's size, SCD3D11's.
 		constexpr uint32_t SHADOW_MAP_SIZE = 2048;
 
-		// The casters' depth bias in the shadow map: twice each face's depth slope, and
-		// a floor of a few units of the 32-bit float depth's precision.
-		constexpr float SHADOW_DEPTH_BIAS_SLOPE    = 2.0f;
-		constexpr float SHADOW_DEPTH_BIAS_CONSTANT = 4.0f;
+		// The occupant numbers run from 1 and fit 16 bits, 0 meaning none, as in SCD3D11.
+		// Every device can draw into and sample this format.
+		constexpr VkFormat SHADOW_OCCUPANT_FORMAT = VK_FORMAT_R16_UINT;
+
+		// An occupant box as the composite reads it: the low corner, then the high, each
+		// padded to four floats.
+		constexpr VkDeviceSize OCCUPANT_BOX_BYTES = sizeof(float) * 8;
+
+		// The descriptor set of the composite: its constants, six images, then the occupant
+		// boxes, in the bindings composite.frag declares.
+		constexpr uint32_t COMPOSITE_IMAGE_COUNT    = 6;
+		constexpr uint32_t COMPOSITE_BINDING_COUNT  = COMPOSITE_IMAGE_COUNT + 2;
+		constexpr uint32_t COMPOSITE_BOXES_BINDING  = COMPOSITE_IMAGE_COUNT + 1;
+
+		// The depth buffer's steps, as DepthBufferSteps gives them.
+		constexpr float SIXTEEN_BIT_DEPTH_STEPS      = 65536.0f;
+		constexpr float TWENTY_FOUR_BIT_DEPTH_STEPS  = 16777216.0f;
 
 		// The push constant block, as the shadow shaders declare it.
 		struct ShadowPushConstants
@@ -245,6 +259,7 @@ namespace scvk
 		if (sceneDepthPass != VK_NULL_HANDLE)        { vkDestroyRenderPass(device, sceneDepthPass, nullptr); sceneDepthPass = VK_NULL_HANDLE; }
 
 		DestroyRenderImage(shadowMap);
+		DestroyRenderImage(shadowOccupantMap);
 		DestroyRenderImage(terrainCeilingImage);
 		DestroyRenderImage(terrainVertexImage);
 		DestroyRenderImage(sceneDepthImage);
@@ -254,7 +269,7 @@ namespace scvk
 
 	bool VulkanBackend::CreateShadowResources(void)
 	{
-		if (!isDepthSampleable || depthBuffer.secondView == VK_NULL_HANDLE)
+		if (!isDepthSampleable || depthBuffer.secondView == VK_NULL_HANDLE || stencilView == VK_NULL_HANDLE)
 		{
 			return false;
 		}
@@ -274,41 +289,62 @@ namespace scvk
 			return false;
 		}
 
-		// The caster pass: depth alone, cleared, then left ready to sample
-		VkAttachmentDescription attachment{};
-		attachment.format         = VK_FORMAT_D32_SFLOAT;
-		attachment.samples        = VK_SAMPLE_COUNT_1_BIT;
-		attachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		attachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-		attachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		attachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-		attachment.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		// The occupant map beside it, drawn into and sampled as well
+		VkFormatProperties occupantProperties{};
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, SHADOW_OCCUPANT_FORMAT, &occupantProperties);
+
+		VkFormatFeatureFlags const occupantNeeded = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+		if ((occupantProperties.optimalTilingFeatures & occupantNeeded) != occupantNeeded)
+		{
+			return false;
+		}
+
+		if (!CreateRenderImage(SHADOW_OCCUPANT_FORMAT, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, shadowOccupantMap))
+		{
+			return false;
+		}
+
+		// The caster pass: the depth and the occupants, both cleared, then left ready to
+		// sample. The occupants clear to 0, no occupant.
+		VkAttachmentDescription attachments[2]{};
+		attachments[0].format         = VK_FORMAT_D32_SFLOAT;
+		attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+		attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+		attachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		attachments[1]                = attachments[0];
+		attachments[1].format         = SHADOW_OCCUPANT_FORMAT;
 
 		VkAttachmentReference depthReference{ 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+		VkAttachmentReference occupantReference{ 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
 
 		VkSubpassDescription subpass{};
 		subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount    = 1;
+		subpass.pColorAttachments       = &occupantReference;
 		subpass.pDepthStencilAttachment = &depthReference;
 
-		// After the last composite read the map, and before the next one reads it
+		// After the last composite read the maps, and before the next one reads them
 		VkSubpassDependency dependencies[2]{};
 		dependencies[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
 		dependencies[0].dstSubpass    = 0;
 		dependencies[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		dependencies[0].dstStageMask  = DEPTH_STAGES;
+		dependencies[0].dstStageMask  = DEPTH_STAGES | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		dependencies[0].srcAccessMask = 0;
-		dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		dependencies[1].srcSubpass    = 0;
 		dependencies[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
-		dependencies[1].srcStageMask  = DEPTH_STAGES;
+		dependencies[1].srcStageMask  = DEPTH_STAGES | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		dependencies[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
 		VkRenderPassCreateInfo passInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-		passInformation.attachmentCount = 1;
-		passInformation.pAttachments    = &attachment;
+		passInformation.attachmentCount = _countof(attachments);
+		passInformation.pAttachments    = attachments;
 		passInformation.subpassCount    = 1;
 		passInformation.pSubpasses      = &subpass;
 		passInformation.dependencyCount = _countof(dependencies);
@@ -319,10 +355,12 @@ namespace scvk
 			return false;
 		}
 
+		VkImageView const framebufferViews[] = { shadowMap.view, shadowOccupantMap.view };
+
 		VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 		framebufferInformation.renderPass      = shadowPass;
-		framebufferInformation.attachmentCount = 1;
-		framebufferInformation.pAttachments    = &shadowMap.view;
+		framebufferInformation.attachmentCount = _countof(framebufferViews);
+		framebufferInformation.pAttachments    = framebufferViews;
 		framebufferInformation.width           = SHADOW_MAP_SIZE;
 		framebufferInformation.height          = SHADOW_MAP_SIZE;
 		framebufferInformation.layers          = 1;
@@ -422,17 +460,13 @@ namespace scvk
 			rasterization.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 			rasterization.lineWidth   = 1.0f;
 
-			// Slope-scaled depth bias, as shadow maps need and SCD3D11's caster pass lacked
+			// No depth bias in the map
 			//
 			// A caster that is also lit, a road deck or a ramp at an angle to the sun, has
 			// depths that change across each texel, and compared against its own rounded
-			// depth it shadowed itself in bands. Pushing each caster back by twice its depth
-			// slope covers a texel's change and the composite's 3x3 filter. The constant
-			// part is in units of the depth format's precision, a small floor for faces
-			// turned straight at the sun.
-			rasterization.depthBiasEnable         = VK_TRUE;
-			rasterization.depthBiasConstantFactor = SHADOW_DEPTH_BIAS_CONSTANT;
-			rasterization.depthBiasSlopeFactor    = SHADOW_DEPTH_BIAS_SLOPE;
+			// depth it shadowed itself in bands. The composite moves each receiver off its
+			// surface by as much as its slope to the light needs, as SCD3D11 does, which an
+			// earlier slope-scaled bias here only doubled.
 
 			VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 			multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -442,7 +476,13 @@ namespace scvk
 			depthStencil.depthWriteEnable = VK_TRUE;
 			depthStencil.depthCompareOp   = VK_COMPARE_OP_LESS;
 
+			// The occupant number goes into the first channel as it is, never blended
+			VkPipelineColorBlendAttachmentState occupantBlend{};
+			occupantBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+
 			VkPipelineColorBlendStateCreateInfo colourBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+			colourBlend.attachmentCount = 1;
+			colourBlend.pAttachments    = &occupantBlend;
 
 			VkGraphicsPipelineCreateInfo information{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 			information.stageCount          = _countof(stages);
@@ -465,15 +505,19 @@ namespace scvk
 			}
 		}
 
-		// The composite: its constants, the scene depth, the shadow map and the terrain maps
-		VkDescriptorSetLayoutBinding bindings[5]{};
+		// The composite: its constants, the scene depth, the shadow map, the terrain maps,
+		// the stencil, the occupant map and the occupant boxes
+		VkDescriptorSetLayoutBinding bindings[COMPOSITE_BINDING_COUNT]{};
 		for (uint32_t index = 0; index < _countof(bindings); index++)
 		{
 			bindings[index].binding         = index;
-			bindings[index].descriptorType  = (index == 0) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[index].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			bindings[index].descriptorCount = 1;
 			bindings[index].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 		}
+
+		bindings[0].descriptorType                       = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		bindings[COMPOSITE_BOXES_BINDING].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 		VkDescriptorSetLayoutCreateInfo setLayoutInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
 		setLayoutInformation.bindingCount = _countof(bindings);
@@ -708,7 +752,15 @@ namespace scvk
 
 	bool VulkanBackend::CanDrawShadows(void)
 	{
-		return !isDead && !isDeviceLost && hasShadowResources && isDepthSampleable && depthBuffer.secondView != VK_NULL_HANDLE && IsReady();
+		return !isDead && !isDeviceLost && hasShadowResources && isDepthSampleable && depthBuffer.secondView != VK_NULL_HANDLE && stencilView != VK_NULL_HANDLE && IsReady();
+	}
+
+	float VulkanBackend::DepthBufferSteps(void) const
+	{
+		// Without the 32-bit choice the buffer is 16-bit, or wider with every depth rounded
+		// to 16 bits. With it, the 32-bit float's steps are never coarser than 2^-24 below 1,
+		// and a device without one falls back to 24 bits.
+		return shouldUse32BitDepth ? TWENTY_FOUR_BIT_DEPTH_STEPS : SIXTEEN_BIT_DEPTH_STEPS;
 	}
 
 	bool VulkanBackend::DrawShadowCasters(ShadowVertex const* vertices, uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, ShadowCasterDraw const* draws, uint32_t drawCount)
@@ -756,18 +808,20 @@ namespace scvk
 		memcpy(vertexAddress, vertices, static_cast<size_t>(vertexBytes));
 		memcpy(indexAddress, indices, static_cast<size_t>(indexBytes));
 
-		// Draw them into the shadow map, cleared to the far plane
+		// Draw them into the shadow map, cleared to the far plane, and the occupant map,
+		// cleared to no occupant
 		EndRenderPassIfActive();
 
-		VkClearValue clear{};
-		clear.depthStencil.depth = 1.0f;
+		VkClearValue clears[2]{};
+		clears[0].depthStencil.depth = 1.0f;
+		clears[1].color.uint32[0]    = 0;
 
 		VkRenderPassBeginInfo beginInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 		beginInformation.renderPass        = shadowPass;
 		beginInformation.framebuffer       = shadowFramebuffer;
 		beginInformation.renderArea.extent = { SHADOW_MAP_SIZE, SHADOW_MAP_SIZE };
-		beginInformation.clearValueCount   = 1;
-		beginInformation.pClearValues      = &clear;
+		beginInformation.clearValueCount   = _countof(clears);
+		beginInformation.pClearValues      = clears;
 
 		vkCmdBeginRenderPass(commandBuffer, &beginInformation, VK_SUBPASS_CONTENTS_INLINE);
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
@@ -807,7 +861,8 @@ namespace scvk
 		}
 
 		vkCmdEndRenderPass(commandBuffer);
-		shadowMap.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		shadowMap.layout         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		shadowOccupantMap.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 		InvalidateBindings();
 		return true;
@@ -828,7 +883,7 @@ namespace scvk
 		return UploadFloatTexture(terrainCeilingImage, VK_FORMAT_R32G32_SFLOAT, ceilingWidth, ceilingHeight, ceilings, ceilingBytes) && UploadFloatTexture(terrainVertexImage, VK_FORMAT_R32G32B32A32_SFLOAT, verticesX, verticesZ, vertices, vertexBytes);
 	}
 
-	void VulkanBackend::CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed)
+	void VulkanBackend::CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed, float const* occupantBoxes, uint32_t occupantCount)
 	{
 		if (!CanDrawShadows() || !EnsureFrame())
 		{
@@ -848,10 +903,36 @@ namespace scvk
 			return;
 		}
 
-		// Put the constants in the uniform arena
-		VkDeviceSize const alignment = std::max<VkDeviceSize>(physicalDeviceProperties.limits.minUniformBufferOffsetAlignment, 16);
+		// Size the occupant boxes
+		//
+		// At least one, since the binding has to name a buffer even when the composite reads
+		// none. More than half a block of the arena, which leaves the constants room beside
+		// them, are left out, and the composite then skips its self test. A pass has a few
+		// thousand occupants at most, and half a block holds sixteen thousand.
+		VkDeviceSize const alignment    = std::max<VkDeviceSize>(physicalDeviceProperties.limits.minUniformBufferOffsetAlignment, 16);
+		VkDeviceSize const boxAlignment = std::max<VkDeviceSize>(physicalDeviceProperties.limits.minStorageBufferOffsetAlignment, 16);
 
-		if (!ArenaHasRoom(uniformArena, sizeof(constants), alignment) && !SubmitFrameSoFar())
+		ShadowCompositeConstants uploaded = constants;
+		uint32_t boxCount = (occupantBoxes != nullptr) ? occupantCount : 0u;
+
+		if (VkDeviceSize{ boxCount } * OCCUPANT_BOX_BYTES > uniformArena.blockSize / 2)
+		{
+			static bool hasLoggedBoxes = false;
+			if (!hasLoggedBoxes)
+			{
+				hasLoggedBoxes = true;
+				LogInfo("Vulkan: %u shadow occupants do not fit the uniform arena; their self test is skipped.", boxCount);
+			}
+
+			boxCount = 0;
+			uploaded.material[3] = 0.0f;
+		}
+
+		VkDeviceSize const boxBytes = VkDeviceSize{ std::max(boxCount, 1u) } * OCCUPANT_BOX_BYTES;
+
+		// Put the constants and the boxes in the uniform arena, making room for both at once
+		// so that neither submits the frame under the other
+		if (!ArenaHasRoom(uniformArena, sizeof(uploaded) + boxAlignment + boxBytes, alignment) && !SubmitFrameSoFar())
 		{
 			return;
 		}
@@ -859,22 +940,42 @@ namespace scvk
 		VkBuffer     uniformBuffer  = VK_NULL_HANDLE;
 		VkDeviceSize uniformOffset  = 0;
 		uint8_t*     uniformAddress = nullptr;
+		VkBuffer     boxBuffer      = VK_NULL_HANDLE;
+		VkDeviceSize boxOffset      = 0;
+		uint8_t*     boxAddress     = nullptr;
 
-		if (!ArenaAllocate(uniformArena, sizeof(constants), alignment, uniformBuffer, uniformOffset, uniformAddress))
+		if (!ArenaAllocate(uniformArena, sizeof(uploaded), alignment, uniformBuffer, uniformOffset, uniformAddress) || !ArenaAllocate(uniformArena, boxBytes, boxAlignment, boxBuffer, boxOffset, boxAddress))
 		{
 			return;
 		}
 
-		memcpy(uniformAddress, &constants, sizeof(constants));
+		memcpy(uniformAddress, &uploaded, sizeof(uploaded));
 
-		// Give a shadow map no caster has drawn into a defined layout, though nothing reads it
+		// The box bytes fit one block of the arena, so they fit a size_t.
+		if (boxCount != 0)
+		{
+			memcpy(boxAddress, occupantBoxes, static_cast<size_t>(boxBytes));
+		}
+		else
+		{
+			memset(boxAddress, 0, static_cast<size_t>(boxBytes));
+		}
+
+		// Give maps no caster has drawn into a defined layout, though nothing reads them
 		if (shadowMap.layout == VK_IMAGE_LAYOUT_UNDEFINED)
 		{
 			EndRenderPassIfActive();
 			TransitionImage(shadowMap, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT);
 		}
 
-		// Bind the scene depth, the shadow map and the terrain maps
+		if (shadowOccupantMap.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			EndRenderPassIfActive();
+			TransitionImage(shadowOccupantMap, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+		}
+
+		// Bind the scene depth, the shadow map, the terrain maps, the stencil, the occupant
+		// map and the boxes
 		//
 		// Without the terrain maps the shadow map stands in for them: every binding has to
 		// name an image, and the shader leaves them unread.
@@ -886,15 +987,19 @@ namespace scvk
 			return;
 		}
 
-		VkDescriptorBufferInfo bufferInformation{ uniformBuffer, uniformOffset, sizeof(constants) };
+		VkDescriptorBufferInfo bufferInformation{ uniformBuffer, uniformOffset, sizeof(uploaded) };
+		VkDescriptorBufferInfo boxInformation{ boxBuffer, boxOffset, boxBytes };
 
-		VkDescriptorImageInfo images[4]{};
+		// The point sampler reads the integer images too, which take no filtering
+		VkDescriptorImageInfo images[COMPOSITE_IMAGE_COUNT]{};
 		images[0] = { pointClampSampler, depthBuffer.secondView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
 		images[1] = { pointClampSampler, shadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 		images[2] = { pointClampSampler, hasTerrain ? terrainCeilingImage.view : shadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 		images[3] = { pointClampSampler, hasTerrain ? terrainVertexImage.view : shadowMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		images[4] = { pointClampSampler, stencilView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+		images[5] = { pointClampSampler, shadowOccupantMap.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
-		VkWriteDescriptorSet writes[5]{};
+		VkWriteDescriptorSet writes[COMPOSITE_BINDING_COUNT]{};
 		for (uint32_t index = 0; index < _countof(writes); index++)
 		{
 			writes[index].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -906,6 +1011,11 @@ namespace scvk
 			{
 				writes[index].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 				writes[index].pBufferInfo    = &bufferInformation;
+			}
+			else if (index == COMPOSITE_BOXES_BINDING)
+			{
+				writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+				writes[index].pBufferInfo    = &boxInformation;
 			}
 			else
 			{

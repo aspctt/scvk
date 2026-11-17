@@ -105,9 +105,20 @@ namespace scvk
 		constexpr float    FOG_MODE_OFF       = 0.0f;
 
 		// What a pipeline key holds for the stencil while the test is off: always passing,
-		// and keep, in the game's enumerations.
+		// and keep, in the game's enumerations. A draw marking the painted bit replaces
+		// where it passes the depth test.
 		constexpr uint32_t GD_COMPARISON_ALWAYS = 7;
 		constexpr uint32_t GD_STENCIL_KEEP      = 1;
+		constexpr uint32_t GD_STENCIL_REPLACE   = 2;
+
+		// The stencil bit a prerendered model's pixels carry for the shadow composite, as
+		// SCD3D11 marks them. SC4RenderServices keeps its decal numbers in the seven bits
+		// below it.
+		constexpr uint32_t PAINTED_STENCIL_BIT = 0x80;
+
+		// The game's nearest filter. Only prerendered models' materials filter nearest
+		// without mipmaps; True3D models never do.
+		constexpr uint32_t GD_FILTER_NEAREST = 0;
 
 		// Where a stage's coordinates come from, in the draw record.
 		constexpr float STAGE_SOURCE_FIRST_SET  = 0.0f;
@@ -419,8 +430,10 @@ namespace scvk
 		stagingArena.blockSize     = STAGING_BLOCK_SIZE;
 		stagingArena.maximumBlocks = STAGING_MAXIMUM_BLOCKS;
 
+		// The shadow composite reads its occupant boxes from here too, as a storage buffer,
+		// since there can be more of them than a uniform block may hold
 		uniformArena.name          = "uniform";
-		uniformArena.usage         = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		uniformArena.usage         = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 		uniformArena.blockSize     = UNIFORM_BLOCK_SIZE;
 		uniformArena.maximumBlocks = UNIFORM_MAXIMUM_BLOCKS;
 
@@ -1085,16 +1098,29 @@ namespace scvk
 		// is no stencil, where OpenGL passes every fragment and changes nothing.
 		bool const isStencilTested = isStencilTestEnabled && hasStencil;
 
+		// Mark whether the draw's pixels belong to a prerendered model
+		//
+		// For the shadow composite, which treats them as flat ground and keeps a model's own
+		// shadow off it, since its picture is painted with its shading and shadows. Every
+		// draw that writes depth says yes or no where it passes the depth test, so the mark
+		// always belongs to the surface in front. Draws testing the stencil themselves, the
+		// terrain decals of SC4RenderServices, are left alone.
+		bool const isMarking = isPaintedMarkingEnabled && hasStencil && !isStencilTested && isDepthTestEnabled && isDepthWriteEnabled;
+		bool const hasFirstTexture = isStageEnabled[0] && currentTexture != 0 && currentTexture < textures.size() && textures[currentTexture].isLive;
+		bool const isPainted = isMarking && hasFirstTexture && stageParameters[0][0] == GD_FILTER_NEAREST && stageParameters[0][1] == GD_FILTER_NEAREST;
+
+		bool const isStencilWritten = isStencilTested || isMarking;
+
 		PipelineKey const key{
 			gdVertexFormat, topology,
 			isBlendEnabled, blendSourceFactor, blendDestinationFactor,
 			isDepthTestEnabled, isDepthWriteEnabled, depthComparison,
 			isColourWriteEnabled, isFaceCullingEnabled,
-			isStencilTested,
+			isStencilWritten,
 			isStencilTested ? stencilComparison : GD_COMPARISON_ALWAYS,
 			isStencilTested ? stencilFailOperation : GD_STENCIL_KEEP,
 			isStencilTested ? stencilDepthFailOperation : GD_STENCIL_KEEP,
-			isStencilTested ? stencilPassOperation : GD_STENCIL_KEEP,
+			isStencilTested ? stencilPassOperation : (isMarking ? GD_STENCIL_REPLACE : GD_STENCIL_KEEP),
 		};
 		VkPipeline const pipeline = GetPipeline(key);
 		if (pipeline == VK_NULL_HANDLE)
@@ -1139,9 +1165,13 @@ namespace scvk
 			}
 		}
 
-		if (key.isStencilTestEnabled)
+		if (isStencilTested)
 		{
-			ApplyStencilValues();
+			ApplyStencilValues(stencilReference, stencilCompareMask, stencilWriteMask);
+		}
+		else if (isMarking)
+		{
+			ApplyStencilValues(isPainted ? PAINTED_STENCIL_BIT : 0u, 0u, PAINTED_STENCIL_BIT);
 		}
 
 		PushDrawConstants(isTwoStage, isCombining);
@@ -1164,28 +1194,28 @@ namespace scvk
 		return true;
 	}
 
-	void VulkanBackend::ApplyStencilValues(void)
+	void VulkanBackend::ApplyStencilValues(uint32_t reference, uint32_t compareMask, uint32_t writeMask)
 	{
 		// Set each value the command buffer does not already hold
 		//
 		// A stencil-tested pipeline reads all three from the command buffer, so after a
 		// pipeline that fixed them, or in a new command buffer, all three go again.
-		if (!bound.hasStencilValues || bound.stencilReference != stencilReference)
+		if (!bound.hasStencilValues || bound.stencilReference != reference)
 		{
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
-			bound.stencilReference = stencilReference;
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
+			bound.stencilReference = reference;
 		}
 
-		if (!bound.hasStencilValues || bound.stencilCompareMask != stencilCompareMask)
+		if (!bound.hasStencilValues || bound.stencilCompareMask != compareMask)
 		{
-			vkCmdSetStencilCompareMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilCompareMask);
-			bound.stencilCompareMask = stencilCompareMask;
+			vkCmdSetStencilCompareMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, compareMask);
+			bound.stencilCompareMask = compareMask;
 		}
 
-		if (!bound.hasStencilValues || bound.stencilWriteMask != stencilWriteMask)
+		if (!bound.hasStencilValues || bound.stencilWriteMask != writeMask)
 		{
-			vkCmdSetStencilWriteMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilWriteMask);
-			bound.stencilWriteMask = stencilWriteMask;
+			vkCmdSetStencilWriteMask(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, writeMask);
+			bound.stencilWriteMask = writeMask;
 		}
 
 		bound.hasStencilValues = true;
@@ -1489,6 +1519,11 @@ namespace scvk
 		stencilFailOperation      = failOperation;
 		stencilDepthFailOperation = depthFailOperation;
 		stencilPassOperation      = passOperation;
+	}
+
+	void VulkanBackend::SetPaintedMarking(bool isEnabled)
+	{
+		isPaintedMarkingEnabled = isEnabled;
 	}
 
 	void VulkanBackend::SetStencilWriteMask(uint32_t mask)

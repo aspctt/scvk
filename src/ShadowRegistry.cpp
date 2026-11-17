@@ -237,6 +237,9 @@ namespace scvk::ShadowRegistry
 		constexpr ptrdiff_t FRAME_TRANSFORM      = 0x58;
 		constexpr ptrdiff_t FRAME_COORDINATES    = 0xA8;
 
+		// CreateOccupantShadow's argument, the occupant, in the same frame
+		constexpr ptrdiff_t FRAME_OCCUPANT       = 0xE0;
+
 		// Where a mesh's vertex buffer keeps its vertex count
 		constexpr ptrdiff_t VERTEX_BUFFER_COUNT = 6;
 
@@ -663,25 +666,30 @@ namespace scvk::ShadowRegistry
 		}
 
 		/**
-		 * Reads the mesh the stash site recorded, provided it belongs to the
-		 * CreateOccupantShadow frame this AddShadow was called from. Every value is checked
-		 * against what AddShadow itself received.
+		 * The CreateOccupantShadow frame this AddShadow was called from, or null when it came
+		 * from elsewhere. Every value is checked against what AddShadow itself received.
 		 */
-		bool RecoverIndices(AddShadowCall const& call, std::vector<uint32_t>& triangles)
+		uint8_t const* FindOccupantShadowFrame(AddShadowCall const& call)
 		{
 			uint8_t const* const frame = call.returnSlot + RETURN_SLOT_TO_FRAME;
 			if (stashedFrame == nullptr || stashedFrame + STASH_TO_FRAME != frame)
 			{
-				return false;
+				return nullptr;
 			}
 
 			void const* framePositions   = nullptr;
 			void const* frameCoordinates = nullptr;
 			if (!ReadGameMemory(frame + FRAME_POSITIONS, framePositions) || !ReadGameMemory(frame + FRAME_COORDINATES, frameCoordinates) || framePositions != call.positions || frameCoordinates != call.coordinates || frame + FRAME_TRANSFORM != call.transform)
 			{
-				return false;
+				return nullptr;
 			}
 
+			return frame;
+		}
+
+		/** Reads the mesh the stash site recorded, for a call FindOccupantShadowFrame placed. */
+		bool RecoverIndices(AddShadowCall const& call, std::vector<uint32_t>& triangles)
+		{
 			// The mesh and its vertex count, which must be the call's
 			MeshHeader mesh{};
 			uint16_t vertexCount = 0;
@@ -903,10 +911,18 @@ namespace scvk::ShadowRegistry
 				return;
 			}
 
-			bool const isIndexed = RecoverIndices(call, caster->indices);
+			uint8_t const* const frame = FindOccupantShadowFrame(call);
+			bool const isIndexed = frame != nullptr && RecoverIndices(call, caster->indices);
 			if (!isIndexed)
 			{
 				caster->indices.clear();
+			}
+
+			// The occupant every texture tile's record of this model shares, so that the
+			// composite can keep a prerendered model's own shadow off it
+			if (frame == nullptr || !ReadGameMemory(frame + FRAME_OCCUPANT, caster->occupant))
+			{
+				caster->occupant = nullptr;
 			}
 
 			if (call.isRelaxedProp)

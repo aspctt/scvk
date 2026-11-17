@@ -180,6 +180,8 @@ namespace scvk
 			// instead: SC4RenderServices gives every terrain decal a reference of its own,
 			// which as pipeline state would be a pipeline per decal. With the test off
 			// these hold their defaults, so ops changed meanwhile make no new pipelines.
+			// A draw marking the painted bit for live shadows has the test on, always
+			// passing, and replaces.
 			bool     isStencilTestEnabled;
 			uint32_t stencilComparison;
 			uint32_t stencilFailOperation;
@@ -633,6 +635,11 @@ namespace scvk
 		RenderImage   backBuffer;
 		RenderImage   depthBuffer;
 		bool          hasStencil          = false;
+
+		// The depth buffer's stencil alone, which the shadow composite reads for the marks of
+		// prerendered models. Null without a stencil or when the depth cannot be sampled.
+		VkImageView   stencilView         = VK_NULL_HANDLE;
+
 		bool          isDepthQuantised    = false;
 		bool          isDepthSampleable   = false;
 		VkRenderPass  renderPass          = VK_NULL_HANDLE;
@@ -767,6 +774,10 @@ namespace scvk
 		uint32_t stencilDepthFailOperation = 1;
 		uint32_t stencilPassOperation      = 1;
 
+		// Whether draws that write depth mark in PAINTED_STENCIL_BIT whether their pixels are
+		// a prerendered model's, for the shadow composite. Set while live shadows are on.
+		bool     isPaintedMarkingEnabled   = false;
+
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
 		// stage asked for its combiner network is kept beside it.
@@ -898,8 +909,10 @@ namespace scvk
 		VkDescriptorSet linearClampSet       = VK_NULL_HANDLE;
 		VkDescriptorSet linearWrapSet        = VK_NULL_HANDLE;
 
-		// The shadow map and what draws into it and composites it.
+		// The shadow map and what draws into it and composites it. Beside the map's depth,
+		// the occupant map keeps the occupant number of each texel's caster.
 		RenderImage           shadowMap;
+		RenderImage           shadowOccupantMap;
 		VkRenderPass          shadowPass                 = VK_NULL_HANDLE;
 		VkFramebuffer         shadowFramebuffer          = VK_NULL_HANDLE;
 		VkShaderModule        shadowVertexModule         = VK_NULL_HANDLE;
@@ -1044,7 +1057,7 @@ namespace scvk
 		void ApplyViewport(void);
 
 		/** Sets the stencil reference and masks a stencil-tested draw reads, where the command buffer's differ. */
-		void ApplyStencilValues(void);
+		void ApplyStencilValues(uint32_t reference, uint32_t compareMask, uint32_t writeMask);
 
 		/** Clears aspects of the depth buffer inside the pass, within the scissor of a sub-viewport. */
 		void ClearDepthAttachment(VkImageAspectFlags aspects, VkClearDepthStencilValue const& value);
@@ -1455,6 +1468,13 @@ namespace scvk
 		/** Which stencil bits draws may write. */
 		void SetStencilWriteMask(uint32_t mask);
 
+		/**
+		 * Whether draws that write depth without a stencil test of their own mark their
+		 * pixels in the stencil's top bit as a prerendered model's or not, for the shadow
+		 * composite. Nothing is marked without a stencil.
+		 */
+		void SetPaintedMarking(bool isEnabled);
+
 		/** Clears the depth attachment, within the scissor of a sub-viewport. */
 		void ClearDepth(float depth);
 
@@ -1606,8 +1626,15 @@ namespace scvk
 
 		// Shadows
 
-		/** Whether the shadow passes can run: the depth buffer can be sampled and their resources exist. */
+		/** Whether the shadow passes can run: the depth and stencil can be sampled and their resources exist. */
 		bool CanDrawShadows(void);
+
+		/**
+		 * How many steps the depth buffer has from 0 to 1, as the composite rebuilds positions
+		 * from it: 65536 when depths are 16-bit or rounded to 16 bits, otherwise 2^24, which a
+		 * 32-bit float buffer never exceeds below 1.
+		 */
+		float DepthBufferSteps(void) const;
 
 		/**
 		 * Draws casters into the shadow map, cleared first. The vertices and indices are
@@ -1624,9 +1651,11 @@ namespace scvk
 		/**
 		 * Darkens the back buffer where the scene depth lies in shadow, within a rectangle
 		 * of window pixels measured from the top left. Uses the shadow map drawn last and,
-		 * when asked, the terrain maps uploaded last.
+		 * when asked, the terrain maps uploaded last. The occupant boxes are eight floats
+		 * each, the low corner then the high, each padded to four, for the occupant
+		 * numbers the casters drew with; none when the constants say they are unbound.
 		 */
-		void CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed);
+		void CompositeShadows(ShadowCompositeConstants const& constants, int32_t const rectangle[4], bool isTerrainUsed, float const* occupantBoxes, uint32_t occupantCount);
 
 		// What ReShade and other plugins are handed
 

@@ -69,6 +69,25 @@ namespace scvk
 		constexpr float SHADOW_MAP_SIZE = 2048.0f;
 		constexpr float SHADOW_DEPTH_BIAS_WORLD = 0.05f;
 
+		// Plus this many of the depth buffer's steps, which a position rebuilt from it can
+		// be off by
+		constexpr float DEPTH_STEPS_OF_BIAS = 3.0f;
+
+		// A receiver moves out along its normal by up to this many map texels before the
+		// shadow test: the filter counts texel centres up to two texels away, and a little
+		// more covers the depth buffer's steps
+		constexpr float NORMAL_OFFSET_TEXELS = 2.5f;
+
+		// A painted pixel this close outside an occupant's box still counts as part of it,
+		// which covers the depth buffer's 16-bit steps
+		constexpr float OCCUPANT_BOX_MARGIN = 0.15f;
+
+		// Occupant numbers are 16-bit in the occupant map, and 0 means none
+		constexpr size_t MAXIMUM_OCCUPANTS = 0xFFFF;
+
+		// The floats of one occupant box: low x, y, z, padding, then high x, y, z, padding
+		constexpr size_t OCCUPANT_BOX_FLOATS = 8;
+
 		// The black the casters composite with until the game's own shadow parameters have
 		// been read
 		constexpr float FALLBACK_SHADOW_OPACITY = 0.38f;
@@ -208,8 +227,29 @@ namespace scvk
 			out[2] = a[0] * b[1] - a[1] * b[0];
 		}
 
-		/** An orthographic light matrix around a view-space box, looking along the sun. Returns its depth range. */
-		float BuildLightMatrix(float const minimum[3], float const maximum[3], float const shadowDirection[3], float matrix[16])
+		/** What a light matrix fits to besides the casters' box. */
+		struct LightMatrixOptions
+		{
+			// The view-space points the pass can see. The map is cut down to them when there
+			// are any, since a receiver can only be shadowed by what lies at its own place in
+			// the map.
+			float const (*receivers)[3] = nullptr;
+			unsigned    receiverCount   = 0;
+
+			// The finest a map texel may be, in view units. 0 for no limit.
+			float minimumTexel = 0.0f;
+
+			// The world origin in view space, which fixes the texel grid to the world, so that
+			// passes sharing a texel size put their texels in the same places. Null leaves the
+			// grid on the box.
+			float const* anchor = nullptr;
+		};
+
+		/**
+		 * An orthographic light matrix around a view-space box, looking along the sun. Returns
+		 * its depth range, and the size of one of its texels in view units.
+		 */
+		float BuildLightMatrix(float const minimum[3], float const maximum[3], float const shadowDirection[3], float matrix[16], float& outTexel, LightMatrixOptions const& options)
 		{
 			float forward[3] = { shadowDirection[0], shadowDirection[1], shadowDirection[2] };
 			Normalize(forward);
@@ -239,12 +279,60 @@ namespace scvk
 				}
 			}
 
+			// Cut the footprint down to what the pass can see
+			//
+			// Where the two do not overlap on an axis, the receivers' extent stands, which
+			// leaves a map with nothing in it rather than none at all.
+			if (options.receiverCount != 0)
+			{
+				float seenLow[2]  = { FLT_MAX, FLT_MAX };
+				float seenHigh[2] = { -FLT_MAX, -FLT_MAX };
+
+				for (unsigned index = 0; index < options.receiverCount; index++)
+				{
+					float const values[2] = { Dot(right, options.receivers[index]), Dot(up, options.receivers[index]) };
+
+					for (unsigned axis = 0; axis < 2; axis++)
+					{
+						seenLow[axis]  = std::min(seenLow[axis], values[axis]);
+						seenHigh[axis] = std::max(seenHigh[axis], values[axis]);
+					}
+				}
+
+				for (unsigned axis = 0; axis < 2; axis++)
+				{
+					low[axis]  = std::max(low[axis], seenLow[axis]);
+					high[axis] = std::min(high[axis], seenHigh[axis]);
+
+					if (!(low[axis] < high[axis]))
+					{
+						low[axis]  = seenLow[axis];
+						high[axis] = seenHigh[axis];
+					}
+				}
+			}
+
 			// The footprint bounds x and y; depth leaves ample room for receivers, since the
 			// scene depth decides where shadows land
 			low[0]  -= 1.0f;
 			high[0] += 1.0f;
 			low[1]  -= 1.0f;
 			high[1] += 1.0f;
+
+			// Lay the texels on a square grid, fixed to the world when there is an anchor
+			//
+			// Two texels of margin keep the footprint inside the map once its low corner moves
+			// down onto the grid. A grid that followed each pass's own box shifted by a
+			// fraction of a texel from one pass to the next, so redrawn strips stood out.
+			outTexel = std::max(std::max(high[0] - low[0], high[1] - low[1]) / (SHADOW_MAP_SIZE - 2.0f), options.minimumTexel);
+
+			for (unsigned axis = 0; axis < 2; axis++)
+			{
+				float const origin = (options.anchor != nullptr) ? Dot((axis == 0) ? right : up, options.anchor) : low[axis];
+				low[axis]  = origin + std::floor((low[axis] - origin) / outTexel) * outTexel;
+				high[axis] = low[axis] + outTexel * SHADOW_MAP_SIZE;
+			}
+
 			low[2]  -= 4096.0f;
 			high[2] += 4096.0f;
 
@@ -377,6 +465,9 @@ namespace scvk
 			float    quad[4][3]  = {};
 			bool     hasQuad     = false;
 			bool     isQuadDrawn = false;
+
+			// This pass's number for the caster's occupant, from 1. 0 when there were too many.
+			uint32_t occupant    = 0;
 		};
 	}
 
@@ -596,8 +687,11 @@ namespace scvk
 			return;
 		}
 
-		// Called with a vertex of a terrain draw, whose format leads with the position
+		// Called with a vertex of a terrain draw, whose format leads with the position. Its
+		// projection is the one the depth buffer matches, since the terrain is drawn without
+		// a depth offset.
 		std::memcpy(liveShadowTerrainView, modelViewMatrix, sizeof(liveShadowTerrainView));
+		std::memcpy(liveShadowTerrainProjection, projectionMatrix, sizeof(liveShadowTerrainProjection));
 		std::memcpy(liveShadowTerrainVertex, firstVertex, sizeof(liveShadowTerrainVertex));
 		isLiveShadowTerrainViewValid = true;
 	}
@@ -982,6 +1076,7 @@ namespace scvk
 		}
 
 		// The next pass, or the next frame after a scroll, has its own view
+		bool const isTerrainProjection = isLiveShadowTerrainViewValid;
 		isLiveShadowTerrainViewValid = false;
 
 		// Drop network pieces lying on the terrain, which only darken the road surface
@@ -1018,10 +1113,14 @@ namespace scvk
 		}
 
 		// The composite rebuilds view positions through the pass's own projection
+		//
+		// The game folds each draw's depth offset into the projection it loads, so a
+		// captured caster's can be off in depth. The terrain's, drawn without one, is the
+		// one the depth buffer matches, and the first choice.
 		float projection[16] = {};
 		bool const isProjectionCaptured = !liveShadowDraws.empty();
-		bool const hasProjection        = isProjectionCaptured || isLiveShadowSceneProjectionValid;
-		std::memcpy(projection, isProjectionCaptured ? liveShadowDraws.front().projection : liveShadowSceneProjection, sizeof(projection));
+		bool const hasProjection        = isTerrainProjection || isProjectionCaptured || isLiveShadowSceneProjectionValid;
+		std::memcpy(projection, isTerrainProjection ? liveShadowTerrainProjection : (isProjectionCaptured ? liveShadowDraws.front().projection : liveShadowSceneProjection), sizeof(projection));
 
 		// A strip at the city's edge often holds no shadow record and no terrain on the
 		// height field, so its view stays unknown. It drew no caster either, so the
@@ -1237,10 +1336,13 @@ namespace scvk
 			}
 		}
 
-		// Registry casters that can shade this pass's viewport
+		// Registry casters that can shade this pass's viewport, and their occupants
 		std::vector<RegistryDraw> registryDraws;
 		unsigned registryCulled = 0;
 		unsigned registryMissingTexture = 0;
+
+		liveShadowOccupantNumbers.clear();
+		liveShadowOccupantBoxes.clear();
 
 		if (hasView)
 		{
@@ -1355,7 +1457,43 @@ namespace scvk
 					includeBounds(points[index]);
 				}
 
-				registryDraws.push_back(draw);
+				// Number the caster's occupant and grow its box
+				//
+				// The game makes a record for each texture tile of a model, and the composite
+				// keeps all of them off the model's own pixels. A record whose occupant is
+				// unknown is an occupant of its own.
+				try
+				{
+					void const* const key = (caster.occupant != nullptr) ? caster.occupant : static_cast<void const*>(&caster);
+					auto const found = liveShadowOccupantNumbers.find(key);
+
+					if (found != liveShadowOccupantNumbers.end())
+					{
+						float* const box = liveShadowOccupantBoxes.data() + (found->second - 1) * OCCUPANT_BOX_FLOATS;
+
+						for (unsigned axis = 0; axis < 3; axis++)
+						{
+							box[axis]     = std::min(box[axis], caster.low[axis]);
+							box[4 + axis] = std::max(box[4 + axis], caster.high[axis]);
+						}
+
+						draw.occupant = found->second;
+					}
+					else if (liveShadowOccupantNumbers.size() < MAXIMUM_OCCUPANTS)
+					{
+						// Fewer than MAXIMUM_OCCUPANTS, so the number fits 32 bits.
+						draw.occupant = static_cast<uint32_t>(liveShadowOccupantNumbers.size() + 1);
+						liveShadowOccupantNumbers.emplace(key, draw.occupant);
+						liveShadowOccupantBoxes.insert(liveShadowOccupantBoxes.end(), { caster.low[0], caster.low[1], caster.low[2], 0.0f, caster.high[0], caster.high[1], caster.high[2], 0.0f });
+					}
+
+					registryDraws.push_back(draw);
+				}
+				catch (std::bad_alloc const&)
+				{
+					liveShadowDraws.clear();
+					return;
+				}
 			}
 		}
 
@@ -1377,11 +1515,63 @@ namespace scvk
 			return;
 		}
 
+		// What this pass can see: the viewport's rays, from the lowest terrain up to the
+		// highest caster. The view is orthographic, so each ray is a line along view z, and
+		// its ends lie where world y takes those heights.
+		float    receivers[8][3] = {};
+		unsigned receiverCount   = 0;
+		float    terrainLowest   = 0.0f;
+		float    terrainHighest  = 0.0f;
+
+		if (hasCasters && hasView && std::fabs(eyeToWorld[9]) > 1.0e-6f && projection[0] != 0.0f && projection[5] != 0.0f && TerrainShadows::AltitudeRange(terrainLowest, terrainHighest))
+		{
+			float top = terrainHighest;
+
+			for (unsigned mask = 0; mask < 8; mask++)
+			{
+				float const corner[3] = { (mask & 1) ? boundsHigh[0] : boundsLow[0], (mask & 2) ? boundsHigh[1] : boundsLow[1], (mask & 4) ? boundsHigh[2] : boundsLow[2] };
+				top = std::max(top, eyeToWorld[1] * corner[0] + eyeToWorld[5] * corner[1] + eyeToWorld[9] * corner[2] + eyeToWorld[13]);
+			}
+
+			for (float const ndcX : { -1.0f, 1.0f })
+			{
+				for (float const ndcY : { -1.0f, 1.0f })
+				{
+					for (float const height : { terrainLowest, top })
+					{
+						float* const point = receivers[receiverCount++];
+						point[0] = (ndcX - projection[12]) / projection[0];
+						point[1] = (ndcY - projection[13]) / projection[5];
+						point[2] = (height - eyeToWorld[1] * point[0] - eyeToWorld[5] * point[1] - eyeToWorld[13]) / eyeToWorld[9];
+					}
+				}
+			}
+		}
+
+		// Fit the light matrix
+		//
+		// A partial or dynamic pass keeps the last full pass's texels, so what it redraws
+		// matches the rest of the view instead of standing out in patches.
+		bool const isFullPass = isStaticPass && !isPartialPass;
+		float const anchor[3] = { worldToView[12], worldToView[13], worldToView[14] };
+
+		LightMatrixOptions lightOptions;
+		lightOptions.receivers     = receivers;
+		lightOptions.receiverCount = receiverCount;
+		lightOptions.minimumTexel  = isFullPass ? 0.0f : liveShadowFullPassTexel;
+		lightOptions.anchor        = hasView ? anchor : nullptr;
+
 		float lightView[16] = {};
 		float lightDepthRange = 1.0f;
+		float mapTexel = 0.0f;
 		if (hasCasters)
 		{
-			lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView);
+			lightDepthRange = BuildLightMatrix(boundsLow, boundsHigh, shadowDirection, lightView, mapTexel, lightOptions);
+
+			if (isFullPass)
+			{
+				liveShadowFullPassTexel = mapTexel;
+			}
 		}
 
 		float lightWorld[16] = {};
@@ -1475,8 +1665,10 @@ namespace scvk
 					// True3D coordinates routinely run past 0 to 1, so those textures repeat
 					std::memcpy(draw.samplerParameters, (registryDraw.caster->isWrapped || caster.hasMeshCoordinates) ? WRAP_SAMPLER : CLAMP_SAMPLER, sizeof(draw.samplerParameters));
 
+					// The occupant number goes over as a float, exact for every 16-bit number
 					std::memcpy(draw.constants, lightWorld, sizeof(lightWorld));
 					TextureRows(caster.projector, draw.constants + 16);
+					draw.constants[24] = static_cast<float>(registryDraw.occupant);
 					draw.constants[25] = caster.hasMeshCoordinates ? DEFAULT_REGISTRY_ALPHA_REFERENCE : registryAlphaReference;
 					draw.constants[26] = caster.hasMeshCoordinates ? 1.0f : 0.0f;
 					std::memcpy(draw.constants + 28, caster.uvBounds, sizeof(caster.uvBounds));
@@ -1597,15 +1789,28 @@ namespace scvk
 		}
 
 		// The composite
+		//
+		// The depth bias covers a few of the depth buffer's steps as well, which the
+		// projection's depth range sets in view units.
+		float const depthStep = (projection[10] != 0.0f) ? 2.0f / std::fabs(projection[10]) / vulkan->DepthBufferSteps() : 0.0f;
+		bool const hasOccupantBoxes = hasCasters && !liveShadowOccupantBoxes.empty();
+
 		ShadowCompositeConstants composite{};
 		std::memcpy(composite.lightMatrix, lightView, sizeof(lightView));
-		composite.material[0]     = SHADOW_DEPTH_BIAS_WORLD / lightDepthRange;
+		composite.material[0]     = (SHADOW_DEPTH_BIAS_WORLD + DEPTH_STEPS_OF_BIAS * depthStep) / lightDepthRange;
+		composite.material[1]     = NORMAL_OFFSET_TEXELS * mapTexel;
+		composite.material[2]     = OCCUPANT_BOX_MARGIN;
+		composite.material[3]     = hasOccupantBoxes ? 1.0f : 0.0f;
 		composite.terrainShade[3] = hasCasters ? 1.0f : 0.0f;
+
+		if (hasView)
+		{
+			std::memcpy(composite.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
+		}
 
 		if (isTerrainBound)
 		{
 			TerrainShadowMap::Map const& map = *terrainMap;
-			std::memcpy(composite.eyeToWorld, eyeToWorld, sizeof(eyeToWorld));
 
 			composite.terrainAxes[0] = map.along[0];
 			composite.terrainAxes[1] = map.along[1];
@@ -1679,7 +1884,9 @@ namespace scvk
 		composite.viewport[2] = static_cast<float>(std::max(rectangle[2], 1));
 		composite.viewport[3] = static_cast<float>(std::max(rectangle[3], 1));
 
-		vulkan->CompositeShadows(composite, rectangle, isTerrainBound);
+		// The box count is the occupant count, below MAXIMUM_OCCUPANTS, so it fits 32 bits.
+		uint32_t const occupantCount = hasOccupantBoxes ? static_cast<uint32_t>(liveShadowOccupantBoxes.size() / OCCUPANT_BOX_FLOATS) : 0u;
+		vulkan->CompositeShadows(composite, rectangle, isTerrainBound, hasOccupantBoxes ? liveShadowOccupantBoxes.data() : nullptr, occupantCount);
 		liveShadowStats.composites++;
 		liveShadowDraws.clear();
 	}
