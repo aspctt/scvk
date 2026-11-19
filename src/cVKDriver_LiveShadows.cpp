@@ -819,10 +819,33 @@ namespace scvk
 			}
 		};
 
+		// Two captures are the same caster when their shape matches and their world boxes
+		// agree closely
+		auto const isSameCaster = [](LiveShadowDraw const& first, LiveShadowDraw const& second)
+		{
+			if (first.shape != second.shape)
+			{
+				return false;
+			}
+
+			for (unsigned axis = 0; axis < 3; axis++)
+			{
+				if (std::fabs(first.worldLow[axis] - second.worldLow[axis]) > SAME_CASTER_TOLERANCE || std::fabs(first.worldHigh[axis] - second.worldHigh[axis]) > SAME_CASTER_TOLERANCE)
+				{
+					return false;
+				}
+			}
+
+			return true;
+		};
+
 		for (LiveShadowDraw& draw : liveShadowDraws)
 		{
 			placeInWorld(draw);
 		}
+
+		float worldToClip[16] = {};
+		Multiply(projection, worldToView, worldToClip);
 
 		if (!isPartialPass)
 		{
@@ -831,8 +854,54 @@ namespace scvk
 				placeShadow(draw);
 			}
 
+			// Keep the casters this pass left out because they lie off screen, while their
+			// shadows still reach into it
+			//
+			// The game only draws what is on screen, and at the closest zoom a bridge deck
+			// sits off the top of the screen, above the shadow it throws onto the water.
+			// Replacing the set with this pass's casters alone cut that shadow into the pieces
+			// of whichever segments still reached the screen. A kept caster the view contains
+			// but this pass did not draw is gone, as in a partial pass, and one whose shadow
+			// misses the view is let go, which keeps the set to the view's surroundings.
+			// Nothing is kept across cities, since another city's casters would cast where
+			// nothing stands.
+			void const* const city = TerrainShadows::CityTerrain();
+
+			if (isLiveShadowWorldValid && city != nullptr && city == liveShadowWorldCity)
+			{
+				size_t const drawnCount = liveShadowDraws.size();
+
+				for (LiveShadowDraw& cached : liveShadowWorldCasters)
+				{
+					if (BoxInViewport(cached.worldLow, cached.worldHigh, worldToClip) != ViewportOverlap::Outside)
+					{
+						continue;
+					}
+
+					// The sun turns with the view, so the shadow is placed again
+					placeShadow(cached);
+					if (BoxInViewport(cached.shadowLow, cached.shadowHigh, worldToClip) == ViewportOverlap::Outside)
+					{
+						continue;
+					}
+
+					// The game also draws a little past the screen's edge, so this pass may hold
+					// the caster already
+					auto const drawnEnd = liveShadowDraws.begin() + static_cast<ptrdiff_t>(drawnCount);
+					auto const isDrawn  = [&](LiveShadowDraw const& draw) { return isSameCaster(draw, cached); };
+					if (std::any_of(liveShadowDraws.begin(), drawnEnd, isDrawn))
+					{
+						continue;
+					}
+
+					cached.seenPass = serial;
+					liveShadowDraws.push_back(std::move(cached));
+				}
+			}
+
 			liveShadowWorldCasters = std::move(liveShadowDraws);
 			liveShadowDraws.clear();
+			liveShadowWorldCity    = city;
 			isLiveShadowWorldValid = true;
 			return true;
 		}
@@ -841,9 +910,6 @@ namespace scvk
 		{
 			return false;
 		}
-
-		float worldToClip[16] = {};
-		Multiply(projection, worldToView, worldToClip);
 
 		std::vector<std::array<float, 4>> redisplay;
 		auto const queueRedisplay = [&](LiveShadowDraw const& draw)
@@ -855,23 +921,7 @@ namespace scvk
 
 		for (LiveShadowDraw& draw : liveShadowDraws)
 		{
-			auto const isSame = [&](LiveShadowDraw const& cached)
-			{
-				if (cached.shape != draw.shape)
-				{
-					return false;
-				}
-
-				for (unsigned axis = 0; axis < 3; axis++)
-				{
-					if (std::fabs(cached.worldLow[axis] - draw.worldLow[axis]) > SAME_CASTER_TOLERANCE || std::fabs(cached.worldHigh[axis] - draw.worldHigh[axis]) > SAME_CASTER_TOLERANCE)
-					{
-						return false;
-					}
-				}
-
-				return true;
-			};
+			auto const isSame = [&](LiveShadowDraw const& cached) { return isSameCaster(cached, draw); };
 
 			auto const cachedEnd = liveShadowWorldCasters.begin() + static_cast<ptrdiff_t>(known);
 			auto const match     = std::find_if(liveShadowWorldCasters.begin(), cachedEnd, isSame);

@@ -462,6 +462,7 @@ namespace scvk
 		std::vector<LiveShadowDraw> liveShadowDraws;
 		std::vector<LiveShadowDraw> liveShadowWorldCasters;
 		bool     isLiveShadowWorldValid         = false;
+		void const* liveShadowWorldCity         = nullptr;  // the city terrain the kept casters belong to
 		uint64_t liveShadowPassSerial           = 0;
 		float    liveShadowTerrainView[16]      = {};
 		float    liveShadowTerrainProjection[16] = {};

@@ -67,4 +67,7 @@ namespace scvk::TerrainShadows
 
 	/** The lowest and highest altitude in that height field. False before a map exists. */
 	bool AltitudeRange(float& lowest, float& highest);
+
+	/** The open city's terrain, which tells one city from the next. Null without a city. */
+	void const* CityTerrain(void);
 }

@@ -536,4 +536,9 @@ namespace scvk::TerrainShadows
 		highest = fieldHighest;
 		return true;
 	}
+
+	void const* CityTerrain(void)
+	{
+		return FindCityTerrain();
+	}
 }
