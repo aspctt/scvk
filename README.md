@@ -156,6 +156,14 @@ game's own, network shadow masks included, so the two can be compared. Typed aga
 resumes them. With live shadows on, `scvk.log` also notes the game's shadow settings and
 warns when one leaves buildings or props without a shadow.
 
+### Water reflections
+
+`-Reflections:on` lets the water reflect what stands above it: bridges, piers, buildings
+on the shore and boats. scvk works them out from the picture on screen, so only what is
+in view can be reflected. The underside of a bridge, which the camera never sees, shows
+in shade, and small still ripples break the reflections up the way real water does. They
+are off by default while they are new.
+
 ### ReShade
 
 Installed for Vulkan, ReShade draws its effects over the whole frame, interface
@@ -181,6 +189,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
 | `-LiveShadows:on` | Turns on [live shadows](#live-shadows) |
 | `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
+| `-Reflections:on` | Turns on [water reflections](#water-reflections) |
 | `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in), and `off` also lifts the limit `-VSync:off` keeps |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |

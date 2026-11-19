@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen
+
 ### Changed
 
 - Live shadows stay at night, at half their daytime strength, instead of fading out as in scd3d11
