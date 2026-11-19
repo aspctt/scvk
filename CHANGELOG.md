@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-19
+
 ### Changed
 
 - Live shadows stay at night, at half their daytime strength, instead of fading out as in scd3d11
@@ -213,7 +215,8 @@ Most of this release is UlisseWolf's port of scd3d11's features.
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.7.0...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.7.1...HEAD
+[0.7.1]: https://github.com/aspctt/scvk/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/aspctt/scvk/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/aspctt/scvk/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/aspctt/scvk/compare/0.4.0...0.5.0
