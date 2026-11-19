@@ -92,6 +92,12 @@ namespace scvk
 		// been read
 		constexpr float FALLBACK_SHADOW_OPACITY = 0.38f;
 
+		// The share of their daytime strength live shadows keep at night. SC4 never fades its
+		// own shadows, since its strength is read once from the lighting exemplar. SCD3D11
+		// fades live shadows out completely by night, which left every night overcast, while
+		// a fainter shadow reads as moonlight.
+		constexpr float NIGHT_SHADOW_SHARE = 0.5f;
+
 		// Used when the game reports no alpha test scale, and for True3D props cast
 		// through their own coordinates.
 		constexpr float DEFAULT_REGISTRY_ALPHA_REFERENCE = 0.5f;
@@ -1861,11 +1867,12 @@ namespace scvk
 		composite.projection1[2] = 1.0f / SHADOW_MAP_SIZE;
 
 		// The game's shadow colour and strength, faded with the lighting manager's own day
-		// and night weight
+		// and night weight down to the night's share rather than to nothing
 		float daylight = 1.0f;
 		LiveShadowHooks::ShadowDaylight(daylight);
 
-		composite.projection1[3] = (isLiveShadowToneValid ? liveShadowStrength : FALLBACK_SHADOW_OPACITY) * daylight;
+		float const timeOfDayShare = NIGHT_SHADOW_SHARE + (1.0f - NIGHT_SHADOW_SHARE) * daylight;
+		composite.projection1[3]   = (isLiveShadowToneValid ? liveShadowStrength : FALLBACK_SHADOW_OPACITY) * timeOfDayShare;
 		if (isLiveShadowToneValid)
 		{
 			std::memcpy(composite.tone, liveShadowColour, sizeof(liveShadowColour));
