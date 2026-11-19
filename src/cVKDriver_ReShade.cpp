@@ -535,6 +535,7 @@ namespace scvk
 	void cVKDriver::RenderSceneEffects(void)
 	{
 		RenderLivePropShadows(false);
+		RenderWaterReflections();
 
 		if (effectRuntime == nullptr || !vulkan->IsReady() || vulkan->IsDeviceLost())
 		{

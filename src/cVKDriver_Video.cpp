@@ -1267,6 +1267,9 @@ namespace scvk
 		// once they are on
 		vulkan->SetPaintedMarking(LiveShadowHooks::Enabled());
 
+		// The water reflections, which find the water by its level
+		StartWaterReflections();
+
 		// ReShade makes its effect runtime with the swapchain, so the add-on registers
 		// first; the same step hooks the 3D view's draw for the live shadows
 		InstallReShadeAddon();

@@ -70,6 +70,7 @@ STAGES = [
     ("fullscreen.vert",  "FULLSCREEN_VERTEX_SPIRV",               []),
     ("composite.frag",   "COMPOSITE_FRAGMENT_SPIRV",              []),
     ("scene_depth.frag", "SCENE_DEPTH_FRAGMENT_SPIRV",            []),
+    ("reflection.frag",  "REFLECTION_FRAGMENT_SPIRV",             []),
 ]
 
 

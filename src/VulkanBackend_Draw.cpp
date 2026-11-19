@@ -116,6 +116,13 @@ namespace scvk
 		// below it.
 		constexpr uint32_t PAINTED_STENCIL_BIT = 0x80;
 
+		// The state the game draws its water surface with, in its own enumerations: blended
+		// by the source alpha, and tested less where nearly everything else tests less or
+		// equal
+		constexpr uint32_t GD_BLEND_SOURCE_ALPHA           = 4;
+		constexpr uint32_t GD_BLEND_ONE_MINUS_SOURCE_ALPHA = 5;
+		constexpr uint32_t GD_COMPARISON_LESS              = 1;
+
 		// The game's nearest filter. Only prerendered models' materials filter nearest
 		// without mipmaps; True3D models never do.
 		constexpr uint32_t GD_FILTER_NEAREST = 0;
@@ -1524,6 +1531,14 @@ namespace scvk
 	void VulkanBackend::SetPaintedMarking(bool isEnabled)
 	{
 		isPaintedMarkingEnabled = isEnabled;
+	}
+
+	bool VulkanBackend::IsWaterDraw(uint32_t gdVertexFormat) const
+	{
+		return gdVertexFormat == kGDVertexFormat_V3F_C4UB_2T2F
+			&& isBlendEnabled && blendSourceFactor == GD_BLEND_SOURCE_ALPHA && blendDestinationFactor == GD_BLEND_ONE_MINUS_SOURCE_ALPHA
+			&& isDepthTestEnabled && isDepthWriteEnabled && depthComparison == GD_COMPARISON_LESS
+			&& isStageEnabled[0] && !isStageEnabled[1];
 	}
 
 	void VulkanBackend::SetStencilWriteMask(uint32_t mask)

@@ -83,6 +83,10 @@ namespace scvk
 		// prebuilt network pieces, which those pieces otherwise replace by casting live: the
 		// two would darken the same ground twice.
 		bool shouldKeepNetworkShadowMasks = false;
+
+		// -Reflections:on. Off by default while they are new. On, the water reflects what
+		// stands above it on screen. See cVKDriver_Reflections.cpp.
+		bool areWaterReflectionsEnabled = false;
 	};
 
 	//// Public API

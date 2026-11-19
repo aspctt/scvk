@@ -530,6 +530,19 @@ namespace scvk
 		// Set by the scvk-force-fog marker file, to draw the fog the game never asks for.
 		bool shouldForceFog = false;
 
+		// The water reflections: whether they are on, whether the scvk-debug-reflections
+		// marker file asks for the water mask instead, and the view the water was last
+		// drawn with, as NoteWaterDraw keeps it.
+		bool  areWaterReflectionsOn      = false;
+		bool  shouldShowWaterMask        = false;
+		bool  isWaterReflectionViewValid = false;
+		float waterReflectionOrigin[4]   = {};  // the top left corner's view position at depth 0; the water's height
+		float waterReflectionScale[3]    = {};  // view units per pixel right, per pixel down, per unit of depth
+		float waterReflectionUp[3]       = {};  // the world's up in view space
+		float waterReflectionAxisX[3]    = {};  // the world's x axis in view space
+		float waterReflectionAxisZ[3]    = {};  // the world's z axis in view space
+		float waterReflectionOffset[3]   = {};  // the view position of the world's origin
+
 		// Configurations already reported once, and the last multitextured one, so an
 		// unchanged one costs a compare rather than a search.
 		uint64_t notedKeys[192]      = {};
@@ -735,6 +748,17 @@ namespace scvk
 		/** Remembers the terrain's modelview, which stands in for the view in a city without shadow records. */
 		void NoteLiveShadowTerrainView(uint8_t const* firstVertex);
 
+		// Water reflections, in cVKDriver_Reflections.cpp
+
+		/** Turns the reflections on as the settings ask, once the device draws. */
+		void StartWaterReflections(void);
+
+		/** Remembers the view the water was drawn with and its level in it, from the draw's first vertex. */
+		void NoteWaterDraw(uint8_t const* firstVertex);
+
+		/** Lays the reflections over the water of the finished 3D view. */
+		void RenderWaterReflections(void);
+
 		/** Keeps a static pass's casters in world space and works out what a partial pass changed. */
 		bool TrackLiveShadowWorldCasters(float const* eyeToWorld, float const* worldToView, float const* projection, float const sun[3], bool isSunKnown, bool isPartialPass);
 
@@ -869,7 +893,7 @@ namespace scvk
 	public:
 		//// Public API
 
-		/** Called once the 3D view has drawn, before the interface: the shadows, then ReShade's effects. */
+		/** Called once the 3D view has drawn, before the interface: the shadows, the water reflections, then ReShade's effects. */
 		void RenderSceneEffects(void);
 
 		/** Draws the live shadows of the pass just drawn, a static pass of the city view or the view as a whole. */

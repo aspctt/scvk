@@ -168,6 +168,8 @@ namespace scvk
 			ReadFlagSetting("LiveShadows", settings.areLiveShadowsEnabled);
 			ReadFlagSetting("NetworkShadowMasks", settings.shouldKeepNetworkShadowMasks);
 
+			ReadFlagSetting("Reflections", settings.areWaterReflectionsEnabled);
+
 			ReadFlagSetting("FlipModel", settings.isFlipModelPreferred);
 
 			return settings;

@@ -78,6 +78,12 @@ namespace scvk
 		static_assert(sizeof(ShadowPushConstants) <= 128, "Vulkan only promises 128 bytes of push constants");
 		static_assert(sizeof(ShadowCompositeConstants) == 288, "the composite's uniform block, laid out as std140 lays it out");
 
+		// The descriptor set of the water reflections: their constants, then the scene depth
+		// and the copy of the frame, in the bindings reflection.frag declares.
+		constexpr uint32_t REFLECTION_BINDING_COUNT = 3;
+
+		static_assert(sizeof(WaterReflectionConstants) == 112, "the reflections' uniform block, laid out as std140 lays it out");
+
 	}
 
 	//// Private Functions
@@ -99,38 +105,9 @@ namespace scvk
 
 			return module;
 		}
-
-		/**
-		 * The blend state of one colour attachment: written over what is there, or for the
-		 * shadow composite, multiplied into it with the destination alpha left alone, as
-		 * SCD3D11's composite blends.
-		 *
-		 * A shadow takes the direct light away and keeps the ground's own colour, tinted by
-		 * the game's shadow colour. Blending towards that colour instead, as the composite
-		 * once did, washed large terrain shadows out in blue.
-		 */
-		VkPipelineColorBlendAttachmentState MakeBlend(bool isShadowBlend)
-		{
-			VkPipelineColorBlendAttachmentState attachment{};
-			attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-
-			if (!isShadowBlend)
-			{
-				return attachment;
-			}
-
-			attachment.blendEnable         = VK_TRUE;
-			attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-			attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
-			attachment.colorBlendOp        = VK_BLEND_OP_ADD;
-			attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-			attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-			attachment.alphaBlendOp        = VK_BLEND_OP_ADD;
-			return attachment;
-		}
 	}
 
-	VkPipeline VulkanBackend::CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isShadowBlend)
+	VkPipeline VulkanBackend::CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, EffectBlend blend)
 	{
 		VkPipelineShaderStageCreateInfo stages[2]{};
 		stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -165,7 +142,28 @@ namespace scvk
 		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
 		depthStencil.depthCompareOp = VK_COMPARE_OP_ALWAYS;
 
-		VkPipelineColorBlendAttachmentState const blendAttachment = MakeBlend(isShadowBlend);
+		// Blend as the pass asks, always leaving the destination alpha alone when blending
+		//
+		// The shadow composite multiplies, as SCD3D11's composite blends: a shadow takes the
+		// direct light away and keeps the ground's own colour, tinted by the game's shadow
+		// colour. Blending towards that colour instead, as the composite once did, washed
+		// large terrain shadows out in blue. The water reflections are laid over the water
+		// by their alpha.
+		VkPipelineColorBlendAttachmentState blendAttachment{};
+		blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+		if (blend != EffectBlend::Replace)
+		{
+			bool const isMultiply = blend == EffectBlend::Multiply;
+
+			blendAttachment.blendEnable         = VK_TRUE;
+			blendAttachment.srcColorBlendFactor = isMultiply ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_SRC_ALPHA;
+			blendAttachment.dstColorBlendFactor = isMultiply ? VK_BLEND_FACTOR_SRC_COLOR : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+			blendAttachment.colorBlendOp        = VK_BLEND_OP_ADD;
+			blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+			blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+			blendAttachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+		}
 
 		VkPipelineColorBlendStateCreateInfo colourBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 		colourBlend.attachmentCount = 1;
@@ -218,6 +216,11 @@ namespace scvk
 			LogInfo("Vulkan: the scene depth for ReShade is unavailable on this device.");
 		}
 
+		if (!CreateReflectionResources())
+		{
+			LogInfo("Vulkan: the water reflections are unavailable on this device.");
+		}
+
 		return true;
 	}
 
@@ -229,25 +232,25 @@ namespace scvk
 		}
 
 		// The shadows
-		VkPipeline* const shadowPipelines[] = { &shadowCasterPipeline, &shadowRegistryPipeline, &shadowLinePipeline, &shadowPointPipeline, &compositePipeline, &sceneDepthPipeline };
+		VkPipeline* const shadowPipelines[] = { &shadowCasterPipeline, &shadowRegistryPipeline, &shadowLinePipeline, &shadowPointPipeline, &compositePipeline, &sceneDepthPipeline, &reflectionPipeline };
 		for (VkPipeline* pipeline : shadowPipelines)
 		{
 			if (*pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, *pipeline, nullptr); *pipeline = VK_NULL_HANDLE; }
 		}
 
-		VkPipelineLayout* const layouts[] = { &shadowPipelineLayout, &compositePipelineLayout, &sceneDepthPipelineLayout };
+		VkPipelineLayout* const layouts[] = { &shadowPipelineLayout, &compositePipelineLayout, &sceneDepthPipelineLayout, &reflectionPipelineLayout };
 		for (VkPipelineLayout* layout : layouts)
 		{
 			if (*layout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, *layout, nullptr); *layout = VK_NULL_HANDLE; }
 		}
 
-		VkDescriptorSetLayout* const setLayouts[] = { &compositeSetLayout, &sceneDepthSetLayout };
+		VkDescriptorSetLayout* const setLayouts[] = { &compositeSetLayout, &sceneDepthSetLayout, &reflectionSetLayout };
 		for (VkDescriptorSetLayout* layout : setLayouts)
 		{
 			if (*layout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, *layout, nullptr); *layout = VK_NULL_HANDLE; }
 		}
 
-		VkShaderModule* const modules[] = { &shadowVertexModule, &shadowFragmentModule, &fullscreenVertexModule, &compositeFragmentModule, &sceneDepthFragmentModule };
+		VkShaderModule* const modules[] = { &shadowVertexModule, &shadowFragmentModule, &fullscreenVertexModule, &compositeFragmentModule, &sceneDepthFragmentModule, &reflectionFragmentModule };
 		for (VkShaderModule* module : modules)
 		{
 			if (*module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, *module, nullptr); *module = VK_NULL_HANDLE; }
@@ -263,6 +266,7 @@ namespace scvk
 		DestroyRenderImage(terrainCeilingImage);
 		DestroyRenderImage(terrainVertexImage);
 		DestroyRenderImage(sceneDepthImage);
+		DestroyRenderImage(reflectionSourceImage);
 
 		hasShadowResources = false;
 	}
@@ -537,7 +541,7 @@ namespace scvk
 			return false;
 		}
 
-		compositePipeline = CreateFullscreenPipeline(fullscreenVertexModule, compositeFragmentModule, compositePipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true);
+		compositePipeline = CreateFullscreenPipeline(fullscreenVertexModule, compositeFragmentModule, compositePipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, EffectBlend::Multiply);
 		if (compositePipeline == VK_NULL_HANDLE)
 		{
 			return false;
@@ -661,8 +665,66 @@ namespace scvk
 			return false;
 		}
 
-		sceneDepthPipeline = CreateFullscreenPipeline(fullscreenVertexModule, sceneDepthFragmentModule, sceneDepthPipelineLayout, sceneDepthPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false);
+		sceneDepthPipeline = CreateFullscreenPipeline(fullscreenVertexModule, sceneDepthFragmentModule, sceneDepthPipelineLayout, sceneDepthPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, EffectBlend::Replace);
 		return sceneDepthPipeline != VK_NULL_HANDLE;
+	}
+
+	bool VulkanBackend::CreateReflectionResources(void)
+	{
+		// The march reads the depth
+		if (!isDepthSampleable || depthBuffer.secondView == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		if (fullscreenVertexModule == VK_NULL_HANDLE)
+		{
+			fullscreenVertexModule = MakeModule(device, FULLSCREEN_VERTEX_SPIRV, sizeof(FULLSCREEN_VERTEX_SPIRV));
+		}
+
+		reflectionFragmentModule = MakeModule(device, REFLECTION_FRAGMENT_SPIRV, sizeof(REFLECTION_FRAGMENT_SPIRV));
+		if (fullscreenVertexModule == VK_NULL_HANDLE || reflectionFragmentModule == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		// A copy of the back buffer for the pass to read, since it draws into the back
+		// buffer itself
+		if (!CreateRenderImage(backBuffer.format, renderWidth, renderHeight, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, reflectionSourceImage))
+		{
+			return false;
+		}
+
+		// Its constants, the scene depth and the copy
+		VkDescriptorSetLayoutBinding bindings[REFLECTION_BINDING_COUNT]{};
+		for (uint32_t index = 0; index < _countof(bindings); index++)
+		{
+			bindings[index].binding         = index;
+			bindings[index].descriptorType  = (index == 0) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			bindings[index].descriptorCount = 1;
+			bindings[index].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+		}
+
+		VkDescriptorSetLayoutCreateInfo setLayoutInformation{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+		setLayoutInformation.bindingCount = _countof(bindings);
+		setLayoutInformation.pBindings    = bindings;
+
+		if (vkCreateDescriptorSetLayout(device, &setLayoutInformation, nullptr, &reflectionSetLayout) != VK_SUCCESS)
+		{
+			return false;
+		}
+
+		VkPipelineLayoutCreateInfo layoutInformation{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+		layoutInformation.setLayoutCount = 1;
+		layoutInformation.pSetLayouts    = &reflectionSetLayout;
+
+		if (vkCreatePipelineLayout(device, &layoutInformation, nullptr, &reflectionPipelineLayout) != VK_SUCCESS)
+		{
+			return false;
+		}
+
+		reflectionPipeline = CreateFullscreenPipeline(fullscreenVertexModule, reflectionFragmentModule, reflectionPipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, EffectBlend::Over);
+		return reflectionPipeline != VK_NULL_HANDLE;
 	}
 
 	bool VulkanBackend::AllocateFrameStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress)
@@ -1098,6 +1160,107 @@ namespace scvk
 		sceneDepthImage.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		InvalidateBindings();
 		return sceneDepthImage.view;
+	}
+
+	bool VulkanBackend::CanDrawReflections(void)
+	{
+		return !isDead && !isDeviceLost && reflectionPipeline != VK_NULL_HANDLE && isDepthSampleable && depthBuffer.secondView != VK_NULL_HANDLE && IsReady();
+	}
+
+	void VulkanBackend::DrawWaterReflections(WaterReflectionConstants const& constants)
+	{
+		if (!CanDrawReflections() || !EnsureFrame())
+		{
+			return;
+		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
+		// Put the constants in the uniform arena
+		VkDeviceSize const alignment = std::max<VkDeviceSize>(physicalDeviceProperties.limits.minUniformBufferOffsetAlignment, 16);
+
+		if (!ArenaHasRoom(uniformArena, sizeof(constants), alignment) && !SubmitFrameSoFar())
+		{
+			return;
+		}
+
+		VkBuffer     uniformBuffer  = VK_NULL_HANDLE;
+		VkDeviceSize uniformOffset  = 0;
+		uint8_t*     uniformAddress = nullptr;
+
+		if (!ArenaAllocate(uniformArena, sizeof(constants), alignment, uniformBuffer, uniformOffset, uniformAddress))
+		{
+			return;
+		}
+
+		memcpy(uniformAddress, &constants, sizeof(constants));
+
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		if (!AllocateTransientSet(reflectionSetLayout, set))
+		{
+			return;
+		}
+
+		// Copy the frame as it stands, which the reflections read while drawing over it
+		//
+		// A copy is not a render pass operation. Every pixel of the copy is written again,
+		// so whatever the last frame left in it goes.
+		EndRenderPassIfActive();
+		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		TransitionImage(reflectionSourceImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+
+		VkImageCopy copy{};
+		copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.extent         = { renderWidth, renderHeight, 1 };
+
+		vkCmdCopyImage(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reflectionSourceImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		TransitionImage(reflectionSourceImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+
+		// Bind the constants, the scene depth and the copy, which is filtered since a
+		// reflection lands between pixels
+		VkDescriptorBufferInfo bufferInformation{ uniformBuffer, uniformOffset, sizeof(constants) };
+
+		VkDescriptorImageInfo images[REFLECTION_BINDING_COUNT - 1]{};
+		images[0] = { pointClampSampler, depthBuffer.secondView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+		images[1] = { linearClampSampler, reflectionSourceImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+		VkWriteDescriptorSet writes[REFLECTION_BINDING_COUNT]{};
+		for (uint32_t index = 0; index < _countof(writes); index++)
+		{
+			writes[index].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[index].dstSet          = set;
+			writes[index].dstBinding      = index;
+			writes[index].descriptorCount = 1;
+			writes[index].descriptorType  = (index == 0) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+			if (index == 0)
+			{
+				writes[index].pBufferInfo = &bufferInformation;
+			}
+			else
+			{
+				writes[index].pImageInfo = &images[index - 1];
+			}
+		}
+
+		vkUpdateDescriptorSets(device, _countof(writes), writes, 0, nullptr);
+
+		// Read the depth while drawing over the colour, across the whole back buffer
+		TransitionDepth(VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		BeginColourOnlyPass();
+
+		// Viewports are in floats, which hold any window size exactly
+		VkViewport const viewport{ 0.0f, 0.0f, static_cast<float>(renderWidth), static_cast<float>(renderHeight), 0.0f, 1.0f };
+		VkRect2D const   scissor{ { 0, 0 }, { renderWidth, renderHeight } };
+
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, reflectionPipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, reflectionPipelineLayout, 0, 1, &set, 0, nullptr);
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+		InvalidateBindings();
 	}
 
 	bool VulkanBackend::SubmitForExternalWork(void)

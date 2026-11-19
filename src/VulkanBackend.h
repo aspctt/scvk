@@ -112,6 +112,18 @@ namespace scvk
 		float terrainCell[4];
 	};
 
+	/** What the water reflections read, laid out as reflection.frag declares its uniform block. */
+	struct WaterReflectionConstants
+	{
+		float origin[4];       // the view position of the back buffer's top left corner at depth 0; the water's height along up
+		float scale[4];        // view units per pixel right, per pixel down, per unit of depth; strength
+		float up[4];           // the world's up in view space, facing the camera; the longest march, as a share of the height
+		float options[4];      // 1 to show the water mask instead; the least thickness a surface has; how far off the water's height a pixel still counts as water; the shade of an underside
+		float axisX[4];        // the world's x axis in view space
+		float axisZ[4];        // the world's z axis in view space; how far the waves tilt the normal
+		float translation[4];  // the view position of the world's origin
+	};
+
 	/**
 	 * The Vulkan device, swapchain and fixed function emulation behind the driver.
 	 *
@@ -780,6 +792,7 @@ namespace scvk
 		// a prerendered model's, for the shadow composite. Set while live shadows are on.
 		bool     isPaintedMarkingEnabled   = false;
 
+
 		// The texture environment and lighting the fragment and vertex stages read. The
 		// mode holds only the three the single stage path knows, so whether the first
 		// stage asked for its combiner network is kept beside it.
@@ -942,6 +955,13 @@ namespace scvk
 		VkDescriptorSetLayout sceneDepthSetLayout        = VK_NULL_HANDLE;
 		VkPipelineLayout      sceneDepthPipelineLayout   = VK_NULL_HANDLE;
 		VkPipeline            sceneDepthPipeline         = VK_NULL_HANDLE;
+
+		// The water reflections: a copy of the frame for them to read, and their pass.
+		RenderImage           reflectionSourceImage;
+		VkShaderModule        reflectionFragmentModule   = VK_NULL_HANDLE;
+		VkDescriptorSetLayout reflectionSetLayout        = VK_NULL_HANDLE;
+		VkPipelineLayout      reflectionPipelineLayout   = VK_NULL_HANDLE;
+		VkPipeline            reflectionPipeline         = VK_NULL_HANDLE;
 
 		//// Private Functions
 
@@ -1281,9 +1301,21 @@ namespace scvk
 		void DestroyEffectResources(void);
 		bool CreateShadowResources(void);
 		bool CreateSceneDepthResources(void);
+		bool CreateReflectionResources(void);
+
+		/**
+		 * How a full-screen pass meets the back buffer: written over it, multiplied into it
+		 * as the shadow composite darkens, or laid over it by its alpha.
+		 */
+		enum class EffectBlend
+		{
+			Replace,
+			Multiply,
+			Over,
+		};
 
 		/** A simple pipeline with no vertex input, for the full-screen passes. */
-		VkPipeline CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, bool isShadowBlend);
+		VkPipeline CreateFullscreenPipeline(VkShaderModule vertexShader, VkShaderModule fragmentShader, VkPipelineLayout layout, VkRenderPass pass, VkPrimitiveTopology topology, EffectBlend blend);
 
 		/**
 		 * Staging for this frame: from the staging arena, submitting the frame so far when
@@ -1476,6 +1508,14 @@ namespace scvk
 		 * composite. Nothing is marked without a stencil.
 		 */
 		void SetPaintedMarking(bool isEnabled);
+
+		/**
+		 * Whether a draw in this vertex format, with the state as it stands, is the game's
+		 * water surface: blended by its alpha, tested less rather than less or equal while
+		 * writing depth, with one texture stage, over terrain-shaped vertices. No other draw
+		 * of SimCity 4's was seen with that state.
+		 */
+		bool IsWaterDraw(uint32_t gdVertexFormat) const;
 
 		/** Clears the depth attachment, within the scissor of a sub-viewport. */
 		void ClearDepth(float depth);
@@ -1670,6 +1710,18 @@ namespace scvk
 		 * Returns the image's view, or null when it could not.
 		 */
 		VkImageView PrepareSceneDepth(float farPlane);
+
+		// Water reflections
+
+		/** Whether the water reflections can run: the depth can be sampled and their resources exist. */
+		bool CanDrawReflections(void);
+
+		/**
+		 * Lays reflections over the water pixels of the whole back buffer, those whose depth
+		 * puts them on the water's level, marching through the scene depth and reading a copy
+		 * of the frame as it stands.
+		 */
+		void DrawWaterReflections(WaterReflectionConstants const& constants);
 
 		/**
 		 * Submits what the frame has recorded so far without waiting, leaving the back

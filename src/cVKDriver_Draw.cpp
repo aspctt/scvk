@@ -223,6 +223,12 @@ namespace scvk
 			NoteLiveShadowTerrainView(vertices);
 		}
 
+		// Remember the water's view, which the reflections march through
+		if (areWaterReflectionsOn && vulkan->IsWaterDraw(vertexFormat))
+		{
+			NoteWaterDraw(vertices);
+		}
+
 		// Draw it
 		PushChangedTransforms();
 		vulkan->DrawVertices(gdPrimitiveType, vertexFormat, vertexPointer, firstVertex, vertexCount);
@@ -306,6 +312,15 @@ namespace scvk
 		{
 			uint32_t const firstIndex = isIndex32Bit ? static_cast<uint32_t const*>(indices)[0] : static_cast<uint16_t const*>(indices)[0];
 			NoteLiveShadowTerrainView(static_cast<uint8_t const*>(vertexPointer) + size_t{ firstIndex } * vertexStride);
+		}
+
+		// Remember the water's view, which the reflections march through
+		//
+		// The pointer holds indices of the width read above.
+		if (areWaterReflectionsOn && vulkan->IsWaterDraw(vertexFormat))
+		{
+			uint32_t const firstIndex = isIndex32Bit ? static_cast<uint32_t const*>(indices)[0] : static_cast<uint16_t const*>(indices)[0];
+			NoteWaterDraw(static_cast<uint8_t const*>(vertexPointer) + size_t{ firstIndex } * vertexStride);
 		}
 
 		// Draw it
