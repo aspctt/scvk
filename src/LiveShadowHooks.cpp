@@ -57,6 +57,16 @@
  * hit, so an instance that was freed and whose address was reused cannot pose as a
  * caster: a live occupant holds a reference to its own instance, so a matching slot means
  * the entry is still real.
+ *
+ * Casters off screen. The static view gathers its occupants from a screen-space quad grid,
+ * within the rectangle GetVisibleContainerRect gives, so a raised piece just above the top
+ * edge is never drawn while its shadow falls into view:
+ *
+ *   H 0x007C1FD0   6 bytes  cSC43DRender::GetVisibleContainerRect, which widens the
+ *                           static view's rectangle past the view's top and left edges
+ *
+ * Optional: where its bytes were changed, the live shadows install without it. Both
+ * DrawStaticView and the parallel gather of SC4CPUOptions call it.
  */
 
 //// Dependencies
@@ -152,6 +162,27 @@ namespace scvk::LiveShadowHooks
 		constexpr uintptr_t SHADOW_STRENGTH_ADDRESS = 0x00B0DC78;
 		constexpr uintptr_t SHADOW_COLOUR_ADDRESS   = 0x00B4E34C;
 
+		// Site H: cSC43DRender::GetVisibleContainerRect, which DrawStaticView (0x007C7370) and
+		// DrawDynamicView (0x007C7830) ask for the rectangle they gather occupants within. Its
+		// x and y run along the screen in world units, through the camera's own rotation
+		// (0x007F8390), with y growing down the screen. Mode 0 or 1 asks for the static view's
+		// rectangle, mode 2 for the dynamic view's, which is always the whole view.
+		constexpr uintptr_t VISIBLE_RECT_ADDRESS        = 0x007C1FD0;
+		constexpr uintptr_t VISIBLE_RECT_REJOIN_ADDRESS = 0x007C1FD6;
+		constexpr int32_t   VISIBLE_RECT_WHOLE_VIEW     = 2;
+
+		// How far past the view's top and left edges the static view gathers occupants, in
+		// world units. The game draws only what reaches the screen, so a raised piece above
+		// the top edge, a bridge deck at the closest zoom, threw its shadow into the view
+		// while casting nothing. The sun is locked to the view and shadows fall down and to
+		// the right, so the casters that go missing lie above and to the left. A deck 60
+		// metres up, at the game's pitch, casts about this far.
+		constexpr float CASTER_MARGIN_UP   = 96.0f;
+		constexpr float CASTER_MARGIN_LEFT = 64.0f;
+
+		// A rectangle's edge this close to the view's counts as the view's edge
+		constexpr float VIEW_EDGE_TOLERANCE = 1.0f;
+
 		// The fewest and most vertices a prop mesh can have. Anything outside is not a mesh.
 		constexpr uint32_t MINIMUM_PROP_VERTICES = 3;
 		constexpr uint32_t MAXIMUM_PROP_VERTICES = 0x100000;
@@ -180,6 +211,7 @@ namespace scvk::LiveShadowHooks
 		GamePatch modelInstanceDraw;
 		GamePatch propGroundModel;
 		GamePatch addShadowCall;
+		GamePatch visibleRect;
 
 		bool isInstalled = false;
 
@@ -198,6 +230,7 @@ namespace scvk::LiveShadowHooks
 		uint8_t* renderPropertiesPointer = nullptr;
 		uint8_t* propGroundModelRejoin   = nullptr;
 		uint8_t* addShadowRejoin         = nullptr;
+		uint8_t* visibleRectRejoin       = nullptr;
 		uint8_t* getBoolProperty         = nullptr;
 
 		// The game's lighting
@@ -680,6 +713,60 @@ namespace scvk::LiveShadowHooks
 				jmp  dword ptr [addShadowRejoin]
 			}
 		}
+
+		/** Site H's trampoline: the two instructions the patch replaced, then the rest of the function. */
+		__declspec(naked) void __fastcall VisibleRectOriginal(void*, void*, float*, int32_t)
+		{
+			__asm
+			{
+				mov  eax, dword ptr [esp + 8]
+				test eax, eax
+				jmp  dword ptr [visibleRectRejoin]
+			}
+		}
+
+		/**
+		 * Stands in for GetVisibleContainerRect, widening the static view's rectangle past
+		 * the view's top and left edges so the casters there are drawn, clipped off screen,
+		 * and captured.
+		 */
+		void __fastcall VisibleRectHook(void* self, void* edx, float* rect, int32_t mode)
+		{
+			VisibleRectOriginal(self, edx, rect, mode);
+
+			bool const isStaticView = mode != VISIBLE_RECT_WHOLE_VIEW;
+			if (!isStaticView || rect == nullptr || isPaused.load(std::memory_order_relaxed))
+			{
+				return;
+			}
+
+			// Widen only the edges that are the view's own
+			//
+			// A partial pass's rectangle inside the view has its casters on screen, which the
+			// live shadows keep in world space already. The whole view's rectangle is cached
+			// by the game until the view changes, so asking for it costs nothing.
+			float view[4] = {};
+			VisibleRectOriginal(self, edx, view, VISIBLE_RECT_WHOLE_VIEW);
+
+			// Say once what the two rectangles were, which shows which way their y runs. %f
+			// takes doubles.
+			static bool hasLoggedRectangles = false;
+			if (!hasLoggedRectangles)
+			{
+				hasLoggedRectangles = true;
+				Log(LogCategory::Initialization, "live shadows: static view gathers %.0f,%.0f to %.0f,%.0f within the view's %.0f,%.0f to %.0f,%.0f", static_cast<double>(rect[0]), static_cast<double>(rect[1]), static_cast<double>(rect[2]), static_cast<double>(rect[3]), static_cast<double>(view[0]), static_cast<double>(view[1]), static_cast<double>(view[2]), static_cast<double>(view[3]));
+			}
+
+			if (rect[1] <= view[1] + VIEW_EDGE_TOLERANCE)
+			{
+				rect[1] = std::max(rect[1] - CASTER_MARGIN_UP, 0.0f);
+			}
+
+			if (rect[0] <= view[0] + VIEW_EDGE_TOLERANCE)
+			{
+				rect[0] = std::max(rect[0] - CASTER_MARGIN_LEFT, 0.0f);
+			}
+		}
 #endif
 	}
 
@@ -772,6 +859,21 @@ namespace scvk::LiveShadowHooks
 		isInstalled            = true;
 		areNetworkMasksRemoved = !shouldKeepMasks;
 		Log(LogCategory::Initialization, "live shadows installed: prebuilt network pieces and True3D props, %s", shouldKeepMasks ? "network shadow masks kept" : "network shadow masks removed");
+
+		// Gather the casters just above and left of the view, which the live shadows work
+		// without where something else changed the function first
+		visibleRectRejoin = ResolveGameAddress(VISIBLE_RECT_REJOIN_ADDRESS);
+		visibleRect       = GamePatch::Jump(VISIBLE_RECT_ADDRESS, { 0x8B, 0x44, 0x24, 0x08, 0x85, 0xC0 }, &VisibleRectHook);
+
+		if (visibleRect.IsOriginal() && visibleRect.Write())
+		{
+			Log(LogCategory::Initialization, "live shadows: the static view gathers casters up to %.0f above and %.0f left of the view", static_cast<double>(CASTER_MARGIN_UP), static_cast<double>(CASTER_MARGIN_LEFT));
+		}
+		else
+		{
+			Log(LogCategory::Initialization, "live shadows: site 0x%08lX was changed, so casters off screen stay out", visibleRect.GameAddress());
+		}
+
 		return true;
 #else
 		return false;
@@ -786,7 +888,7 @@ namespace scvk::LiveShadowHooks
 		}
 
 		// In the reverse order of writing
-		GamePatch* const patches[] = { &addShadowCall, &propGroundModel, &modelInstanceDraw, &prebuiltModels, &prebuiltDraw, &networkGate };
+		GamePatch* const patches[] = { &visibleRect, &addShadowCall, &propGroundModel, &modelInstanceDraw, &prebuiltModels, &prebuiltDraw, &networkGate };
 		for (GamePatch* patch : patches)
 		{
 			if (!patch->Restore())
