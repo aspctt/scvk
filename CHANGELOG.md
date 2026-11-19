@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Live shadows stay at night, at half their daytime strength, instead of fading out as in scd3d11
+
 ## [0.7.0] - 2026-11-17
 
 ### Added

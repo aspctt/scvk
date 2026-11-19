@@ -145,10 +145,11 @@ because they cost frame rate in large cities, most of all while scrolling.
 
 `-LiveShadows:on` turns them on. Buildings, trees, props, poles and network pieces then
 shade each other, and hills shade the land behind them, with softer edges further from
-the ridge. A prerendered building already has its own shadows painted into it, so it
-never shadows itself again. Prebuilt network pieces lose their flat shadow masks, since
-they cast live and the two would darken the same ground twice. `-NetworkShadowMasks:on`
-keeps them.
+the ridge. At night they keep half their daytime strength, about as dark as the game's own
+night shadows but without their blue. A prerendered building already has its own shadows
+painted into it, so it never shadows itself again. Prebuilt network pieces lose their flat
+shadow masks, since they cast live and the two would darken the same ground twice.
+`-NetworkShadowMasks:on` keeps them.
 
 In a city, the `LiveShadows` cheat (Ctrl+X) pauses live shadows and brings back the
 game's own, network shadow masks included, so the two can be compared. Typed again, it
