@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- At the closest zoom, the live shadow of a bridge or another raised piece no longer breaks up when the piece itself is off screen
+- At the closest zoom, the live shadow of a bridge or another raised piece no longer breaks up or comes in late while scrolling when the piece itself is off screen
 
 ## [0.7.0] - 2026-11-17
 
