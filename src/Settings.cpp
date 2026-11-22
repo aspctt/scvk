@@ -36,6 +36,9 @@ namespace scvk
 		// More than any machine holds, and small enough to rule out a stray long number.
 		constexpr unsigned long MAXIMUM_GPU_NUMBER = 16;
 
+		// The largest value a percentage setting takes
+		constexpr unsigned long MAXIMUM_PERCENT = 100;
+
 		// The words a flag takes, the same set SCD3D11 takes, so -VSync:false works with
 		// either renderer.
 		constexpr char const* FLAG_ON_WORDS[]  = { "on", "true", "enabled", "1" };
@@ -136,6 +139,65 @@ namespace scvk
 			return isOn;
 		}
 
+		/** Reads a whole percentage from 0 to 100. False when the text is anything else. */
+		bool ParsePercent(char const* text, uint32_t& outPercent)
+		{
+			// strtoul turns a minus sign into a huge number, which the range check then
+			// refuses along with anything over 100
+			char* end = nullptr;
+			unsigned long const number = strtoul(text, &end, 10);
+
+			if (end == text || *end != '\0' || number > MAXIMUM_PERCENT)
+			{
+				return false;
+			}
+
+			// At most 100, checked just above.
+			outPercent = static_cast<uint32_t>(number);
+			return true;
+		}
+
+		/** -NightShadows:<n> on the command line, then NightShadows in scvk.ini, the fallback when neither says. */
+		uint32_t ReadNightShadowPercent(uint32_t fallback)
+		{
+			uint32_t percent = fallback;
+
+			// The command line first
+			char value[16] = {};
+			if (GetCommandLineValue("-NightShadows:", value, sizeof(value)))
+			{
+				if (ParsePercent(value, percent))
+				{
+					return percent;
+				}
+
+				LogWarn("-NightShadows:%s is not a percentage from 0 to 100; ignoring it.", value);
+			}
+
+			// Then scvk.ini, where the line is commented out unless someone set it
+			char settingsPath[MAX_PATH];
+			if (!LogFilePath("scvk.ini", settingsPath, sizeof(settingsPath)))
+			{
+				return fallback;
+			}
+
+			char setting[16] = {};
+			ReadIniValue(settingsPath, "scvk", "NightShadows", "", setting, sizeof(setting));
+
+			if (setting[0] == '\0')
+			{
+				return fallback;
+			}
+
+			if (!ParsePercent(setting, percent))
+			{
+				LogWarn("NightShadows=%s in scvk.ini is not a percentage from 0 to 100; using %u.", setting, fallback);
+				return fallback;
+			}
+
+			return percent;
+		}
+
 		/** Changes a setting to what its flag switch says, when the switch is given. */
 		void ReadFlagSetting(char const* name, bool& setting)
 		{
@@ -167,6 +229,7 @@ namespace scvk
 
 			ReadFlagSetting("LiveShadows", settings.areLiveShadowsEnabled);
 			ReadFlagSetting("NetworkShadowMasks", settings.shouldKeepNetworkShadowMasks);
+			settings.nightShadowPercent = ReadNightShadowPercent(settings.nightShadowPercent);
 
 			ReadFlagSetting("FlipModel", settings.isFlipModelPreferred);
 

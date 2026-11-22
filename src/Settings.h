@@ -83,6 +83,12 @@ namespace scvk
 		// prebuilt network pieces, which those pieces otherwise replace by casting live: the
 		// two would darken the same ground twice.
 		bool shouldKeepNetworkShadowMasks = false;
+
+		// -NightShadows:<0-100>, or NightShadows in scvk.ini. The percentage of their daytime
+		// strength live shadows keep at night. 0 fades them out by night as SCD3D11 does, and
+		// 100 never fades them, as SC4 never fades its own. A quarter keeps them about as
+		// light as SC4's own night shadows look, whose blue tint lightens them.
+		uint32_t nightShadowPercent = 25;
 	};
 
 	//// Public API
