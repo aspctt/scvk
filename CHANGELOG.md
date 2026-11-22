@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen
+- `-NightShadows:<n>` and `NightShadows` in `scvk.ini` set how much of their daytime strength live shadows keep at night, in percent
+
+### Changed
+
+- Live shadows keep a quarter of their daytime strength at night instead of half, closer to how light SC4's own night shadows look
 
 ### Fixed
 

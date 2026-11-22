@@ -145,8 +145,11 @@ because they cost frame rate in large cities, most of all while scrolling.
 
 `-LiveShadows:on` turns them on. Buildings, trees, props, poles and network pieces then
 shade each other, and hills shade the land behind them, with softer edges further from
-the ridge. At night they keep half their daytime strength, about as dark as the game's own
-night shadows but without their blue. A prerendered building already has its own shadows
+the ridge. At night they keep a quarter of their daytime strength, about as light as the
+game's own night shadows look, but without their blue. `-NightShadows:<n>` or
+`NightShadows=<n>` in `scvk.ini` sets that share in percent, from 0, which fades them out
+by night as scd3d11 does, to 100, which keeps them as dark as by day, the way the game
+keeps its own. A prerendered building already has its own shadows
 painted into it, so it never shadows itself again. Prebuilt network pieces lose their flat
 shadow masks, since they cast live and the two would darken the same ground twice.
 `-NetworkShadowMasks:on` keeps them.
@@ -190,6 +193,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-ViewportCull:off` | Sends every draw of a scroll to the graphics card, instead of leaving out those outside the strip being redrawn |
 | `-LiveShadows:on` | Turns on [live shadows](#live-shadows) |
 | `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
+| `-NightShadows:<n>` | Sets the percentage of their daytime strength live shadows keep at night, 25 by default |
 | `-Reflections:on` | Turns on [water reflections](#water-reflections) |
 | `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in), and `off` also lifts the limit `-VSync:off` keeps |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |

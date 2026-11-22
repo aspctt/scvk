@@ -41,6 +41,7 @@
 #include "LiveShadowHooks.h"
 #include "Logger.h"
 #include "ModuleLog.h"
+#include "Settings.h"
 #include "ShadowRegistry.h"
 #include "TerrainShadows.h"
 #include "VulkanBackend.h"
@@ -92,11 +93,12 @@ namespace scvk
 		// been read
 		constexpr float FALLBACK_SHADOW_OPACITY = 0.38f;
 
-		// The share of their daytime strength live shadows keep at night. SC4 never fades its
-		// own shadows, since its strength is read once from the lighting exemplar. SCD3D11
-		// fades live shadows out completely by night, which left every night overcast, while
-		// a fainter shadow reads as moonlight.
-		constexpr float NIGHT_SHADOW_SHARE = 0.5f;
+		// Turns the NightShadows percentage into the share of their daytime strength live
+		// shadows keep at night. SC4 never fades its own shadows, since its strength is read
+		// once from the lighting exemplar. SCD3D11 fades live shadows out completely by night,
+		// which left every night overcast, while a fainter shadow reads as moonlight. Half
+		// looked too dark next to SC4's own, whose blue tint lightens them.
+		constexpr float PERCENT_TO_SHARE = 0.01f;
 
 		// Used when the game reports no alpha test scale, and for True3D props cast
 		// through their own coordinates.
@@ -1067,6 +1069,9 @@ namespace scvk
 			{
 				hasLoggedLighting = true;
 				Log(LogCategory::Initialization, "live shadows: SC4's lighting gives shadow strength %.2f and threshold %.2f (0.40 and 0.55 without a lighting mod)", static_cast<double>(pass.strength), static_cast<double>(pass.alphaScale));
+
+				// The colour too, since a night tint like SC4's own would start from it
+				Log(LogCategory::Initialization, "live shadows: shadow colour %.3f/%.3f/%.3f, %u%% of the strength kept at night", static_cast<double>(pass.colour[0]), static_cast<double>(pass.colour[1]), static_cast<double>(pass.colour[2]), GetSettings().nightShadowPercent);
 			}
 		}
 		else if (isStaticPass && LiveShadowHooks::ShadowParams(liveShadowColour, liveShadowStrength))
@@ -1921,7 +1926,8 @@ namespace scvk
 		float daylight = 1.0f;
 		LiveShadowHooks::ShadowDaylight(daylight);
 
-		float const timeOfDayShare = NIGHT_SHADOW_SHARE + (1.0f - NIGHT_SHADOW_SHARE) * daylight;
+		float const nightShare     = static_cast<float>(GetSettings().nightShadowPercent) * PERCENT_TO_SHARE;
+		float const timeOfDayShare = nightShare + (1.0f - nightShare) * daylight;
 		composite.projection1[3]   = (isLiveShadowToneValid ? liveShadowStrength : FALLBACK_SHADOW_OPACITY) * timeOfDayShare;
 		if (isLiveShadowToneValid)
 		{
