@@ -236,6 +236,13 @@ namespace scvk
 					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_PAUSED);
 				}
 
+				// So do the network shadow masks that followed the cheat in the last pass,
+				// mapped or dropped after the terrain under them was drawn
+				if (LiveShadowHooks::ConsumeMaskChange())
+				{
+					causes |= RedrawCauseBit(LIVE_SHADOW_REDRAW_PAUSED);
+				}
+
 				if (causes != 0)
 				{
 					// Only a store that was still valid makes this an extra redraw, since the game
