@@ -86,6 +86,7 @@
 #include <shared_mutex>
 #include <string.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace scvk::LiveShadowHooks
@@ -127,6 +128,17 @@ namespace scvk::LiveShadowHooks
 
 		// The two cS3DModelInstance interface pointers a prebuilt piece owns
 		constexpr ptrdiff_t PREBUILT_MODEL_SLOTS[] = { 0x1C4, 0x1C8 };
+
+		// The piece's fields site E reaches from the Draw wrapper's this, which lies this far
+		// into the occupant (the wrapper passes this - 0x1D4 to UpdateShadow, 0x0061E340).
+		// UpdateShadow keeps the handles of the shadow masks it mapped in the two slots, -1
+		// for none and -2 while one is asked for. The byte is the shadow quality the masks
+		// were last mapped for, which the wrapper compares with the render properties' own.
+		constexpr ptrdiff_t PREBUILT_DRAWABLE        = 0x1D4;
+		constexpr ptrdiff_t PREBUILT_MASK_SLOTS[]    = { 0x1B8, 0x1BC };
+		constexpr ptrdiff_t PREBUILT_MASK_QUALITY    = 0x1C1;
+		constexpr ptrdiff_t RENDER_SETTINGS          = 0x18;
+		constexpr ptrdiff_t RENDER_SHADOW_QUALITY    = 0x1FC;
 
 		// Site C, the render properties the displaced load reads, and the property getter
 		// the stub calls in its place
@@ -259,6 +271,21 @@ namespace scvk::LiveShadowHooks
 		std::shared_mutex                            liveModelMutex;
 		std::unordered_map<void const*, void const*> liveModelInstances;
 		std::atomic<size_t>                          liveModelInstanceCount{ 0 };
+
+		// The pieces whose shadow masks were brought up to date since the LiveShadows cheat
+		// last moved the network gate, and whether one changed its masks since the driver
+		// last asked. UpdateShadow only runs when a piece is placed, changed, zoomed or
+		// rotated, or the shadow quality changes, so moving the gate alone left the masks
+		// mapped before it as they were: none while paused, both kinds after resuming. The
+		// static view draws network pieces on the game's main thread, and the cheat arrives
+		// there between frames, so these need no lock.
+		std::unordered_set<void const*> refreshedMaskPieces;
+		bool shouldRefreshMasks = false;
+		bool wasMaskChanged     = false;
+
+		// Counts for the log at each toggle
+		unsigned maskRefreshes = 0;
+		unsigned maskChanges   = 0;
 
 		// Counts for the log at shutdown
 		unsigned networkDraws          = 0;
@@ -557,15 +584,77 @@ namespace scvk::LiveShadowHooks
 			}
 		}
 
+		/** Copies the handles of the shadow masks a piece has mapped. */
+		void ReadMaskSlots(uint8_t const* occupant, int32_t slots[2])
+		{
+			for (size_t slot = 0; slot < std::size(PREBUILT_MASK_SLOTS); slot++)
+			{
+				memcpy(&slots[slot], occupant + PREBUILT_MASK_SLOTS[slot], sizeof(slots[slot]));
+			}
+		}
+
+		/**
+		 * Makes the Draw wrapper call UpdateShadow(true) for a piece not yet refreshed since
+		 * the cheat moved the gate, the way it does when the shadow quality changes: the
+		 * quality the piece's masks were mapped for is set to another value, and the wrapper
+		 * stores the current one back after the call. Keeps the piece's mask handles from
+		 * before and returns whether it asked.
+		 */
+		bool RequestMaskRefresh(uint8_t* occupant, int32_t outMasks[2])
+		{
+			// The wrapper reads the same chain without a check, so a failed read only means
+			// the game is not drawing yet
+			uint8_t const* renderProperties = nullptr;
+			uint8_t const* renderSettings   = nullptr;
+			uint8_t        quality          = 0;
+
+			if (!ReadGameMemory(renderPropertiesPointer, renderProperties) || renderProperties == nullptr || !ReadGameMemory(renderProperties + RENDER_SETTINGS, renderSettings) || renderSettings == nullptr || !ReadGameMemory(renderSettings + RENDER_SHADOW_QUALITY, quality))
+			{
+				return false;
+			}
+
+			if (!refreshedMaskPieces.insert(occupant).second)
+			{
+				return false;
+			}
+
+			ReadMaskSlots(occupant, outMasks);
+
+			// Any value but the current quality fails the wrapper's comparison
+			occupant[PREBUILT_MASK_QUALITY] = static_cast<uint8_t>(quality + 1);
+			maskRefreshes++;
+			return true;
+		}
+
 		uint32_t __fastcall PrebuiltDrawHook(void* self, void*, void* drawContext, void* drawState)
 		{
 			// The trampoline carries on into the game's wrapper, so it is called as that
 			// __thiscall function
 			using Original = uint32_t (__thiscall*)(void*, void*, void*);
 
+			// After the LiveShadows cheat moved the gate, each piece maps or drops its masks
+			// once as it is drawn. Pieces off screen catch up when they come into view.
+			uint8_t* const occupant         = static_cast<uint8_t*>(self) - PREBUILT_DRAWABLE;
+			int32_t        masksBefore[2]   = {};
+			bool const     isRefreshingMask = shouldRefreshMasks && RequestMaskRefresh(occupant, masksBefore);
+
 			networkDrawDepth++;
 			uint32_t const result = reinterpret_cast<Original>(&PrebuiltDrawOriginal)(self, drawContext, drawState);
 			networkDrawDepth--;
+
+			// The terrain under the piece was drawn before it in this pass, so a mask mapped or
+			// dropped now only shows once the view is drawn again
+			if (isRefreshingMask)
+			{
+				int32_t masksAfter[2] = {};
+				ReadMaskSlots(occupant, masksAfter);
+
+				if (memcmp(masksBefore, masksAfter, sizeof(masksAfter)) != 0)
+				{
+					wasMaskChanged = true;
+					maskChanges++;
+				}
+			}
 
 			networkDraws++;
 			return result;
@@ -900,6 +989,10 @@ namespace scvk::LiveShadowHooks
 		isInstalled            = false;
 		areNetworkMasksRemoved = false;
 		isPaused.store(false);
+
+		refreshedMaskPieces.clear();
+		shouldRefreshMasks = false;
+		wasMaskChanged     = false;
 		ClearRecords();
 
 		Log(LogCategory::Initialization, "live shadows uninstalled: %u network draws, %u prop meshes, %u native prop calls suppressed", networkDraws, propMeshesRegistered, propCallsSuppressed);
@@ -938,11 +1031,29 @@ namespace scvk::LiveShadowHooks
 			{
 				Log(LogCategory::Initialization, "live shadows: network shadow mask gate left as it is, site 0x%08lX was changed", networkGate.GameAddress());
 			}
+
+			// The masks already mapped follow the gate piece by piece as they are drawn
+			if (shouldRefreshMasks)
+			{
+				Log(LogCategory::Initialization, "live shadows: %u network pieces refreshed their shadow masks since the last toggle, %u changed them", maskRefreshes, maskChanges);
+			}
+
+			refreshedMaskPieces.clear();
+			shouldRefreshMasks = true;
+			maskRefreshes      = 0;
+			maskChanges        = 0;
 		}
 
 		isPaused.store(shouldPause);
 		Log(LogCategory::Initialization, shouldPause ? "live shadows: paused, SC4 draws its own shadows" : "live shadows: resumed");
 		return shouldPause;
+	}
+
+	bool ConsumeMaskChange(void)
+	{
+		bool const wasChanged = wasMaskChanged;
+		wasMaskChanged = false;
+		return wasChanged;
 	}
 
 	bool NetworkDrawActive(void)

@@ -46,6 +46,12 @@ namespace scvk::LiveShadowHooks
 	/** Pauses live shadows, or resumes them. Returns whether they are paused now. */
 	bool TogglePause(void);
 
+	/**
+	 * Whether a network piece mapped or dropped its shadow masks after the cheat, since the
+	 * last call. Its terrain was drawn before it, so the view needs drawing again to show it.
+	 */
+	bool ConsumeMaskChange(void);
+
 	/** Whether a prebuilt network piece or its model is being drawn on this thread. */
 	bool NetworkDrawActive(void);
 

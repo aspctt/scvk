@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen
 
+### Fixed
+
+- The `LiveShadows` cheat brings back the shadow masks of network pieces in view without a zoom or a rotation, and takes them away again when resumed
+
 ## [0.7.1] - 2026-11-19
 
 ### Changed
