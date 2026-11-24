@@ -22,6 +22,7 @@
 #include "VideoMode.h"
 #include "Benchmark.h"
 #include "Logger.h"
+#include "OptionsApiScreen.h"
 #include "RendererChoice.h"
 #include "Settings.h"
 #include "SoftwareMode.h"
@@ -386,6 +387,19 @@ namespace scvk
 
 			cGZDisplayMetrics screen{};
 			graphicSystem->GetScreenMetrics(screen);
+
+			// Leave the window mode and the size to SC4 Options API when it is installed
+			//
+			// The player chose both in its Graphic Options window, and it asks the game for
+			// them itself, fullscreen at the monitor's size for a borderless window. scvk's
+			// borderless default and its launch options would ask for another mode, and its
+			// -r size for another size. The driver asks the plugin for the window mode as it
+			// makes the window (cVKDriver::CreateRenderWindow).
+			if (OptionsApiScreen::IsInstalled())
+			{
+				LogInfo("SC4 Options API is installed, so its settings decide the window mode and size.");
+				return;
+			}
 
 			// See whether a borderless window was asked for
 			//

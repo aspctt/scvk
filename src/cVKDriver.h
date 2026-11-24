@@ -35,6 +35,8 @@
 #include <ext/cIGZGDriverVertexBufferExtension.h>
 #include <ext/cIGZGSnapshotExtension.h>
 
+#include <OptionsAPIScreen.h>
+
 namespace scvk
 {
 	//// Types
@@ -83,6 +85,7 @@ namespace scvk
 		public cIGZGDriverLightingExtension,
 		public cIGZGDriverVertexBufferExtension,
 		public cIGZGSnapshotExtension,
+		public cIOptionsAPIScreenDriver,
 		public cRZRefCount
 	{
 	private:
@@ -658,6 +661,12 @@ namespace scvk
 
 		void DestroyRenderWindow(void);
 
+		/**
+		 * The listed mode of a size, fullscreen or windowed, at the current mode's colour
+		 * depth where one is listed at it. -1 when the size is not listed.
+		 */
+		int32_t FindVideoMode(uint32_t width, uint32_t height, bool isFullscreen) const;
+
 		/** Puts the frame just presented on the clipboard, for PrintScreen in fullscreen. */
 		void CopyFrameToClipboard(void);
 
@@ -1053,6 +1062,19 @@ namespace scvk
 		// cIGZGSnapshotExtension
 
 		virtual cIGZBuffer* CopyColorBuffer(int32_t x, int32_t y, int32_t width, int32_t height, cIGZBuffer* buffer) override;
+
+		// cIOptionsAPIScreenDriver, in cVKDriver_Video.cpp
+
+		virtual uint32_t GetVersion(void) override;
+
+		/**
+		 * Gives the game's window a new size and window mode while the game runs, for SC4
+		 * Options API. The window, the device and everything the game made stay; the window
+		 * is restyled and moved, and the back buffer and everything sized like it is made
+		 * again at the new size. Called on the game's thread between frames. False, with
+		 * nothing changed, when the size is not a listed mode or a step fails.
+		 */
+		virtual bool ApplyScreen(uint32_t width, uint32_t height, OptionsAPIWindowMode mode) override;
 
 		// cIGZGDriverLightingExtension
 

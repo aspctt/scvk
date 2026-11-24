@@ -27,6 +27,7 @@
 #include "LiveShadowHooks.h"
 #include "Logger.h"
 #include "ModuleLog.h"
+#include "OptionsApiScreen.h"
 #include "PrintScreen.h"
 #include "RendererChoice.h"
 #include "Settings.h"
@@ -48,6 +49,8 @@
 #include <cRZCOMDllDirector.h>
 
 #include <windows.h>
+
+#include <algorithm>
 #include <string.h>
 
 namespace scvk
@@ -175,6 +178,21 @@ namespace scvk
 			PostGameMessage(*messageServer, *com, MESSAGE_FORCE_FULL_REDRAW);
 		}
 
+		/** Asks the game to draw its whole view again, once its saved regions are new and empty. */
+		void PostFullRedrawMessage(void)
+		{
+			cIGZMessageServer2Ptr messageServer;
+			cIGZCOM* const com = RZGetFramework()->GetCOMObject();
+
+			if (!messageServer || com == nullptr)
+			{
+				LogWarn("Could not ask the game to draw its view again; it shows once the game redraws on its own.");
+				return;
+			}
+
+			PostGameMessage(*messageServer, *com, MESSAGE_FORCE_FULL_REDRAW);
+		}
+
 		// Switches the main display to the fullscreen mode, or says why it could not
 		bool EnterDisplayMode(void)
 		{
@@ -220,6 +238,67 @@ namespace scvk
 			// No mode and no flags restores the one in the registry.
 			ChangeDisplaySettingsExA(nullptr, nullptr, nullptr, 0, nullptr);
 			isDisplayModeChanged = false;
+		}
+
+		/**
+		 * Switches the main display to a size at its own colour depth, from the desktop or
+		 * from another fullscreen size, or says why it could not and leaves it as it was.
+		 */
+		bool SwitchDisplayMode(uint32_t width, uint32_t height, uint32_t fallbackDepth)
+		{
+			// Keep the display's own colour depth
+			//
+			// scvk draws in 32 bits whatever the mode says, and the 16-bit entries in the
+			// mode list name a depth Windows did not report. A display already in a
+			// fullscreen mode has the desktop's depth, which scvk kept.
+			DEVMODEA current{};
+			current.dmSize = sizeof(current);
+
+			uint32_t displayDepth = fallbackDepth;
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &current) != 0)
+			{
+				displayDepth = current.dmBitsPerPel;
+			}
+
+			DEVMODEA const previousMode      = fullscreenDisplayMode;
+			bool const     wasDisplayChanged = isDisplayModeChanged;
+
+			fullscreenDisplayMode              = {};
+			fullscreenDisplayMode.dmSize       = sizeof(fullscreenDisplayMode);
+			fullscreenDisplayMode.dmPelsWidth  = width;
+			fullscreenDisplayMode.dmPelsHeight = height;
+			fullscreenDisplayMode.dmBitsPerPel = displayDepth;
+			fullscreenDisplayMode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
+
+			// Asked again even over a fullscreen mode, which EnterDisplayMode would keep
+			isDisplayModeChanged = false;
+
+			if (EnterDisplayMode())
+			{
+				return true;
+			}
+
+			// A refused change leaves the display in the mode it had
+			fullscreenDisplayMode = previousMode;
+			isDisplayModeChanged  = wasDisplayChanged;
+			return false;
+		}
+
+		// The main monitor's bounds and work area, in desktop coordinates
+		bool ReadMainMonitor(RECT& outBounds, RECT& outWorkArea)
+		{
+			MONITORINFO monitor{};
+			monitor.cbSize = sizeof(monitor);
+
+			POINT const origin{ 0, 0 };
+			if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) == 0)
+			{
+				return false;
+			}
+
+			outBounds   = monitor.rcMonitor;
+			outWorkArea = monitor.rcWork;
+			return true;
 		}
 
 		// Covers the main monitor with the window, above every other window
@@ -545,6 +624,84 @@ namespace scvk
 			LeaveDisplayMode();
 		}
 
+		/** The game window's style, place and mode, to put back when a screen change fails halfway. */
+		struct WindowState
+		{
+			LONG_PTR        style         = 0;
+			LONG_PTR        extendedStyle = 0;
+			WINDOWPLACEMENT placement     = {};
+			RECT            bounds        = {};
+			bool            isFullscreen  = false;
+			bool            isBorderless  = false;
+			RECT            coverBounds   = {};
+			DEVMODEA        displayMode   = {};
+		};
+
+		WindowState ReadWindowState(HWND window)
+		{
+			WindowState state;
+			state.style         = GetWindowLongPtrA(window, GWL_STYLE);
+			state.extendedStyle = GetWindowLongPtrA(window, GWL_EXSTYLE);
+			state.isFullscreen  = isFullscreenWindow;
+			state.isBorderless  = isGameWindowBorderless;
+			state.coverBounds   = borderlessBounds;
+			state.displayMode   = fullscreenDisplayMode;
+
+			state.placement.length = sizeof(state.placement);
+			GetWindowPlacement(window, &state.placement);
+			GetWindowRect(window, &state.bounds);
+			return state;
+		}
+
+		/**
+		 * Gives the window a style and a place. The style goes in first, and the move makes
+		 * Windows draw the new frame. A window above every other one stays so only while it
+		 * is fullscreen, which SetWindowPos alone can change.
+		 *
+		 * The maximised bit is left to ShowWindow. Set as a style it only changes what
+		 * IsZoomed answers, not the window's maximised place, and Windows then takes a
+		 * window covering the monitor for one maximised into the work area.
+		 */
+		void PlaceWindow(HWND window, DWORD style, DWORD extendedStyle, RECT const& bounds, bool isTopmost)
+		{
+			SetWindowLongPtrA(window, GWL_STYLE, static_cast<LONG_PTR>(style & ~static_cast<DWORD>(WS_MAXIMIZE)));
+			SetWindowLongPtrA(window, GWL_EXSTYLE, static_cast<LONG_PTR>(extendedStyle));
+			SetWindowPos(window, isTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+		}
+
+		/** Puts the window, the display and the cursor back as a state read before had them. */
+		void RestoreWindowState(HWND window, WindowState const& state)
+		{
+			ReleaseCursor();
+			isGameWindowBorderless = false;
+
+			// The display first, so the window goes back over the monitor at its old size
+			if (state.isFullscreen)
+			{
+				SwitchDisplayMode(state.displayMode.dmPelsWidth, state.displayMode.dmPelsHeight, state.displayMode.dmBitsPerPel);
+				PrintScreen::Install(window);
+			}
+			else if (isFullscreenWindow)
+			{
+				EndFullscreen();
+			}
+
+			isFullscreenWindow = state.isFullscreen;
+
+			// The style words are bit sets the API stores as signed integers.
+			bool const isTopmost = (static_cast<DWORD>(state.extendedStyle) & WS_EX_TOPMOST) != 0;
+			PlaceWindow(window, static_cast<DWORD>(state.style), static_cast<DWORD>(state.extendedStyle), state.bounds, isTopmost);
+			SetWindowPlacement(window, &state.placement);
+
+			borderlessBounds       = state.coverBounds;
+			isGameWindowBorderless = state.isBorderless;
+
+			if ((state.isFullscreen || state.isBorderless) && GetForegroundWindow() == window)
+			{
+				ConfineCursor();
+			}
+		}
+
 		// Describes a fault in the log before the game's own handler ends the process
 		//
 		// The game installs an exception filter of its own and exits without a word, so
@@ -595,6 +752,27 @@ namespace scvk
 #endif
 
 			return EXCEPTION_CONTINUE_SEARCH;
+		}
+
+		/**
+		 * Whether the window covering the screen goes without a frame.
+		 *
+		 * SC4 Options API decides when it is installed: a fullscreen mode from the game is
+		 * borderless or exclusive as the player chose there, and a windowed mode, as from
+		 * -w, stays a window. The plugin only answers Windowed for a windowed mode, so a
+		 * fullscreen mode it answers that for stays exclusive. Without it scvk's own
+		 * choice stands (VideoMode.cpp), which also takes a window the main monitor's size
+		 * borderless.
+		 */
+		bool IsBorderlessChosen(sGDMode const& mode)
+		{
+			OptionsAPIWindowMode windowMode = OptionsAPIWindowMode::Windowed;
+			if (!OptionsApiScreen::ReadWindowMode(windowMode))
+			{
+				return IsBorderlessWindow();
+			}
+
+			return mode.isFullscreen && windowMode == OptionsAPIWindowMode::Borderless;
 		}
 
 		// Adds a size and colour depth to the mode list, fullscreen then windowed, unless listed
@@ -876,32 +1054,12 @@ namespace scvk
 		// as SCGL does. Borderless asks the game for fullscreen too (VideoMode.cpp), only
 		// for the game's sake, so the display keeps its mode and the window goes
 		// borderless below.
-		bool const isBorderlessWanted = IsBorderlessWindow();
+		bool const isBorderlessWanted = IsBorderlessChosen(mode);
 		bool       isFullscreen       = false;
 
 		if (mode.isFullscreen && !isBorderlessWanted)
 		{
-			// Keep the display's own colour depth
-			//
-			// scvk draws in 32 bits whatever the mode says, and the 16-bit entries in the
-			// mode list name a depth Windows did not report.
-			DEVMODEA desktop{};
-			desktop.dmSize = sizeof(desktop);
-
-			uint32_t displayDepth = mode.depth;
-			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &desktop) != 0)
-			{
-				displayDepth = desktop.dmBitsPerPel;
-			}
-
-			fullscreenDisplayMode              = {};
-			fullscreenDisplayMode.dmSize       = sizeof(fullscreenDisplayMode);
-			fullscreenDisplayMode.dmPelsWidth  = mode.width;
-			fullscreenDisplayMode.dmPelsHeight = mode.height;
-			fullscreenDisplayMode.dmBitsPerPel = displayDepth;
-			fullscreenDisplayMode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
-
-			isFullscreen = EnterDisplayMode();
+			isFullscreen = SwitchDisplayMode(mode.width, mode.height, mode.depth);
 
 			if (!isFullscreen)
 			{
@@ -1059,6 +1217,36 @@ namespace scvk
 		gameWindow             = nullptr;
 		gameWindowProcedure    = nullptr;
 		isGameWindowBorderless = false;
+	}
+
+	int32_t cVKDriver::FindVideoMode(uint32_t width, uint32_t height, bool isFullscreen) const
+	{
+		// The list holds every size at the display's depths and at 16 bits, so the same
+		// size can be listed more than once
+		uint32_t const depth = (currentVideoMode >= 0) ? videoModes[static_cast<uint32_t>(currentVideoMode)].depth : REQUESTED_MODE_DEPTH;
+		int32_t        found = -1;
+
+		for (sGDMode const& candidate : videoModes)
+		{
+			if (candidate.width != width || candidate.height != height || candidate.isFullscreen != isFullscreen)
+			{
+				continue;
+			}
+
+			// The list is a few hundred entries at most, so an index fits.
+			int32_t const index = static_cast<int32_t>(candidate.index);
+			if (candidate.depth == depth)
+			{
+				return index;
+			}
+
+			if (found < 0)
+			{
+				found = index;
+			}
+		}
+
+		return found;
 	}
 
 	//// Public API
@@ -1413,5 +1601,252 @@ namespace scvk
 		dimensions[1] = viewportY;
 		dimensions[2] = viewportX + viewportWidth;
 		dimensions[3] = viewportY + viewportHeight;
+	}
+
+	uint32_t cVKDriver::GetVersion(void)
+	{
+		return OPTIONS_API_SCREEN_VERSION;
+	}
+
+	bool cVKDriver::ApplyScreen(uint32_t width, uint32_t height, OptionsAPIWindowMode mode)
+	{
+		SCVK_CALL("%u, %u, %u", width, height, static_cast<uint32_t>(mode));
+
+		char const* const modeName = OptionsApiScreen::WindowModeName(mode);
+
+		// Sanity checks
+		//
+		// The interface carries the window as a plain pointer.
+		HWND const window = static_cast<HWND>(windowHandle);
+
+		if (window == nullptr || window != gameWindow || currentVideoMode < 0 || !vulkan->IsReady() || vulkan->IsDeviceLost())
+		{
+			LogWarn("ApplyScreen: there is no window or device to change yet; %ux%u %s refused.", width, height, modeName);
+			return false;
+		}
+
+		// A minimised window has no client area to size, and a fullscreen one has given the
+		// desktop its mode back
+		if (IsIconic(window))
+		{
+			LogWarn("ApplyScreen: the window is minimised; %ux%u %s refused.", width, height, modeName);
+			return false;
+		}
+
+		bool const isFullscreen = mode == OptionsAPIWindowMode::Fullscreen;
+		bool const isBorderless = mode == OptionsAPIWindowMode::Borderless;
+		bool const isWindowed   = mode == OptionsAPIWindowMode::Windowed;
+
+		if (!isFullscreen && !isBorderless && !isWindowed)
+		{
+			LogWarn("ApplyScreen: window mode %u is none of the three the contract names; refused.", static_cast<uint32_t>(mode));
+			return false;
+		}
+
+		// Take only a listed size, so the game finds its mode in the list
+		//
+		// Fullscreen and borderless take the fullscreen entry of the pair, since the game
+		// is asked for fullscreen for a borderless window too (VideoMode.cpp), and a window
+		// the windowed one.
+		int32_t const modeIndex = FindVideoMode(width, height, !isWindowed);
+		if (modeIndex < 0)
+		{
+			LogWarn("ApplyScreen: %ux%u is not among the video modes; %s refused.", width, height, modeName);
+			return false;
+		}
+
+		// A borderless window covers the main monitor at its own size
+		//
+		// Sizes are a few thousand pixels at most, which a long holds.
+		RECT monitorBounds{};
+		RECT workArea{};
+		bool const hasMonitor = ReadMainMonitor(monitorBounds, workArea);
+
+		long const monitorWidth  = monitorBounds.right - monitorBounds.left;
+		long const monitorHeight = monitorBounds.bottom - monitorBounds.top;
+
+		if (isBorderless && (!hasMonitor || monitorWidth != static_cast<long>(width) || monitorHeight != static_cast<long>(height)))
+		{
+			LogWarn("ApplyScreen: a borderless window covers the main monitor, which is %ldx%ld, not %ux%u; refused.", monitorWidth, monitorHeight, width, height);
+			return false;
+		}
+
+		// Do nothing when the window already has the size and mode
+		//
+		// Sizes are far below INT_MAX, so they compare as ints.
+		bool const wasFullscreen = isFullscreenWindow;
+		bool const wasBorderless = isGameWindowBorderless;
+		bool const isSameMode    = isFullscreen == wasFullscreen && isBorderless == wasBorderless;
+		bool const isSameSize    = windowWidth == static_cast<int>(width) && windowHeight == static_cast<int>(height);
+
+		char const* const previousName = wasFullscreen ? "fullscreen" : (wasBorderless ? "borderless" : "windowed");
+
+		if (isSameMode && isSameSize)
+		{
+			LogInfo("ApplyScreen: already %ux%u %s.", width, height, modeName);
+			return true;
+		}
+
+		// Keep what to put back if a step fails
+		WindowState const previous = ReadWindowState(window);
+		int const previousMode   = currentVideoMode;
+		int const previousWidth  = windowWidth;
+		int const previousHeight = windowHeight;
+
+		// Let go of the old mode's hold on the window and the cursor
+		//
+		// The pin in the window procedure keeps a borderless window over the monitor, and
+		// would move this one straight back.
+		ReleaseCursor();
+		isGameWindowBorderless = false;
+
+		// Switch the display
+		//
+		// Fullscreen takes the size on the display, straight from another fullscreen size
+		// without the desktop's mode in between. The others give the desktop its mode
+		// back.
+		if (isFullscreen)
+		{
+			if (!SwitchDisplayMode(width, height, videoModes[static_cast<uint32_t>(modeIndex)].depth))
+			{
+				RestoreWindowState(window, previous);
+				return false;
+			}
+
+			PrintScreen::Install(window);
+		}
+		else if (wasFullscreen)
+		{
+			EndFullscreen();
+		}
+
+		isFullscreenWindow = isFullscreen;
+
+		// Work out the window's style and place
+		//
+		// Fullscreen and borderless cover the main monitor, which has just taken the size
+		// for fullscreen. A window has a client area of exactly the size, centred on the
+		// main monitor's work area with its caption on screen.
+		ReadMainMonitor(monitorBounds, workArea);
+
+		RECT  bounds{ 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+		DWORD style         = WINDOW_STYLE;
+		DWORD extendedStyle = WINDOW_EXTENDED_STYLE;
+
+		if (isFullscreen)
+		{
+			style         = FULLSCREEN_STYLE;
+			extendedStyle = FULLSCREEN_EXTENDED_STYLE;
+			bounds        = monitorBounds;
+		}
+		else if (isBorderless)
+		{
+			style         = BORDERLESS_STYLE;
+			extendedStyle = BORDERLESS_EXTENDED_STYLE;
+			bounds        = monitorBounds;
+		}
+		else
+		{
+			AdjustWindowRectEx(&bounds, style, FALSE, extendedStyle);
+
+			long const outerWidth  = bounds.right - bounds.left;
+			long const outerHeight = bounds.bottom - bounds.top;
+			long const left        = std::max(workArea.left, workArea.left + (workArea.right - workArea.left - outerWidth) / 2);
+			long const top         = std::max(workArea.top, workArea.top + (workArea.bottom - workArea.top - outerHeight) / 2);
+
+			bounds = RECT{ left, top, left + outerWidth, top + outerHeight };
+		}
+
+		// Adopt the mode before the move
+		//
+		// The game's own WM_SIZE handler runs during it and may ask for the mode.
+		currentVideoMode = modeIndex;
+		windowWidth      = static_cast<int>(width);
+		windowHeight     = static_cast<int>(height);
+
+		// Move the window
+		//
+		// A maximised window is put back to normal first, as the window is shown at
+		// startup, so the move is not taken for a change of its maximised place. A
+		// borderless one is pinned to the monitor again and maximised, as
+		// CreateRenderWindow shows it, which Windows takes as fullscreen and hides the
+		// taskbar for.
+		if (IsZoomed(window))
+		{
+			ShowWindow(window, SW_SHOWNORMAL);
+		}
+
+		PlaceWindow(window, style, extendedStyle, bounds, isFullscreen);
+		borderlessBounds = bounds;
+
+		if (isBorderless)
+		{
+			isGameWindowBorderless = true;
+			ShowWindow(window, SW_SHOWMAXIMIZED);
+		}
+
+		// Check the client area came out the size, which the swapchain takes
+		RECT client{};
+		GetClientRect(window, &client);
+
+		bool const isClientSized = client.right == static_cast<LONG>(width) && client.bottom == static_cast<LONG>(height);
+
+		if (!isClientSized)
+		{
+			LogWarn("ApplyScreen: the window's client area came out %ldx%ld, not %ux%u.", client.right, client.bottom, width, height);
+		}
+
+		if ((isFullscreen || isBorderless) && GetForegroundWindow() == window)
+		{
+			ConfineCursor();
+		}
+
+		// Draw at the new size
+		//
+		// Exclusive fullscreen keeps the legacy swapchain, the others the flip model. The
+		// backend goes back to the old size itself when it cannot.
+		vulkan->SetExclusiveFullscreen(isFullscreen);
+
+		if (!isClientSized || !vulkan->ResizeRender(width, height))
+		{
+			LogWarn("ApplyScreen: could not draw at %ux%u %s; going back to %dx%d %s.", width, height, modeName, previousWidth, previousHeight, previousName);
+
+			currentVideoMode = previousMode;
+			windowWidth      = previousWidth;
+			windowHeight     = previousHeight;
+			RestoreWindowState(window, previous);
+
+			// The window is back at the size the back buffer still has, or has again,
+			// so the swapchain is rebuilt by the next present
+			vulkan->SetExclusiveFullscreen(previous.isFullscreen);
+			SetViewport();
+			return false;
+		}
+
+		// Forget what was worked out for the old picture
+		//
+		// The back buffer and the saved regions are new and empty, so none of the effects
+		// or shadows of the old ones are in them, and the casters kept in world space and
+		// the water's view were placed through the old projection.
+		isReShadeEffectsInBackBuffer = false;
+		isReShadeEffectsThisFrame    = false;
+		liveShadowWorldCasters.clear();
+		isLiveShadowWorldValid       = false;
+		isLiveShadowTerrainViewValid = false;
+		isWaterReflectionViewValid   = false;
+
+		SetViewport();
+
+		// Ask the game to draw the whole view again into the empty regions, as after a
+		// lost device
+		PostFullRedrawMessage();
+
+		// The style words are bit sets the API returns as signed integers.
+		unsigned long const newStyle         = static_cast<unsigned long>(GetWindowLongPtrA(window, GWL_STYLE));
+		unsigned long const newExtendedStyle = static_cast<unsigned long>(GetWindowLongPtrA(window, GWL_EXSTYLE));
+
+		LogInfo("ApplyScreen: %dx%d %s -> %ux%u %s (mode %d), style 0x%08lx extended 0x%08lx, window %ld,%ld..%ld,%ld.", previousWidth, previousHeight, previousName, width, height, modeName, modeIndex, newStyle, newExtendedStyle, bounds.left, bounds.top, bounds.right, bounds.bottom);
+		LogWindowState(window, "after ApplyScreen");
+		return true;
 	}
 }

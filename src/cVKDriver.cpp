@@ -131,6 +131,13 @@ namespace scvk
 			*outInterface = static_cast<cIGZGSnapshotExtension*>(this);
 			break;
 
+		case GZIID_cIOptionsAPIScreenDriver:
+			// SC4 Options API changes the screen size and window mode through it while
+			// the game runs
+			LogDebug("QueryInterface(%08x) -> cIOptionsAPIScreenDriver", interfaceId);
+			*outInterface = static_cast<cIOptionsAPIScreenDriver*>(this);
+			break;
+
 		case GZIID_cIGZGDriverVertexBufferExtension:
 			// Deliberately declined. Accepting it opts the game into a buffer-object draw
 			// path, and the client-memory path is the one scvk implements. SCGL also
