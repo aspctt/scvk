@@ -119,6 +119,11 @@ With sc4-graphics-options installed, its `WindowMode` decides instead, and its
 `Borderless` gives the same window. `-b` still wins over its other modes. When the
 game falls back to its own renderer, it keeps the mode from its options.
 
+With SC4 Options API installed, the screen size and window mode come from its Graphic
+Options window, and scvk's borderless default and launch options stand aside. A change
+made there takes effect at once, without a restart: scvk keeps its window and device and
+draws at the new size.
+
 ### Colour depth and resolution
 
 scvk draws in 32-bit colour, but in a 16-bit mode the game makes its own textures

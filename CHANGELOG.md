@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen
+- SC4 Options API can change the screen size and window mode while the game runs, keeping the window and the device
+
+### Changed
+
+- With SC4 Options API installed, its screen size and window mode replace scvk's borderless default and window launch options
 
 ## [0.7.2] - 2026-11-22
 
