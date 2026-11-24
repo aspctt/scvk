@@ -983,6 +983,16 @@ namespace scvk
 		bool CreateSwapchain(void);
 		bool CreateRenderTargets(void);
 		void DestroyRenderTargets(void);
+
+		/** Destroys the back buffer, the depth buffer and their framebuffers, keeping the passes. */
+		void DestroyRenderImages(void);
+
+		/** Clears a back buffer and depth buffer no frame has drawn into yet to black and far. */
+		void ClearNewRenderTargets(void);
+
+		/** Recreates every live buffer region at the render size, empty, under its handle. */
+		bool ResizeBufferRegions(void);
+
 		bool CreateRenderPasses(void);
 		void DestroySwapchain(void);
 		void LoadPipelineCache(void);
@@ -1303,6 +1313,15 @@ namespace scvk
 		bool CreateSceneDepthResources(void);
 		bool CreateReflectionResources(void);
 
+		/** The scene depth image and its framebuffer at the render size, for a pass that exists. */
+		bool CreateSceneDepthTarget(void);
+
+		/** The copy of the frame the water reflections read, at the render size. */
+		bool CreateReflectionSource(void);
+
+		/** Makes the effects' images of the render size again, at the new one. */
+		bool ResizeEffectImages(void);
+
 		/**
 		 * How a full-screen pass meets the back buffer: written over it, multiplied into it
 		 * as the shadow composite darkens, or laid over it by its alpha.
@@ -1350,6 +1369,16 @@ namespace scvk
 		 * destroys what the previous call made.
 		 */
 		bool CreateSurfaceAndDevice(void* newWindowHandle, uint32_t width, uint32_t height);
+
+		/**
+		 * Draws at a new size from the next draw on, keeping the device, the textures, the
+		 * pipelines and the render passes: the back buffer, the depth buffer, the buffer
+		 * regions and the images sized like them are made again, empty, and the swapchain
+		 * is rebuilt for the window, which already has its new size. Called between frames.
+		 * False when it could not, after going back to the old size; a device that cannot
+		 * even do that is marked lost and rebuilt at the old size.
+		 */
+		bool ResizeRender(uint32_t width, uint32_t height);
 
 		void Destroy(void);
 

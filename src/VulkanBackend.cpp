@@ -1377,10 +1377,16 @@ namespace scvk
 
 	void VulkanBackend::DestroyRenderTargets(void)
 	{
+		DestroyRenderImages();
+
+		if (renderPass != VK_NULL_HANDLE)     { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
+		if (colourOnlyPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, colourOnlyPass, nullptr); colourOnlyPass = VK_NULL_HANDLE; }
+	}
+
+	void VulkanBackend::DestroyRenderImages(void)
+	{
 		if (framebuffer != VK_NULL_HANDLE)           { vkDestroyFramebuffer(device, framebuffer, nullptr); framebuffer = VK_NULL_HANDLE; }
 		if (colourOnlyFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, colourOnlyFramebuffer, nullptr); colourOnlyFramebuffer = VK_NULL_HANDLE; }
-		if (renderPass != VK_NULL_HANDLE)            { vkDestroyRenderPass(device, renderPass, nullptr); renderPass = VK_NULL_HANDLE; }
-		if (colourOnlyPass != VK_NULL_HANDLE)        { vkDestroyRenderPass(device, colourOnlyPass, nullptr); colourOnlyPass = VK_NULL_HANDLE; }
 
 		if (stencilView != VK_NULL_HANDLE)
 		{
@@ -1450,6 +1456,98 @@ namespace scvk
 
 		LogDebug("Vulkan: the window has area again; rebuilding the swapchain.");
 		return CreateSwapchain();
+	}
+
+	bool VulkanBackend::ResizeRender(uint32_t width, uint32_t height)
+	{
+		if (isDead || isDeviceLost || device == VK_NULL_HANDLE || width == 0 || height == 0)
+		{
+			return false;
+		}
+
+		// Let the GPU finish everything that uses the old images
+		//
+		// The driver is called between frames, but the game may have started one with a
+		// texture upload or a clear. What it recorded is submitted, and the frame carries
+		// on in a fresh command buffer, which the clears below go into.
+		if (isFrameActive)
+		{
+			EndRenderPassIfActive();
+
+			if (!SubmitFrameSoFar())
+			{
+				LogWarn("Vulkan: could not finish the frame in progress, so the size stays %ux%u.", renderWidth, renderHeight);
+				return false;
+			}
+		}
+
+		vkDeviceWaitIdle(device);
+
+		// Take the old images down, then make them at the new size
+		//
+		// The device is idle, so they go at once rather than with a frame. The render
+		// passes stay: the pipelines and another plugin's were made against them, and a
+		// size is no part of a pass.
+		uint32_t const previousWidth  = renderWidth;
+		uint32_t const previousHeight = renderHeight;
+
+		DestroySwapchain();
+		DestroyRenderImages();
+
+		auto const createAtRenderSize = [this](void)
+		{
+			return CreateRenderTargets() && ResizeEffectImages() && ResizeBufferRegions();
+		};
+
+		renderWidth  = width;
+		renderHeight = height;
+
+		bool const isResized = createAtRenderSize();
+
+		if (!isResized)
+		{
+			// Go back to the old size, which the window gets back too
+			//
+			// A device that cannot even do that is rebuilt whole, at the old size, by the
+			// next Flush, as after a lost device.
+			LogWarn("Vulkan: could not draw at %ux%u; going back to %ux%u.", width, height, previousWidth, previousHeight);
+
+			DestroyRenderImages();
+			renderWidth  = previousWidth;
+			renderHeight = previousHeight;
+
+			if (!createAtRenderSize())
+			{
+				LogError("Vulkan: could not go back to %ux%u either; rebuilding the device.", previousWidth, previousHeight);
+				isDeviceLost = true;
+				return false;
+			}
+		}
+
+		// Nothing bound before refers to anything that still exists, and a frame in
+		// progress has to clear its new images itself
+		InvalidateBindings();
+
+		if (isFrameActive)
+		{
+			ClearNewRenderTargets();
+		}
+
+		// Show the frames through a swapchain of the window's new size
+		//
+		// One that cannot be made yet, for a window with no area, is made by Present once
+		// it has, as after a minimise.
+		if (!CreateSwapchain())
+		{
+			LogWarn("Vulkan: no swapchain for the window yet; presenting resumes once it can be made.");
+		}
+
+		if (isResized)
+		{
+			LogInfo("Vulkan: now drawing at %ux%u, was %ux%u.", renderWidth, renderHeight, previousWidth, previousHeight);
+		}
+
+		return isResized;
 	}
 
 	void VulkanBackend::DestroyDevice(void)
@@ -2170,6 +2268,12 @@ namespace scvk
 		// The draw record's copy belongs to an earlier frame's ring position
 		drawRecordBuffer = VK_NULL_HANDLE;
 
+		ClearNewRenderTargets();
+		return true;
+	}
+
+	void VulkanBackend::ClearNewRenderTargets(void)
+	{
 		// Give a fresh back buffer and depth buffer defined contents
 		//
 		// Black and far, which is what the game sees before it draws anything. From then
@@ -2191,8 +2295,6 @@ namespace scvk
 			VkImageSubresourceRange range{ DepthAspects(), 0, 1, 0, 1 };
 			vkCmdClearDepthStencilImage(commandBuffer, depthBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farthest, 1, &range);
 		}
-
-		return true;
 	}
 
 	bool VulkanBackend::SubmitFrameSoFar(void)

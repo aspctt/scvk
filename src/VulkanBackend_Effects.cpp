@@ -569,12 +569,6 @@ namespace scvk
 			return false;
 		}
 
-		// An R32 float image the size of the back buffer, drawn into and sampled
-		if (!CreateRenderImage(VK_FORMAT_R32_SFLOAT, renderWidth, renderHeight, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, sceneDepthImage))
-		{
-			return false;
-		}
-
 		// A pass writing every pixel of it, then leaving it for ReShade to sample
 		VkAttachmentDescription attachment{};
 		attachment.format         = VK_FORMAT_R32_SFLOAT;
@@ -616,20 +610,7 @@ namespace scvk
 		passInformation.dependencyCount = _countof(dependencies);
 		passInformation.pDependencies   = dependencies;
 
-		if (vkCreateRenderPass(device, &passInformation, nullptr, &sceneDepthPass) != VK_SUCCESS)
-		{
-			return false;
-		}
-
-		VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-		framebufferInformation.renderPass      = sceneDepthPass;
-		framebufferInformation.attachmentCount = 1;
-		framebufferInformation.pAttachments    = &sceneDepthImage.view;
-		framebufferInformation.width           = renderWidth;
-		framebufferInformation.height          = renderHeight;
-		framebufferInformation.layers          = 1;
-
-		if (vkCreateFramebuffer(device, &framebufferInformation, nullptr, &sceneDepthFramebuffer) != VK_SUCCESS)
+		if (vkCreateRenderPass(device, &passInformation, nullptr, &sceneDepthPass) != VK_SUCCESS || !CreateSceneDepthTarget())
 		{
 			return false;
 		}
@@ -688,9 +669,7 @@ namespace scvk
 			return false;
 		}
 
-		// A copy of the back buffer for the pass to read, since it draws into the back
-		// buffer itself
-		if (!CreateRenderImage(backBuffer.format, renderWidth, renderHeight, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, reflectionSourceImage))
+		if (!CreateReflectionSource())
 		{
 			return false;
 		}
@@ -725,6 +704,60 @@ namespace scvk
 
 		reflectionPipeline = CreateFullscreenPipeline(fullscreenVertexModule, reflectionFragmentModule, reflectionPipelineLayout, colourOnlyPass, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, EffectBlend::Over);
 		return reflectionPipeline != VK_NULL_HANDLE;
+	}
+
+	bool VulkanBackend::CreateSceneDepthTarget(void)
+	{
+		// An R32 float image the size of the back buffer, drawn into and sampled
+		if (!CreateRenderImage(VK_FORMAT_R32_SFLOAT, renderWidth, renderHeight, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, sceneDepthImage))
+		{
+			return false;
+		}
+
+		VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+		framebufferInformation.renderPass      = sceneDepthPass;
+		framebufferInformation.attachmentCount = 1;
+		framebufferInformation.pAttachments    = &sceneDepthImage.view;
+		framebufferInformation.width           = renderWidth;
+		framebufferInformation.height          = renderHeight;
+		framebufferInformation.layers          = 1;
+
+		return vkCreateFramebuffer(device, &framebufferInformation, nullptr, &sceneDepthFramebuffer) == VK_SUCCESS;
+	}
+
+	bool VulkanBackend::CreateReflectionSource(void)
+	{
+		// A copy of the back buffer for the pass to read, since it draws into the back
+		// buffer itself
+		return CreateRenderImage(backBuffer.format, renderWidth, renderHeight, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, reflectionSourceImage);
+	}
+
+	bool VulkanBackend::ResizeEffectImages(void)
+	{
+		// Take the old ones down
+		//
+		// The caller has the device idle, so nothing is still reading them.
+		if (sceneDepthFramebuffer != VK_NULL_HANDLE)
+		{
+			vkDestroyFramebuffer(device, sceneDepthFramebuffer, nullptr);
+			sceneDepthFramebuffer = VK_NULL_HANDLE;
+		}
+
+		DestroyRenderImage(sceneDepthImage);
+		DestroyRenderImage(reflectionSourceImage);
+
+		// Make again only what a device that has the effects had. The shadow maps keep
+		// their own size, and the composite reads the depth through each pass's own set.
+		bool const hasSceneDepth  = sceneDepthPass == VK_NULL_HANDLE || CreateSceneDepthTarget();
+		bool const hasReflections = reflectionPipeline == VK_NULL_HANDLE || CreateReflectionSource();
+
+		if (!hasSceneDepth || !hasReflections)
+		{
+			LogWarn("Vulkan: could not make the %s at %ux%u.", hasSceneDepth ? "water reflections' copy of the frame" : "scene depth for ReShade", renderWidth, renderHeight);
+			return false;
+		}
+
+		return true;
 	}
 
 	bool VulkanBackend::AllocateFrameStaging(VkDeviceSize bytes, VkBuffer& outBuffer, VkDeviceSize& outOffset, uint8_t*& outAddress)

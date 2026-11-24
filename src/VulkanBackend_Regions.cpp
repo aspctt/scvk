@@ -478,6 +478,52 @@ namespace scvk
 		region = BufferRegion{};
 	}
 
+	bool VulkanBackend::ResizeBufferRegions(void)
+	{
+		// Make each live region again at the render size, under the same handle
+		//
+		// A region is a copy of the whole back buffer, and the game keeps its handles for
+		// as long as it runs, so they have to go on working. What they held was drawn at
+		// the old size, so they come back empty, and the game saves into them again as it
+		// redraws. The caller has the device idle, so the old images go at once.
+		uint32_t resized = 0;
+
+		for (BufferRegion& region : bufferRegions)
+		{
+			if (!region.isLive)
+			{
+				continue;
+			}
+
+			bool const isDepth = region.isDepth;
+
+			if (region.image != VK_NULL_HANDLE)
+			{
+				vkDestroyImage(device, region.image, nullptr);
+			}
+
+			FreeDeviceMemory(region.memory);
+			region = BufferRegion{};
+
+			if (!AllocateRegionImage(isDepth, region))
+			{
+				// Keep the handle, empty, so the next attempt makes it again
+				region.isLive  = true;
+				region.isDepth = isDepth;
+				return false;
+			}
+
+			resized++;
+		}
+
+		if (resized != 0)
+		{
+			LogDebug("Vulkan: %u buffer regions made again at %ux%u, empty.", resized, renderWidth, renderHeight);
+		}
+
+		return true;
+	}
+
 	void VulkanBackend::DestroyAllBufferRegions(void)
 	{
 		for (uint32_t handle = 1; handle <= bufferRegions.size(); handle++)
