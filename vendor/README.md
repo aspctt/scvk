@@ -134,6 +134,18 @@ needs: the Visual Studio project falls back to them when no SDK is installed,
 and `tools/build-mingw.sh` uses them by default. 1.3.296 is the release whose SDK
 still ships the 32-bit validation layers a Debug build can use.
 
+### SC4 Options API (1 file)
+
+<https://github.com/aspctt/sc4-options-api> · Copyright (C) 2026 aspctt ·
+LGPL-2.1-or-later · contract version 1, copied 2026-11-24
+
+| Path | Role |
+|---|---|
+| `include/OptionsAPIScreen.h` | The plugin's screen contract: the window mode the player chose, and `ApplyScreen`, which the driver answers to change the screen size and window mode while the game runs |
+
+> Copied byte for byte, as the file asks. A renderer and the plugin both build against
+> it, so a change here is a change of contract for both.
+
 ## Local changes
 
 The interface headers carried two wrong signatures, which SCD3D11 corrected and
