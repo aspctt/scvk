@@ -3833,7 +3833,10 @@ namespace scvk
 			WriteCapture(isCapturingRegion, regionWidth, regionHeight);
 		}
 
-		// Hold presents to twice the refresh rate while VSync is off
+		// Hold presents to twice the refresh rate
+		//
+		// With VSync on too, where a working FIFO keeps them below it anyway and this only
+		// waits when a driver setting has turned VSync off.
 		//
 		// After the submit, so the card works through the frame during the wait, and also
 		// while the window is minimised, which still draws every frame. The window is typed

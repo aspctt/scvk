@@ -25,7 +25,6 @@
 #include "PresentLimit.h"
 #include "FpsLimit.h"
 #include "Logger.h"
-#include "Settings.h"
 
 namespace scvk
 {
@@ -97,13 +96,14 @@ namespace scvk
 
 	uint32_t PresentLimiter::ChooseRate(HWND window)
 	{
-		// VSync already holds presents to the refresh rate
-		if (GetSettings().isVSyncEnabled)
-		{
-			return 0;
-		}
-
 		// Read the display's rate again now and then
+		//
+		// With VSync on as well. FIFO should hold presents to the refresh rate, which leaves
+		// this limit idle, but a driver setting can turn VSync off underneath it. On the test
+		// PC FIFO presents came back at once and the region view ran at about 1300 frames a
+		// second, where the game's region camera moved at most a pixel a frame and stepped
+		// back and forth, which looked like lag and shaking. At twice the refresh rate it
+		// scrolled smoothly. An earlier version skipped the limit whenever VSync was on.
 		ULONGLONG const now = GetTickCount64();
 		if (now >= nextRefreshCheck)
 		{
@@ -130,7 +130,7 @@ namespace scvk
 			}
 			else
 			{
-				LogInfo("Vulkan: presents are held to %u a second, twice the display's %u Hz, since VSync is off.", presentsPerSecond, refreshRate);
+				LogInfo("Vulkan: presents are held to %u a second, twice the display's %u Hz.", presentsPerSecond, refreshRate);
 			}
 		}
 

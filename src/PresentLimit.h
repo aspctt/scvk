@@ -32,11 +32,13 @@ namespace scvk
 	//// Types
 
 	/**
-	 * Holds presents to twice the display's refresh rate while VSync is off.
+	 * Holds presents to twice the display's refresh rate.
 	 *
-	 * Without VSync, a cheap view such as the region or a paused city presented well
-	 * over a thousand frames a second, which the display cannot show and which only makes
-	 * heat and coil whine. Twice the refresh rate, as in scd3d11, still gives every
+	 * Without VSync, or with a driver that turns it off underneath FIFO, a cheap view such
+	 * as the region or a paused city presented well over a thousand frames a second. The
+	 * display cannot show that, it only makes heat and coil whine, and the game's region
+	 * camera lags and shakes at it. With a working FIFO the limit never waits. Twice the
+	 * refresh rate, as in scd3d11, still gives every
 	 * refresh a new frame: a limit at the rate itself drifts against the display, which
 	 * then shows a frame twice now and then, and scrolling judders. -MaxFPS:off lifts it.
 	 */

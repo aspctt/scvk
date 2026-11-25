@@ -200,7 +200,7 @@ colon it takes `on`, `off`, `true`, `false`, `enabled`, `disabled`, `1` or `0`.
 | `-NetworkShadowMasks:on` | Keeps the flat shadow masks of prebuilt network pieces under live shadows |
 | `-NightShadows:<n>` | Sets the percentage of their daytime strength live shadows keep at night, 25 by default |
 | `-Reflections:on` | Turns on [water reflections](#water-reflections) |
-| `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in), and `off` also lifts the limit `-VSync:off` keeps |
+| `-MaxFPS:<n>`, `-MaxFPS:off` or `-MaxFPS:screen` | Sets the [speed caps](#fps-limits-built-in), and `off` also lifts the limit at twice the refresh rate |
 | `-DepthBuffer:32` or `-DepthBuffer:16` | Picks the [depth buffer](#depth-buffer), 16-bit by default |
 | `-Depth16:off` or `-Depth16:on` | The same as `-DepthBuffer:32` or `16`, under scd3d11's name |
 | `-LogLevel:<level>` | Sets how much goes into `scvk.log`, from `trace` to `off` |
@@ -245,10 +245,13 @@ near 60 frames a second whatever the cap. Raised caps take simulation time at Rh
 and Cheetah, so a heavy city can simulate more slowly, and `-MaxFPS:off` is the way
 back.
 
-With `-VSync:off`, scvk holds the frame rate to twice the display's refresh rate, as
-scd3d11 does. The region view and a paused city would otherwise run at well over a
-thousand frames a second, which no display shows and which only makes heat. Every
-refresh still gets a new frame, and `-MaxFPS:off` lifts this limit too.
+scvk holds the frame rate to twice the display's refresh rate, as scd3d11 does with
+`-VSync:off`. With VSync on, the refresh rate already keeps it lower, and the limit
+only steps in when a graphics driver setting turns VSync off behind the game's back.
+The region view and a paused city would otherwise run at well over a thousand frames a
+second, which no display shows, which only makes heat, and at which the region view
+lags and shakes while scrolling. Every refresh still gets a new frame, and
+`-MaxFPS:off` lifts this limit too.
 
 This lives in scvk because frame pacing and presentation are one concern. Once
 the swapchain exists, the present mode and this cap have to agree, and keeping

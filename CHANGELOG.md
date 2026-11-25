@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - With SC4 Options API installed, its screen size and window mode replace scvk's borderless default and window launch options
 
+### Fixed
+
+- The region view no longer lags and shakes while scrolling when a graphics driver setting turns VSync off, since the limit at twice the refresh rate now holds with VSync on too
+
 ## [0.7.2] - 2026-11-22
 
 ### Added

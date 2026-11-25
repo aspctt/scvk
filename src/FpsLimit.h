@@ -61,8 +61,8 @@ namespace scvk
 
 	/**
 	 * Whether -MaxFPS:off, or MaxFPS=off or 0 in scvk.ini, asks scvk to leave the frame
-	 * rate alone: the game keeps its speed caps, and with VSync off presents are not held
-	 * to twice the refresh rate. See PresentLimiter.
+	 * rate alone: the game keeps its speed caps, and presents are not held to twice the
+	 * refresh rate. See PresentLimiter.
 	 */
 	bool IsMaxFpsOff(void);
 }
