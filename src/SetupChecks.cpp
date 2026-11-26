@@ -523,7 +523,7 @@ namespace scvk
 			}
 			else if (driverClass == SOFTWARE_DRIVER_GZCLSID)
 			{
-				ReportSetupProblem("SimCity 4 is drawing with its own software driver, not scvk. Run with -d:DirectX, -d:Vulkan, or set Driver=DirectX in SC4GraphicsOptions.ini to use scvk.");
+				ReportSetupProblem("SimCity 4 is drawing with its own Software driver, not scvk. Run with -d:DirectX, -d:Vulkan, or set Driver=DirectX in SC4GraphicsOptions.ini to use scvk.");
 			}
 			else if (driverClass == DIRECTX_DRIVER_GZCLSID)
 			{
