@@ -227,7 +227,7 @@ namespace scvk::SoftwareMode
 		if (ReadMarker(path, earlierFailure))
 		{
 			hasEarlierFailure = true;
-			LogWarn("Software driver: the game is on it, and its last start with scvk failed, so it stays there. -d:DirectX tries scvk again.");
+			LogWarn("Software driver: the game stayed on it, since its last start with scvk failed. Run with -d:DirectX or -d:Vulkan to try scvk again.");
 			return false;
 		}
 

@@ -85,11 +85,11 @@ namespace scvk::LiveShadowCheat
 		{
 			if (GetSettings().areLiveShadowsEnabled)
 			{
-				ShowGameDialog("Live shadows could not start, because another plugin changed the game code they patch. The \"live shadows:\" lines in scvk.log say where.");
+				ShowGameDialog("-LiveShadows:on is set, but another plugin has changed the game code it patches, so live shadows will stay turned off. Check \"live shadows:\" lines in scvk.log for details.");
 				return;
 			}
 
-			ShowGameDialog("Live shadows are off. Start SimCity 4 with -LiveShadows:on, and this cheat then pauses and resumes them.");
+			ShowGameDialog("Live shadows are off. Start SimCity 4 with -LiveShadows:on, this cheat only works if live shadows are active.");
 		}
 
 		/** Hears the cheat box. Static, so its count is only for show. */
