@@ -23,11 +23,11 @@ interface declaration.
 
 ## Provenance
 
-### gzcom-dll (59 files)
+### gzcom-dll (62 files)
 
-<https://github.com/nsgomez/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
-(C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `4116330`
-(2026-10-05)
+<https://github.com/SC4SDK/gzcom-dll> · Copyright (C) 2016 Nelson Gomez,
+(C) 2024 memo, and contributors · LGPL-2.1-or-later · copied at `74a527c`
+(2026-11-14)
 
 The GZCOM plugin SDK. Source of the plugin ABI and the graphics-driver
 interfaces.
@@ -52,14 +52,12 @@ interfaces.
 | `include/GZServPtrs.h`, `include/GZServDecls.h`, `include/cRZSysServPtr.h` | Typed access to the game's services |
 | `include/cIGZCheatCodeManager.h`, `include/cIGZMessage2Standard.h` | The game's cheat box, for the LiveShadows cheat |
 | `include/cISC4City.h`, `include/cISC4RenderProperties.h`, `include/cISTETerrain.h`, `include/cISTETerrainMap.h`, `include/SC4Rect.h` | The city, its terrain and its render properties, which the shadow modules carried over from SCD3D11 read |
-| `include/SC4String.h`, `src/SC4String.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
-| `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/cGZDisplayMetrics.h`, `include/cIGZCmdLine.h` | The game's saved preferences, launch options and requested video mode, for correcting the video mode |
+| `include/SC4String.h`, `src/SC4String.cpp`, `include/STLPORTCharString.h`, `src/STLPORTCharString.cpp`, `include/cIGZAllocatorService.h` | A string with the game's own layout, which `LoadCity` reads directly |
+| `include/cIGZApp.h`, `include/SC4Preferences.h` and the twelve `include/SC4*Preferences*.h` it includes, `include/SC4Point.h`, `include/cGZDisplayMetrics.h`, `include/cIGZCmdLine.h` | The game's saved preferences, launch options and requested video mode, for correcting the video mode |
 
-> Two declarations here do not match the game. The benchmark works around both in
-> its own source rather than editing them: `cISC4Nation::SetActiveRegion` takes the
-> region's index, not a pointer (0x4972f0), and `cISC4View3DWin::SetScrolling` takes
-> a direction in radians and a speed, not the X and Z its parameter names suggest
-> (0x7e6c60).
+> One declaration here does not match the game. The benchmark works around it in its
+> own source rather than editing it: `cISC4Nation::SetActiveRegion` takes the region's
+> index, not a pointer (0x4972f0).
 
 ### Scion (2 files)
 
@@ -134,17 +132,18 @@ needs: the Visual Studio project falls back to them when no SDK is installed,
 and `tools/build-mingw.sh` uses them by default. 1.3.296 is the release whose SDK
 still ships the 32-bit validation layers a Debug build can use.
 
-### SC4 Options API (1 file)
+### SC4 Options API (2 files)
 
 <https://github.com/aspctt/sc4-options-api> · Copyright (C) 2026 aspctt ·
-LGPL-2.1-or-later · contract version 1, copied 2026-11-24
+LGPL-2.1-or-later · contract version 1 of each, copied 2026-11-24 and 2026-11-27
 
 | Path | Role |
 |---|---|
 | `include/OptionsAPIScreen.h` | The plugin's screen contract: the window mode the player chose, and `ApplyScreen`, which the driver answers to change the screen size and window mode while the game runs |
+| `include/OptionsAPIRenderer.h` | The plugin's renderer contract: the renderer the player chose in the Graphic Options window |
 
-> Copied byte for byte, as the file asks. A renderer and the plugin both build against
-> it, so a change here is a change of contract for both.
+> Copied byte for byte, as the files ask. A renderer and the plugin both build against
+> them, so a change here is a change of contract for both.
 
 ## Local changes
 
@@ -157,10 +156,12 @@ scvk now corrects the same way, each marked `scvk:` where it changed:
   word for its count, and `DrawPrimsIndexed` takes four arguments. scvk used to
   decline this interface, which hid both.
 
-One source gained two includes, so GCC builds it as well as MSVC, whose headers bring
+Two sources gained includes, so GCC builds them as well as MSVC, whose headers bring
 them in on their own:
 
 - `src/SC4String.cpp`: `<cstring>` for `memcmp` and `<utility>` for `std::exchange`.
+- `src/STLPORTCharString.cpp`: `<algorithm>` for `std::min`, `<cstring>` for `memcmp`,
+  `<string>` for `std::string` and `<utility>` for `std::exchange`.
 
 One ReShade header changed too, for the same reason:
 
@@ -170,13 +171,12 @@ One ReShade header changed too, for the same reason:
 
 ## Build integration
 
-Add `vendor/include` to the compiler's include path and compile the three files
-in `vendor/src`. The layout matters: `ext/` must remain a subdirectory of
+Add `vendor/include` to the compiler's include path and compile every file in
+`vendor/src`. The layout matters: `ext/` must remain a subdirectory of
 `include/`, because `cIGZGSnapshotExtension.h` includes `../cIGZBuffer.h`.
 Keeping that structure is what lets every file stay byte-identical to upstream.
 
-Only `stdint.h` and a handful of C++ standard headers (`cstdint`, `list`,
-`string`, `type_traits`, `vector`, `unordered_map`) are needed from outside this
+Only the C and C++ standard library headers are needed from outside this
 directory.
 
 ## Updating

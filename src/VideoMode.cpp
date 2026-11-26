@@ -600,10 +600,9 @@ namespace scvk
 				return serviceId;
 			}
 
-			cIGZSystemService* SetServiceID(uint32_t newServiceId) override
+			void SetServiceID(uint32_t newServiceId) override
 			{
 				serviceId = newServiceId;
-				return this;
 			}
 
 			int32_t GetServicePriority(void) override
@@ -616,10 +615,9 @@ namespace scvk
 				return isRunning;
 			}
 
-			cIGZSystemService* SetServiceRunning(bool shouldRun) override
+			void SetServiceRunning(bool shouldRun) override
 			{
 				isRunning = shouldRun;
-				return this;
 			}
 
 			bool Init(void) override

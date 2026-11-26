@@ -213,10 +213,10 @@ namespace scvk
 		constexpr double WARMUP_SECONDS          = 2.0;
 		constexpr double MOTION_INTERVAL_SECONDS = 1.0;
 
-		// SetScrolling takes a direction and a speed, whatever gzcom-dll's parameter names
-		// say: the view's keyboard handler (0x7e6c60) hands it an angle in radians from a
-		// table of eighth turns, 0 for the right arrow and pi for the left, and the speed
-		// worked out below. Scrolling scenes go right, then back left.
+		// SetScrolling takes a direction and a speed: the view's keyboard handler (0x7e6c60)
+		// hands it an angle in radians from a table of eighth turns, 0 for the right arrow
+		// and pi for the left, and the speed worked out below. Scrolling scenes go right,
+		// then back left.
 		constexpr float SCROLL_ANGLE_OUT  = 0.0f;
 		constexpr float SCROLL_ANGLE_BACK = 3.14159265f;
 
@@ -1441,10 +1441,9 @@ namespace scvk
 				return serviceId;
 			}
 
-			cIGZSystemService* SetServiceID(uint32_t newServiceId) override
+			void SetServiceID(uint32_t newServiceId) override
 			{
 				serviceId = newServiceId;
-				return this;
 			}
 
 			int32_t GetServicePriority(void) override
@@ -1457,10 +1456,9 @@ namespace scvk
 				return isRunning;
 			}
 
-			cIGZSystemService* SetServiceRunning(bool shouldRun) override
+			void SetServiceRunning(bool shouldRun) override
 			{
 				isRunning = shouldRun;
-				return this;
 			}
 
 			bool Init(void) override

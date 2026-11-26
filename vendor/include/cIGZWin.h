@@ -52,14 +52,59 @@ class cIGZWin : public cIGZUnknown
 			WinFlag_Moveable =				0x100,
 			WinFlag_Sizeable =				0x200,
 			WinFlag_Sortable =				0x800,
+			WinFlag_Modal =					0x1000,
+			WinFlag_AcceptFocus =			0x8000,
 			WinFlag_PrivateBuffer =			0x10000,
 			WinFlag_PrivateBufferTrans =	0x20000,
 			WinFlag_PrivateBufferErase =	0x40000,
-			WinFlag_PrivateBufferVid =		0x100000,
-			WinFlag_AcceptFocus =			0x8000,
 			WinFlag_MouseTrans =			0x80000,
+			WinFlag_PrivateBufferVid =		0x100000,
 			WinFlag_IgnoreMouse =			0x200000,
 			WinFlag_DelayedPlot =			0x8000000,
+		};
+
+		struct tWinProcMessageTypes
+		{
+			enum eWinProcMessageTypes : uint32_t
+			{
+				ChildDelete = 1,
+				ChildRemove = 2,
+				// generic control command with the data fields having control-specific values.
+				Command = 3,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				Character = 4,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				KeyDown = 5,
+				// data1 = virtual key code, data2 = framework modifier keys, data3 = repeat count
+				KeyUp = 6,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseDownL = 7,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseDownR = 8,
+				// not implemented in the game's OS window procedure, or the base game UI APIs.
+				MouseDownM = 9,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseUpL = 10,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseUpR = 11,
+				// not implemented in the game's OS window procedure, or the base game UI APIs.
+				MouseUpM = 12,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseMove = 13,
+				// data1 = x, data2 = y, data 3 = packed value with framework modifier key flags in the upper 16 bits and wheel delta in the lower 16 bits.
+				MouseWheel = 14,
+				// used primarily as the first parameter to cIGZWinMgr::PostWinMsg when ending a dialog.
+				// in this use case, the second PostWinMsg parameter is the window pointer and the third parameter ins the result code.
+				DialogEnd = 15,
+				KillFocus = 16,
+				SetFocus = 17,
+				CaptureChanged = 18,
+				MouseEnter = 19,
+				MouseExit = 20,
+				WinMoving = 23,
+				WinMoveStart = 24,
+				WinMoveEnd = 25,
+			};
 		};
 
 		virtual bool DoMessage(cGZMessage& sMessage) = 0;
@@ -146,13 +191,13 @@ class cIGZWin : public cIGZUnknown
 		virtual bool GZWinOffset(int32_t dx, int32_t dy) = 0;
 
 		virtual bool FitRectToWindow(cRZRect& unknown1, int32_t unknown2) = 0;
-		virtual bool ScreenToWindowCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
-		virtual bool WindowToScreenCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
+		virtual void ScreenToWindowCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
+		virtual void WindowToScreenCoordinates(int32_t& unknown1, int32_t& unknown2) const = 0;
 		virtual bool WindowToWindowCoordinates(cIGZWin* unknown1, int32_t& unknown2, int32_t& unknown3) const = 0;
 		virtual bool IsPointInWindowScreenCoordinates(int32_t unknown1, int32_t unknown2) const = 0;
 
 		virtual uint32_t GetID() const = 0;
-		virtual bool SetID(uint32_t id) = 0;
+		virtual void SetID(uint32_t id) = 0;
 
 		virtual uint32_t GetInstanceID() const = 0;
 		virtual bool SetInstanceID(uint32_t id) = 0;
@@ -160,8 +205,8 @@ class cIGZWin : public cIGZUnknown
 		virtual bool GetFlag(tWinFlag flag) const = 0;
 		virtual tWinFlag SetFlag(tWinFlag flag, bool value) = 0;
 
-		virtual bool ShowWindow() = 0;
-		virtual bool HideWindow() = 0;
+		virtual void ShowWindow() = 0;
+		virtual void HideWindow() = 0;
 
 		virtual bool IsVisible() const = 0;
 		virtual bool IsEnabled() const = 0;
@@ -170,23 +215,23 @@ class cIGZWin : public cIGZUnknown
 		virtual bool SetCaption(cIGZString const& caption) = 0;
 
 		virtual cIGZWinKeyAccelerator* GetKeyboardAccelerator() = 0;
-		virtual bool SetKeyboardAccelerator(cIGZWinKeyAccelerator* pWinKeyAccelerator) = 0;
+		virtual void SetKeyboardAccelerator(cIGZWinKeyAccelerator* pWinKeyAccelerator) = 0;
 
 		// Passes the message to the keyboard accelerator's ProcessAccelerator.
 		virtual bool AccelerateKeyboardMsg(cGZMessage const& msg) = 0;
 
 		virtual uint32_t GetKeyEquivalent() = 0;
-		virtual bool SetKeyEquivalent(uint32_t value) = 0;
+		virtual void SetKeyEquivalent(uint32_t value) = 0;
 		// Compares MakeKeyEquivalent(key, modifiers) with GetKeyEquivalent().
 		virtual bool CheckKeyEquivalent(uint32_t key, uint32_t modifiers) = 0;
 		virtual uint32_t MakeKeyEquivalent(uint32_t unknown1, uint32_t unknown2) = 0;
 		virtual bool IsChildKeyEquivalent(uint32_t unknown1, uint32_t unknown2) = 0;
 
 		virtual bool ProcessCursorMessage(cGZMessage& msg) = 0;
-		virtual bool UpdateCursor() = 0;
-		virtual bool SetCursor(cIGZCursor* pCursor, bool updateCursor) = 0;
+		virtual void UpdateCursor() = 0;
+		virtual void SetCursor(cIGZCursor* pCursor, bool updateCursor) = 0;
 
-		virtual bool SetNotificationTarget(cIGZWin* pTarget) = 0;
+		virtual void SetNotificationTarget(cIGZWin* pTarget) = 0;
 		virtual cIGZWin* GetNotificationTarget() = 0;
 
 		virtual bool GZPaint() = 0;
@@ -282,7 +327,8 @@ class cIGZWin : public cIGZUnknown
 
 		// Sent to the window the mouse entered, with the window it left.
 		virtual bool GZOnMouseEnter(cIGZWin* pPreviousWin) = 0;
-		virtual bool GZOnMouseExit(uint32_t data1) = 0;
+		// Sent to the window the mouse left, with the window it entered (may be null).
+		virtual bool GZOnMouseExit(cIGZWin* pNextWin) = 0;
 
 		virtual bool GZOnCommand(uint32_t command, uint32_t data) = 0;
 
