@@ -37,7 +37,7 @@ headers, whose licenses are given with them. See vendor/README.md for a per-file
 provenance record.
 
   gzcom-dll: an open-source DLL Plugin SDK for SimCity 4
-  https://github.com/nsgomez/gzcom-dll
+  https://github.com/SC4SDK/gzcom-dll
   Copyright (C) 2016 Nelson Gomez; Copyright (C) 2024 memo; and contributors
   LGPL-2.1-or-later
 

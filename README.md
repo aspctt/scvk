@@ -536,7 +536,7 @@ the same terms.
 Third-party sources are vendored in [`vendor/`](vendor/README.md), each
 retaining its original notice:
 
-- [gzcom-dll](https://github.com/nsgomez/gzcom-dll) for the plugin ABI and
+- [gzcom-dll](https://github.com/SC4SDK/gzcom-dll) for the plugin ABI and
   driver interface declarations, LGPL-2.1-or-later
 - [Scion](https://github.com/nsgomez/scion) for reference counting,
   LGPL-2.1-or-later

@@ -8,7 +8,7 @@ at https://github.com/aspctt/scvk.
 License notice for gzcom-dll
 --------------------------------------------------------------
 
-https://github.com/nsgomez/gzcom-dll
+https://github.com/SC4SDK/gzcom-dll
 Copyright (C) 2016 Nelson Gomez; Copyright (C) 2024 memo; and contributors
 
 LGPL 2.1 or later.
