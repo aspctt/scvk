@@ -301,6 +301,39 @@ namespace scvk
 			return true;
 		}
 
+		/**
+		 * The main monitor's size in the desktop's own display mode, which a borderless
+		 * window covers once fullscreen has given the desktop its mode back.
+		 */
+		bool ReadDesktopSize(long& outWidth, long& outHeight)
+		{
+			MONITORINFOEXA monitor{};
+			monitor.cbSize = sizeof(monitor);
+
+			POINT const origin{ 0, 0 };
+			if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &monitor) == 0)
+			{
+				return false;
+			}
+
+			// Read the registry's mode first
+			//
+			// The current mode is the game's while it runs fullscreen at another size, until
+			// EndFullscreen restores the registry's, so it is only the second choice. SC4
+			// Options API offers its borderless size the same way.
+			DEVMODEA mode{};
+			mode.dmSize = sizeof(mode);
+
+			if (EnumDisplaySettingsA(monitor.szDevice, ENUM_REGISTRY_SETTINGS, &mode) == 0 && EnumDisplaySettingsA(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) == 0)
+			{
+				return false;
+			}
+
+			outWidth  = static_cast<long>(mode.dmPelsWidth);
+			outHeight = static_cast<long>(mode.dmPelsHeight);
+			return true;
+		}
+
 		// Covers the main monitor with the window, above every other window
 		void CoverMainMonitor(HWND window)
 		{
@@ -1655,15 +1688,14 @@ namespace scvk
 			return false;
 		}
 
-		// A borderless window covers the main monitor at its own size
+		// A borderless window covers the main monitor at the desktop's size
 		//
-		// Sizes are a few thousand pixels at most, which a long holds.
-		RECT monitorBounds{};
-		RECT workArea{};
-		bool const hasMonitor = ReadMainMonitor(monitorBounds, workArea);
-
-		long const monitorWidth  = monitorBounds.right - monitorBounds.left;
-		long const monitorHeight = monitorBounds.bottom - monitorBounds.top;
+		// The monitor's bounds would give a fullscreen size other than the desktop's, which
+		// it keeps until fullscreen ends below, and refuse the switch from it. Sizes are a
+		// few thousand pixels at most, which a long holds.
+		long monitorWidth  = 0;
+		long monitorHeight = 0;
+		bool const hasMonitor = ReadDesktopSize(monitorWidth, monitorHeight);
 
 		if (isBorderless && (!hasMonitor || monitorWidth != static_cast<long>(width) || monitorHeight != static_cast<long>(height)))
 		{
@@ -1727,6 +1759,8 @@ namespace scvk
 		// Fullscreen and borderless cover the main monitor, which has just taken the size
 		// for fullscreen. A window has a client area of exactly the size, centred on the
 		// main monitor's work area with its caption on screen.
+		RECT monitorBounds{};
+		RECT workArea{};
 		ReadMainMonitor(monitorBounds, workArea);
 
 		RECT  bounds{ 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
