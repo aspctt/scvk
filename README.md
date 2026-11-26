@@ -70,6 +70,11 @@ failure, as scd3d11 does, unless `-d:` or `Driver=` in `SC4GraphicsOptions.ini` 
 the driver. `scvk-software.txt` next to `scvk.dll` marks the try, so a start that keeps
 failing leaves the game on Software, and `-d:DirectX` tries scvk again.
 
+SC4 Options API asks the game for the renderer chosen in its Graphic Options window at
+every start. scvk takes that as the player's choice: it draws only when Vulkan was
+chosen, leaves a Software driver alone and shows no setup dialog for the other
+renderers. Any `-d:` launch option leaves the driver to the game and scvk as before.
+
 The interface the game expects, `cIGZGDriver`, is a fixed function API: roughly
 OpenGL 1.2 with extensions, including a matrix stack, alpha test, fog, and
 two-stage texture environment combiners. Vulkan has none of that. So scvk is

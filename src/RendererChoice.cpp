@@ -30,6 +30,7 @@
 #include "RendererChoice.h"
 #include "FpsLimit.h"
 #include "LiveShadowHooks.h"
+#include "OptionsApiRenderer.h"
 #include "SC4Version.h"
 #include "ShadowRegistry.h"
 #include "TerrainShadows.h"
@@ -134,6 +135,17 @@ namespace scvk
 
 	bool WillScvkDraw(void)
 	{
+		// Take the player's choice in SC4 Options API when it made one
+		//
+		// The plugin asks for the OpenGL slot only for Vulkan. For Legacy Hardware it asks for
+		// the DirectX slot and fills it itself, above every renderer, so a DirectX slot without
+		// scd3d11 is no longer scvk's, as the slot checks below would take it to be.
+		OptionsAPIRenderer const chosen = OptionsApiRenderer::ReadRenderer();
+		if (chosen != OptionsAPIRenderer::None)
+		{
+			return chosen == OptionsAPIRenderer::Vulkan && IsVulkanAvailable();
+		}
+
 		uint32_t const requested = ReadRequestedDriver();
 
 		if (requested == SOFTWARE_DRIVER_GZCLSID)

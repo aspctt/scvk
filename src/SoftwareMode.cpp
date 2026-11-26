@@ -41,6 +41,7 @@
 
 #include "SoftwareMode.h"
 #include "Logger.h"
+#include "OptionsApiRenderer.h"
 #include "RendererChoice.h"
 #include "SC4Version.h"
 #include "VulkanBackend.h"
@@ -190,6 +191,17 @@ namespace scvk::SoftwareMode
 	{
 		// Only read the preferences of the build their layout came from
 		if (GetGameVersion() != SUPPORTED_GAME_VERSION || video.driverType != SOFTWARE_DRIVER_TYPE)
+		{
+			return false;
+		}
+
+		// Keep the driver SC4 Options API asked for
+		//
+		// It asks the game for the player's renderer at every start, so Software here is the
+		// player's choice, not a failed start. Undoing it would also take Legacy Hardware's
+		// DirectX slot for scvk's. It answers None for a start it leaves alone, which the
+		// marker below still covers.
+		if (OptionsApiRenderer::ReadRenderer() != OptionsAPIRenderer::None)
 		{
 			return false;
 		}

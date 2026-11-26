@@ -31,6 +31,7 @@
 #include "Benchmark.h"
 #include "LiveShadowHooks.h"
 #include "Logger.h"
+#include "OptionsApiRenderer.h"
 #include "RenderProperties.h"
 #include "RendererChoice.h"
 #include "SC4Version.h"
@@ -497,6 +498,44 @@ namespace scvk
 				return;
 			}
 
+			// Take the renderer the player chose in SC4 Options API as their choice
+			//
+			// The plugin asks the game for it at every start, so a renderer other than scvk is
+			// what the player picked, and scvk has no opinion to show for it. With Vulkan
+			// chosen, another driver drawing means scvk could not start, and the plugin's
+			// window is where the player chose it, so the message points there rather than
+			// at -d or SC4GraphicsOptions.
+			uint32_t const driverClass = driver->GetGZCLSID();
+			OptionsAPIRenderer const chosen = OptionsApiRenderer::ReadRenderer();
+
+			if (chosen != OptionsAPIRenderer::None && chosen != OptionsAPIRenderer::Vulkan)
+			{
+				LogInfo("SimCity 4 is drawing with %s, the %s renderer chosen in SC4 Options API.", ReadModulePath(owner).c_str(), OptionsApiRenderer::RendererName(chosen));
+				isAnotherRendererDrawing = true;
+				return;
+			}
+
+			if (chosen == OptionsAPIRenderer::Vulkan)
+			{
+				// Name the game's own drivers by slot, and any other by its DLL
+				std::string drawing = ReadModulePath(owner);
+				if (owner == GetModuleHandleA(nullptr) && driverClass == SOFTWARE_DRIVER_GZCLSID)
+				{
+					drawing = "its own Software driver";
+				}
+				else if (owner == GetModuleHandleA(nullptr) && driverClass == DIRECTX_DRIVER_GZCLSID)
+				{
+					drawing = "its own DirectX driver";
+				}
+				else if (owner == GetModuleHandleA(nullptr))
+				{
+					drawing = FormatMessageText("its own driver %08X", driverClass);
+				}
+
+				ReportSetupProblem("SimCity 4 is drawing with %s, not scvk, because Vulkan could not start. Check the lines above in scvk.log for details, or choose another renderer in the Graphic Options window.", drawing.c_str());
+				return;
+			}
+
 			// Another renderer is a choice someone may have made, so a dialog would nag, and
 			// the plugins scvk found a problem with are for that renderer's own checks
 			if (owner != GetModuleHandleA(nullptr))
@@ -506,7 +545,6 @@ namespace scvk
 				return;
 			}
 
-			uint32_t const driverClass = driver->GetGZCLSID();
 			std::string failure;
 			if (driverClass == SOFTWARE_DRIVER_GZCLSID && SoftwareMode::FindEarlierFailure(failure))
 			{

@@ -41,8 +41,9 @@ namespace scvk::SoftwareMode
 
 	/**
 	 * Asks the game for its DirectX slot again when the preferences hold the Software
-	 * driver and neither -d nor Driver= in SC4GraphicsOptions.ini chose it. Call just
-	 * before the graphics system starts. Returns whether the game was switched.
+	 * driver and neither -d, Driver= in SC4GraphicsOptions.ini nor SC4 Options API chose
+	 * it. Call just before the graphics system starts. Returns whether the game was
+	 * switched.
 	 */
 	bool Leave(SC4VideoPreferences& video);
 
