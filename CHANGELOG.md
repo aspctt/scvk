@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - With SC4 Options API installed, its screen size and window mode replace scvk's borderless default and window launch options
+- Clearer wording in the setup problem dialog, which now also names `-d:Vulkan` to get back to scvk
 
 ### Fixed
 

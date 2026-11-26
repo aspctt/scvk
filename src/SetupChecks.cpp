@@ -393,7 +393,7 @@ namespace scvk
 
 			if (IsOlderThan(version, RENDER_SERVICES_MINIMUM))
 			{
-				ReportSetupProblem("SC4RenderServices %u.%u.%u is older than %u.%u.%u, so terrain decals under shadows stay hidden. Update it.", version.major, version.minor, version.patch, RENDER_SERVICES_MINIMUM.major, RENDER_SERVICES_MINIMUM.minor, RENDER_SERVICES_MINIMUM.patch);
+				ReportSetupProblem("SC4RenderServices %u.%u.%u is older than %u.%u.%u, terrain decals under shadows will stay hidden until it's updated.", version.major, version.minor, version.patch, RENDER_SERVICES_MINIMUM.major, RENDER_SERVICES_MINIMUM.minor, RENDER_SERVICES_MINIMUM.patch);
 			}
 		}
 
@@ -514,20 +514,20 @@ namespace scvk
 				// driver's or ended before scvk could say
 				if (failure.empty())
 				{
-					ReportSetupProblem("SimCity 4 stays on its software driver, since its last start with a hardware driver failed. -d:DirectX tries scvk again.");
+					ReportSetupProblem("SimCity 4 stayed on the Software driver, since its last start with a hardware driver failed. Run with -d:DirectX or -d:Vulkan to try scvk again.");
 				}
 				else
 				{
-					ReportSetupProblem("SimCity 4 stays on its software driver, since scvk failed at its last start: %s. -d:DirectX tries scvk again.", failure.c_str());
+					ReportSetupProblem("SimCity 4 stayed on the Software driver, since scvk failed at its last start: %s. Run with -d:DirectX or -d:Vulkan to try scvk again.", failure.c_str());
 				}
 			}
 			else if (driverClass == SOFTWARE_DRIVER_GZCLSID)
 			{
-				ReportSetupProblem("SimCity 4 is drawing with its own software driver, not scvk. -d:DirectX, or Driver=DirectX in SC4GraphicsOptions.ini, goes back.");
+				ReportSetupProblem("SimCity 4 is drawing with its own software driver, not scvk. Run with -d:DirectX, -d:Vulkan, or set Driver=DirectX in SC4GraphicsOptions.ini to use scvk.");
 			}
 			else if (driverClass == DIRECTX_DRIVER_GZCLSID)
 			{
-				ReportSetupProblem("SimCity 4 is drawing with its own DirectX driver, not scvk, because Vulkan could not start. The lines above in scvk.log say why.");
+				ReportSetupProblem("SimCity 4 is drawing with its own DirectX driver, not scvk, because Vulkan could not start. Check the lines above in scvk.log for details.");
 			}
 			else
 			{
@@ -781,12 +781,12 @@ namespace scvk
 
 			if ((headers->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) == 0)
 			{
-				ReportSetupProblem("SimCity 4.exe can only use 2 GB of memory. Large cities and big Plugins folders run out of it, and then the game crashes. Apply the 4GB patch to SimCity 4.exe.");
+				ReportSetupProblem("SimCity 4.exe can only use 2 GB of memory. Large cities and big Plugins folders will cause the game to run out of memory and crash. Apply the 4GB patch to SimCity 4.exe.");
 			}
 
 			if (GetGameVersion() != SUPPORTED_GAME_VERSION)
 			{
-				ReportSetupProblem("This is not SimCity 4 version 1.1.%u. Live shadows and scvk's other changes to the game stay off. Update the game.", SUPPORTED_GAME_VERSION);
+				ReportSetupProblem("This is not SimCity 4 version 1.1.%u. Live shadows and scvk's other changes to the game stay off. Please update the game to the latest version.", SUPPORTED_GAME_VERSION);
 			}
 
 			CheckCompatibilityMode();
@@ -1160,13 +1160,13 @@ namespace scvk
 
 				if (value[0] == '\0')
 				{
-					ReportSetupProblem("SC4GraphicsOptions.ini has no %s. The plugin stops reading there and uses its defaults for the rest, which can be a 1024x768 window.", key.name);
+					ReportSetupProblem("SC4GraphicsOptions.ini has no %s. The plugin cannot read it and will use its defaults for the rest, which can be a 1024x768 window.", key.name);
 					return;
 				}
 
 				if (key.isBoolean && !IsGraphicsOptionsBoolean(value))
 				{
-					ReportSetupProblem("SC4GraphicsOptions.ini cannot read %s=%s. Use true or false. The plugin stops reading there and uses its defaults for the rest, which can be a 1024x768 window.", key.name, value);
+					ReportSetupProblem("SC4GraphicsOptions.ini has %s=%s, which the plugin cannot read. Use true or false. The plugin will use its defaults for the rest, which can be a 1024x768 window.", key.name, value);
 					return;
 				}
 			}
@@ -1214,7 +1214,7 @@ namespace scvk
 
 			if (!LiveShadowHooks::Enabled())
 			{
-				ReportSetupProblem("-LiveShadows:on is set, but another plugin has changed the game code it patches, so live shadows stay off. The \"live shadows:\" lines in scvk.log say where.");
+				ReportSetupProblem("-LiveShadows:on is set, but another plugin has changed the game code it patches, so live shadows will stay turned off. Check \"live shadows:\" lines in scvk.log for details.");
 				return;
 			}
 

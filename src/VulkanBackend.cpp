@@ -660,7 +660,7 @@ namespace scvk
 					VkPhysicalDeviceProperties stronger{};
 					vkGetPhysicalDeviceProperties(devices[i], &stronger);
 
-					ReportSetupProblem("scvk draws on %s, not the faster %s. -GPU:%u picks it.", deviceName.c_str(), stronger.deviceName, i + 1);
+					ReportSetupProblem("scvk draws on %s, not the faster %s. Use -GPU:%u to pick the right one.", deviceName.c_str(), stronger.deviceName, i + 1);
 					break;
 				}
 			}
