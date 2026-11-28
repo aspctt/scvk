@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The region view no longer lags and shakes while scrolling when a graphics driver setting turns VSync off, since the limit at twice the refresh rate now holds with VSync on too
+- `scvk.log` no longer lists `-NightShadows` among the switches scvk does not know
 
 ## [0.7.2] - 2026-11-22
 

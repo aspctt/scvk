@@ -173,7 +173,7 @@ namespace scvk
 		{
 			"VSync", "GPU", "ReShade", "ViewportCull", "LiveShadows", "NetworkShadowMasks", "FlipModel", "DepthBuffer", "Depth16", "MaxFPS",
 			"LogLevel", "DoctorDialog", "windowed", "fullscreen", "b", "borderless", "FullscreenMode",
-			"TerrainShadows", "ShadowRegistry",
+			"TerrainShadows", "ShadowRegistry", "NightShadows", "Reflections",
 		};
 
 		// Switches the game itself and common plugins read, from SCD3D11's list.
