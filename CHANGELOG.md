@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-28
+
 ### Added
 
 - `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen. With live shadows on too, the bridges and props they track are mirrored in the water as well, so a bridge just off screen still reflects
@@ -245,7 +247,8 @@ Most of this release is UlisseWolf's port of scd3d11's features.
 - `MaxFPS` and `UnlockRunningFPS` settings in `scvk.ini` to raise the game's frame rate caps
 - A `LogLevel` setting in `scvk.ini` for `scvk.log`, written beside the DLL
 
-[Unreleased]: https://github.com/aspctt/scvk/compare/0.7.2...HEAD
+[Unreleased]: https://github.com/aspctt/scvk/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/aspctt/scvk/compare/0.7.2...0.8.0
 [0.7.2]: https://github.com/aspctt/scvk/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/aspctt/scvk/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/aspctt/scvk/compare/0.6.0...0.7.0
