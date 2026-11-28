@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen
+- `-Reflections:on` lets the water reflect bridges, piers, buildings on the shore and boats, worked out from the picture on screen. With live shadows on too, the bridges and props they track are mirrored in the water as well, so a bridge just off screen still reflects
 - SC4 Options API can change the screen size and window mode while the game runs, keeping the window and the device
 
 ### Changed

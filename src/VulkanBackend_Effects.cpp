@@ -35,6 +35,7 @@
 #include "ShaderBinaries.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <string.h>
 
 namespace scvk
@@ -78,11 +79,32 @@ namespace scvk
 		static_assert(sizeof(ShadowPushConstants) <= 128, "Vulkan only promises 128 bytes of push constants");
 		static_assert(sizeof(ShadowCompositeConstants) == 288, "the composite's uniform block, laid out as std140 lays it out");
 
-		// The descriptor set of the water reflections: their constants, then the scene depth
-		// and the copy of the frame, in the bindings reflection.frag declares.
-		constexpr uint32_t REFLECTION_BINDING_COUNT = 3;
+		// The descriptor set of the water reflections: their constants, then the scene depth,
+		// the copy of the frame, the mirrored pieces and the water levels, in the bindings
+		// reflection.frag declares.
+		constexpr uint32_t REFLECTION_BINDING_COUNT = 5;
 
-		static_assert(sizeof(WaterReflectionConstants) == 112, "the reflections' uniform block, laid out as std140 lays it out");
+		// The water levels: the lowest and highest a pixel's water was drawn at, as floats,
+		// since a level is a few thousand view units that must hold to a tenth, and every
+		// device can copy and sample them
+		constexpr VkFormat WATER_LEVEL_FORMAT = VK_FORMAT_R32G32_SFLOAT;
+
+		// The level of a pixel that holds no water, so far off that no depth reaches it
+		constexpr float NO_WATER_LEVEL = -1.0e30f;
+
+		static_assert(sizeof(WaterReflectionConstants) == 128, "the reflections' uniform block, laid out as std140 lays it out");
+
+		// The mirrored pieces: colour and height in half floats, which every device can draw
+		// into and sample, and a 16-bit depth, which every device can draw with. Its steps
+		// split the tallest height above the water 65536 ways, far finer than a piece.
+		constexpr VkFormat MIRROR_FORMAT       = VK_FORMAT_R16G16B16A16_SFLOAT;
+		constexpr VkFormat MIRROR_DEPTH_FORMAT = VK_FORMAT_D16_UNORM;
+
+		// What the mirror is cleared to: black, and a height of -1 where no piece lies
+		constexpr float MIRROR_CLEAR[4] = { 0.0f, 0.0f, 0.0f, -1.0f };
+
+		static_assert(sizeof(ShadowCasterDraw::constants) == 128, "mirror.vert's push constant block, within the 128 bytes Vulkan promises");
+		static_assert(sizeof(MirrorVertex) == sizeof(float) * 6, "the mirrored vertex, laid out as the mirror pipelines read it");
 
 	}
 
@@ -220,6 +242,10 @@ namespace scvk
 		{
 			LogInfo("Vulkan: the water reflections are unavailable on this device.");
 		}
+		else if (!CreateMirrorResources())
+		{
+			LogInfo("Vulkan: the water reflections cannot mirror the pieces on this device, so they show only what is on screen.");
+		}
 
 		return true;
 	}
@@ -232,13 +258,13 @@ namespace scvk
 		}
 
 		// The shadows
-		VkPipeline* const shadowPipelines[] = { &shadowCasterPipeline, &shadowRegistryPipeline, &shadowLinePipeline, &shadowPointPipeline, &compositePipeline, &sceneDepthPipeline, &reflectionPipeline };
+		VkPipeline* const shadowPipelines[] = { &shadowCasterPipeline, &shadowRegistryPipeline, &shadowLinePipeline, &shadowPointPipeline, &compositePipeline, &sceneDepthPipeline, &reflectionPipeline, &mirrorTrianglePipeline, &mirrorLinePipeline, &mirrorPointPipeline };
 		for (VkPipeline* pipeline : shadowPipelines)
 		{
 			if (*pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, *pipeline, nullptr); *pipeline = VK_NULL_HANDLE; }
 		}
 
-		VkPipelineLayout* const layouts[] = { &shadowPipelineLayout, &compositePipelineLayout, &sceneDepthPipelineLayout, &reflectionPipelineLayout };
+		VkPipelineLayout* const layouts[] = { &shadowPipelineLayout, &compositePipelineLayout, &sceneDepthPipelineLayout, &reflectionPipelineLayout, &mirrorPipelineLayout };
 		for (VkPipelineLayout* layout : layouts)
 		{
 			if (*layout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, *layout, nullptr); *layout = VK_NULL_HANDLE; }
@@ -250,7 +276,7 @@ namespace scvk
 			if (*layout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, *layout, nullptr); *layout = VK_NULL_HANDLE; }
 		}
 
-		VkShaderModule* const modules[] = { &shadowVertexModule, &shadowFragmentModule, &fullscreenVertexModule, &compositeFragmentModule, &sceneDepthFragmentModule, &reflectionFragmentModule };
+		VkShaderModule* const modules[] = { &shadowVertexModule, &shadowFragmentModule, &fullscreenVertexModule, &compositeFragmentModule, &sceneDepthFragmentModule, &reflectionFragmentModule, &mirrorVertexModule, &mirrorFragmentModule };
 		for (VkShaderModule* module : modules)
 		{
 			if (*module != VK_NULL_HANDLE) { vkDestroyShaderModule(device, *module, nullptr); *module = VK_NULL_HANDLE; }
@@ -260,6 +286,8 @@ namespace scvk
 		if (sceneDepthFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, sceneDepthFramebuffer, nullptr); sceneDepthFramebuffer = VK_NULL_HANDLE; }
 		if (shadowPass != VK_NULL_HANDLE)            { vkDestroyRenderPass(device, shadowPass, nullptr); shadowPass = VK_NULL_HANDLE; }
 		if (sceneDepthPass != VK_NULL_HANDLE)        { vkDestroyRenderPass(device, sceneDepthPass, nullptr); sceneDepthPass = VK_NULL_HANDLE; }
+		if (mirrorFramebuffer != VK_NULL_HANDLE)     { vkDestroyFramebuffer(device, mirrorFramebuffer, nullptr); mirrorFramebuffer = VK_NULL_HANDLE; }
+		if (mirrorPass != VK_NULL_HANDLE)            { vkDestroyRenderPass(device, mirrorPass, nullptr); mirrorPass = VK_NULL_HANDLE; }
 
 		DestroyRenderImage(shadowMap);
 		DestroyRenderImage(shadowOccupantMap);
@@ -267,8 +295,17 @@ namespace scvk
 		DestroyRenderImage(terrainVertexImage);
 		DestroyRenderImage(sceneDepthImage);
 		DestroyRenderImage(reflectionSourceImage);
+		DestroyRenderImage(mirrorImage);
+		DestroyRenderImage(mirrorDepthImage);
 
-		hasShadowResources = false;
+		for (RenderImage& image : waterLevelImages)
+		{
+			DestroyRenderImage(image);
+		}
+
+		hasShadowResources    = false;
+		isMirrorDrawn         = false;
+		areWaterLevelsCleared = false;
 	}
 
 	bool VulkanBackend::CreateShadowResources(void)
@@ -669,12 +706,12 @@ namespace scvk
 			return false;
 		}
 
-		if (!CreateReflectionSource())
+		if (!CreateReflectionSource() || !CreateWaterLevels())
 		{
 			return false;
 		}
 
-		// Its constants, the scene depth and the copy
+		// Its constants, the scene depth, the copy, the mirror and the water levels
 		VkDescriptorSetLayoutBinding bindings[REFLECTION_BINDING_COUNT]{};
 		for (uint32_t index = 0; index < _countof(bindings); index++)
 		{
@@ -732,6 +769,261 @@ namespace scvk
 		return CreateRenderImage(backBuffer.format, renderWidth, renderHeight, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, reflectionSourceImage);
 	}
 
+	bool VulkanBackend::CreateWaterLevels(void)
+	{
+		// Copied between, filled and sampled
+		for (RenderImage& image : waterLevelImages)
+		{
+			if (!CreateRenderImage(WATER_LEVEL_FORMAT, renderWidth, renderHeight, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, image))
+			{
+				return false;
+			}
+		}
+
+		waterLevelCurrent     = 0;
+		areWaterLevelsCleared = false;
+		return true;
+	}
+
+	bool VulkanBackend::PrepareWaterLevels(void)
+	{
+		if (waterLevelImages[0].image == VK_NULL_HANDLE || waterLevelImages[1].image == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		if (areWaterLevelsCleared)
+		{
+			return true;
+		}
+
+		EndRenderPassIfActive();
+
+		for (RenderImage& image : waterLevelImages)
+		{
+			ClearWaterLevelImage(image, NO_WATER_LEVEL, NO_WATER_LEVEL);
+		}
+
+		areWaterLevelsCleared = true;
+		return true;
+	}
+
+	void VulkanBackend::ClearWaterLevelImage(RenderImage& image, float lowest, float highest)
+	{
+		TransitionImage(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+
+		VkClearColorValue value{};
+		value.float32[0] = lowest;
+		value.float32[1] = highest;
+
+		VkImageSubresourceRange const range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vkCmdClearColorImage(commandBuffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+	}
+
+	bool VulkanBackend::CreateMirrorResources(void)
+	{
+		// The colour and height are drawn into, then sampled
+		VkFormatProperties properties{};
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, MIRROR_FORMAT, &properties);
+
+		VkFormatFeatureFlags const needed = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+		if ((properties.optimalTilingFeatures & needed) != needed)
+		{
+			return false;
+		}
+
+		mirrorVertexModule   = MakeModule(device, MIRROR_VERTEX_SPIRV, sizeof(MIRROR_VERTEX_SPIRV));
+		mirrorFragmentModule = MakeModule(device, MIRROR_FRAGMENT_SPIRV, sizeof(MIRROR_FRAGMENT_SPIRV));
+		if (mirrorVertexModule == VK_NULL_HANDLE || mirrorFragmentModule == VK_NULL_HANDLE)
+		{
+			return false;
+		}
+
+		// The pass: the colour and height kept for the reflections, the depth only while
+		// drawing
+		VkAttachmentDescription attachments[2]{};
+		attachments[0].format         = MIRROR_FORMAT;
+		attachments[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+		attachments[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		attachments[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+		attachments[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachments[0].finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		attachments[1]                = attachments[0];
+		attachments[1].format         = MIRROR_DEPTH_FORMAT;
+		attachments[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attachments[1].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference colourReference{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+		VkAttachmentReference depthReference{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount    = 1;
+		subpass.pColorAttachments       = &colourReference;
+		subpass.pDepthStencilAttachment = &depthReference;
+
+		// After the last reflections read the mirror and the last drawing into it used the
+		// depth, and before the next reflections read it
+		VkSubpassDependency dependencies[2]{};
+		dependencies[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass    = 0;
+		dependencies[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | DEPTH_STAGES;
+		dependencies[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | DEPTH_STAGES;
+		dependencies[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		dependencies[1].srcSubpass    = 0;
+		dependencies[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+		dependencies[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		VkRenderPassCreateInfo passInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+		passInformation.attachmentCount = _countof(attachments);
+		passInformation.pAttachments    = attachments;
+		passInformation.subpassCount    = 1;
+		passInformation.pSubpasses      = &subpass;
+		passInformation.dependencyCount = _countof(dependencies);
+		passInformation.pDependencies   = dependencies;
+
+		if (vkCreateRenderPass(device, &passInformation, nullptr, &mirrorPass) != VK_SUCCESS || !CreateMirrorTarget())
+		{
+			return false;
+		}
+
+		// A piece's texture and sampler, and its constants
+		VkDescriptorSetLayout const setLayouts[] = { imageSetLayout, samplerSetLayout };
+
+		VkPushConstantRange range{};
+		range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+		range.size       = sizeof(ShadowCasterDraw::constants);
+
+		VkPipelineLayoutCreateInfo layoutInformation{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+		layoutInformation.setLayoutCount         = _countof(setLayouts);
+		layoutInformation.pSetLayouts            = setLayouts;
+		layoutInformation.pushConstantRangeCount = 1;
+		layoutInformation.pPushConstantRanges    = &range;
+
+		if (vkCreatePipelineLayout(device, &layoutInformation, nullptr, &mirrorPipelineLayout) != VK_SUCCESS)
+		{
+			return false;
+		}
+
+		// A pipeline for each topology the pieces were drawn with, as for the shadow map
+		VkPipeline* const variantPipelines[]   = { &mirrorTrianglePipeline, &mirrorLinePipeline, &mirrorPointPipeline };
+		VkPrimitiveTopology const topologies[] = { VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_POINT_LIST };
+
+		for (uint32_t variant = 0; variant < _countof(variantPipelines); variant++)
+		{
+			VkPipelineShaderStageCreateInfo stages[2]{};
+			stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+			stages[0].module = mirrorVertexModule;
+			stages[0].pName  = "main";
+			stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+			stages[1].module = mirrorFragmentModule;
+			stages[1].pName  = "main";
+
+			VkVertexInputBindingDescription const binding{ 0, sizeof(MirrorVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+			VkVertexInputAttributeDescription const attributes[] = {
+				{ 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 },
+				{ 1, 0, VK_FORMAT_R32G32_SFLOAT, sizeof(float) * 3 },
+				{ 2, 0, VK_FORMAT_R8G8B8A8_UNORM, sizeof(float) * 5 },
+			};
+
+			VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+			vertexInput.vertexBindingDescriptionCount   = 1;
+			vertexInput.pVertexBindingDescriptions      = &binding;
+			vertexInput.vertexAttributeDescriptionCount = _countof(attributes);
+			vertexInput.pVertexAttributeDescriptions    = attributes;
+
+			VkPipelineInputAssemblyStateCreateInfo inputAssembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+			inputAssembly.topology = topologies[variant];
+
+			VkPipelineViewportStateCreateInfo viewportState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+			viewportState.viewportCount = 1;
+			viewportState.scissorCount  = 1;
+
+			// Both sides, since the mirror shows the pieces from below
+			VkPipelineRasterizationStateCreateInfo rasterization{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+			rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+			rasterization.cullMode    = VK_CULL_MODE_NONE;
+			rasterization.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+			rasterization.lineWidth   = 1.0f;
+
+			VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+			multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+			// The lowest piece along each pixel's mirrored ray, see mirror.vert
+			VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+			depthStencil.depthTestEnable  = VK_TRUE;
+			depthStencil.depthWriteEnable = VK_TRUE;
+			depthStencil.depthCompareOp   = VK_COMPARE_OP_LESS;
+
+			VkPipelineColorBlendAttachmentState colourAttachment{};
+			colourAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+			VkPipelineColorBlendStateCreateInfo colourBlend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+			colourBlend.attachmentCount = 1;
+			colourBlend.pAttachments    = &colourAttachment;
+
+			// The back buffer's size changes with the window while the pipelines stay
+			VkDynamicState const dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+
+			VkPipelineDynamicStateCreateInfo dynamicState{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+			dynamicState.dynamicStateCount = _countof(dynamicStates);
+			dynamicState.pDynamicStates    = dynamicStates;
+
+			VkGraphicsPipelineCreateInfo information{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+			information.stageCount          = _countof(stages);
+			information.pStages             = stages;
+			information.pVertexInputState   = &vertexInput;
+			information.pInputAssemblyState = &inputAssembly;
+			information.pViewportState      = &viewportState;
+			information.pRasterizationState = &rasterization;
+			information.pMultisampleState   = &multisample;
+			information.pDepthStencilState  = &depthStencil;
+			information.pColorBlendState    = &colourBlend;
+			information.pDynamicState       = &dynamicState;
+			information.layout              = mirrorPipelineLayout;
+			information.renderPass          = mirrorPass;
+
+			VkPipeline& pipeline = *variantPipelines[variant];
+			if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &information, nullptr, &pipeline) != VK_SUCCESS)
+			{
+				pipeline = VK_NULL_HANDLE;
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool VulkanBackend::CreateMirrorTarget(void)
+	{
+		// The colour and height, and the depth, the size of the back buffer, whose pixels the
+		// reflections read them by
+		if (!CreateRenderImage(MIRROR_FORMAT, renderWidth, renderHeight, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_FORMAT_UNDEFINED, 0, mirrorImage) || !CreateRenderImage(MIRROR_DEPTH_FORMAT, renderWidth, renderHeight, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_FORMAT_UNDEFINED, 0, mirrorDepthImage))
+		{
+			return false;
+		}
+
+		VkImageView const views[] = { mirrorImage.view, mirrorDepthImage.view };
+
+		VkFramebufferCreateInfo framebufferInformation{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+		framebufferInformation.renderPass      = mirrorPass;
+		framebufferInformation.attachmentCount = _countof(views);
+		framebufferInformation.pAttachments    = views;
+		framebufferInformation.width           = renderWidth;
+		framebufferInformation.height          = renderHeight;
+		framebufferInformation.layers          = 1;
+
+		return vkCreateFramebuffer(device, &framebufferInformation, nullptr, &mirrorFramebuffer) == VK_SUCCESS;
+	}
+
 	bool VulkanBackend::ResizeEffectImages(void)
 	{
 		// Take the old ones down
@@ -743,17 +1035,35 @@ namespace scvk
 			sceneDepthFramebuffer = VK_NULL_HANDLE;
 		}
 
+		if (mirrorFramebuffer != VK_NULL_HANDLE)
+		{
+			vkDestroyFramebuffer(device, mirrorFramebuffer, nullptr);
+			mirrorFramebuffer = VK_NULL_HANDLE;
+		}
+
 		DestroyRenderImage(sceneDepthImage);
 		DestroyRenderImage(reflectionSourceImage);
+		DestroyRenderImage(mirrorImage);
+		DestroyRenderImage(mirrorDepthImage);
+
+		for (RenderImage& image : waterLevelImages)
+		{
+			DestroyRenderImage(image);
+		}
+
+		// The new mirror holds nothing until the pieces are drawn into it again
+		isMirrorDrawn = false;
 
 		// Make again only what a device that has the effects had. The shadow maps keep
 		// their own size, and the composite reads the depth through each pass's own set.
 		bool const hasSceneDepth  = sceneDepthPass == VK_NULL_HANDLE || CreateSceneDepthTarget();
-		bool const hasReflections = reflectionPipeline == VK_NULL_HANDLE || CreateReflectionSource();
+		bool const hasReflections = reflectionPipeline == VK_NULL_HANDLE || (CreateReflectionSource() && CreateWaterLevels());
+		bool const hasMirror      = mirrorPass == VK_NULL_HANDLE || CreateMirrorTarget();
 
-		if (!hasSceneDepth || !hasReflections)
+		if (!hasSceneDepth || !hasReflections || !hasMirror)
 		{
-			LogWarn("Vulkan: could not make the %s at %ux%u.", hasSceneDepth ? "water reflections' copy of the frame" : "scene depth for ReShade", renderWidth, renderHeight);
+			char const* const missing = !hasSceneDepth ? "scene depth for ReShade" : (!hasReflections ? "water reflections' copy of the frame" : "water's mirror");
+			LogWarn("Vulkan: could not make the %s at %ux%u.", missing, renderWidth, renderHeight);
 			return false;
 		}
 
@@ -1226,7 +1536,14 @@ namespace scvk
 			return;
 		}
 
-		memcpy(uniformAddress, &constants, sizeof(constants));
+		// The mirror is read only once something was drawn into it. Until then the copy of
+		// the frame stands in for its binding, unread.
+		bool const isMirrorRead = constants.mirror[0] != 0.0f && isMirrorDrawn;
+
+		WaterReflectionConstants passConstants = constants;
+		passConstants.mirror[0] = isMirrorRead ? 1.0f : 0.0f;
+
+		memcpy(uniformAddress, &passConstants, sizeof(passConstants));
 
 		VkDescriptorSet set = VK_NULL_HANDLE;
 		if (!AllocateTransientSet(reflectionSetLayout, set))
@@ -1239,6 +1556,14 @@ namespace scvk
 		// A copy is not a render pass operation. Every pixel of the copy is written again,
 		// so whatever the last frame left in it goes.
 		EndRenderPassIfActive();
+
+		if (!PrepareWaterLevels())
+		{
+			return;
+		}
+
+		RenderImage& waterLevels = waterLevelImages[waterLevelCurrent];
+		TransitionImage(waterLevels, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
 		TransitionTo(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		TransitionImage(reflectionSourceImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
 
@@ -1250,13 +1575,15 @@ namespace scvk
 		vkCmdCopyImage(commandBuffer, backBuffer.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, reflectionSourceImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 		TransitionImage(reflectionSourceImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
 
-		// Bind the constants, the scene depth and the copy, which is filtered since a
-		// reflection lands between pixels
-		VkDescriptorBufferInfo bufferInformation{ uniformBuffer, uniformOffset, sizeof(constants) };
+		// Bind the constants, the scene depth, the copy, which is filtered since a reflection
+		// lands between pixels, and the mirror and the water levels, read by the pixel
+		VkDescriptorBufferInfo bufferInformation{ uniformBuffer, uniformOffset, sizeof(passConstants) };
 
 		VkDescriptorImageInfo images[REFLECTION_BINDING_COUNT - 1]{};
 		images[0] = { pointClampSampler, depthBuffer.secondView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
 		images[1] = { linearClampSampler, reflectionSourceImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		images[2] = { pointClampSampler, isMirrorRead ? mirrorImage.view : reflectionSourceImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		images[3] = { pointClampSampler, waterLevels.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
 		VkWriteDescriptorSet writes[REFLECTION_BINDING_COUNT]{};
 		for (uint32_t index = 0; index < _countof(writes); index++)
@@ -1294,6 +1621,260 @@ namespace scvk
 		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
 		InvalidateBindings();
+	}
+
+	void VulkanBackend::ShiftWaterLevels(int32_t right, int32_t down)
+	{
+		if (!CanDrawReflections() || !EnsureFrame())
+		{
+			return;
+		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
+		// A copy is not a render pass operation
+		EndRenderPassIfActive();
+
+		if (!PrepareWaterLevels())
+		{
+			return;
+		}
+
+		// Into the other image, cleared to no water first, so what the move uncovers holds
+		// none until the strips drawn there fill it. The render size is far below INT32_MAX.
+		RenderImage& source      = waterLevelImages[waterLevelCurrent];
+		RenderImage& destination = waterLevelImages[1 - waterLevelCurrent];
+
+		ClearWaterLevelImage(destination, NO_WATER_LEVEL, NO_WATER_LEVEL);
+
+		int32_t const width  = static_cast<int32_t>(renderWidth) - std::abs(right);
+		int32_t const height = static_cast<int32_t>(renderHeight) - std::abs(down);
+
+		if (width > 0 && height > 0)
+		{
+			// The copy lands on the clear, which a barrier orders it after
+			TransitionImage(source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+			TransitionImage(destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+
+			// What stays in view: the part of the source that lands inside once moved
+			int32_t const sourceX = std::max(0, -right);
+			int32_t const sourceY = std::max(0, -down);
+
+			VkImageCopy copy{};
+			copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			copy.srcOffset      = { sourceX, sourceY, 0 };
+			copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			copy.dstOffset      = { sourceX + right, sourceY + down, 0 };
+			copy.extent         = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+
+			vkCmdCopyImage(commandBuffer, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		}
+
+		waterLevelCurrent = 1 - waterLevelCurrent;
+	}
+
+	void VulkanBackend::FillWaterLevels(int32_t const rectangle[4], float lowest, float highest)
+	{
+		if (!CanDrawReflections() || !EnsureFrame())
+		{
+			return;
+		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
+		// Fit the rectangle to the images. The render size is far below INT32_MAX.
+		int32_t const imageWidth  = static_cast<int32_t>(renderWidth);
+		int32_t const imageHeight = static_cast<int32_t>(renderHeight);
+
+		int32_t const left   = std::max(rectangle[0], 0);
+		int32_t const top    = std::max(rectangle[1], 0);
+		int32_t const right  = std::min(rectangle[0] + rectangle[2], imageWidth);
+		int32_t const bottom = std::min(rectangle[1] + rectangle[3], imageHeight);
+
+		if (right <= left || bottom <= top)
+		{
+			return;
+		}
+
+		EndRenderPassIfActive();
+
+		if (!PrepareWaterLevels())
+		{
+			return;
+		}
+
+		RenderImage& image = waterLevelImages[waterLevelCurrent];
+
+		// The whole window, as a full redraw gives it, is one clear
+		if (left == 0 && top == 0 && right == imageWidth && bottom == imageHeight)
+		{
+			ClearWaterLevelImage(image, lowest, highest);
+			return;
+		}
+
+		// A strip or a dirty rectangle is copied in from the staging arena, two floats a
+		// pixel
+		uint32_t const width  = static_cast<uint32_t>(right - left);
+		uint32_t const height = static_cast<uint32_t>(bottom - top);
+		size_t const   count  = size_t{ width } * height;
+
+		VkBuffer     buffer  = VK_NULL_HANDLE;
+		VkDeviceSize offset  = 0;
+		uint8_t*     address = nullptr;
+
+		if (!AllocateFrameStaging(VkDeviceSize{ count } * sizeof(float) * 2, buffer, offset, address))
+		{
+			return;
+		}
+
+		// Staging comes back as bytes, aligned to 16, which holds floats
+		float* const texels = reinterpret_cast<float*>(address);
+		for (size_t index = 0; index < count; index++)
+		{
+			texels[index * 2 + 0] = lowest;
+			texels[index * 2 + 1] = highest;
+		}
+
+		TransitionImage(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+
+		VkBufferImageCopy copy{};
+		copy.bufferOffset     = offset;
+		copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		copy.imageOffset      = { left, top, 0 };
+		copy.imageExtent      = { width, height, 1 };
+
+		vkCmdCopyBufferToImage(commandBuffer, buffer, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	}
+
+	bool VulkanBackend::CanDrawMirror(void)
+	{
+		return CanDrawReflections() && mirrorTrianglePipeline != VK_NULL_HANDLE && mirrorLinePipeline != VK_NULL_HANDLE && mirrorPointPipeline != VK_NULL_HANDLE && mirrorFramebuffer != VK_NULL_HANDLE;
+	}
+
+	bool VulkanBackend::DrawMirroredCasters(MirrorVertex const* vertices, uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, ShadowCasterDraw const* draws, uint32_t drawCount)
+	{
+		bool const hasGeometry = drawCount != 0;
+		if (hasGeometry && (vertices == nullptr || indices == nullptr || draws == nullptr || vertexCount == 0 || indexCount == 0))
+		{
+			return false;
+		}
+
+		if (!CanDrawMirror() || !EnsureFrame())
+		{
+			return false;
+		}
+
+		PhaseScope const recording(*this, FRAME_PHASE_RECORDING);
+
+		// Copy the geometry into the frame's arenas
+		VkBuffer     vertexBuffer = VK_NULL_HANDLE;
+		VkDeviceSize vertexOffset = 0;
+		VkBuffer     indexBuffer  = VK_NULL_HANDLE;
+		VkDeviceSize indexOffset  = 0;
+
+		if (hasGeometry)
+		{
+			VkDeviceSize const vertexBytes = VkDeviceSize{ vertexCount } * sizeof(MirrorVertex);
+			VkDeviceSize const indexBytes  = VkDeviceSize{ indexCount } * sizeof(uint32_t);
+
+			if (vertexBytes > vertexArena.blockSize || indexBytes > indexArena.blockSize)
+			{
+				static bool hasLoggedSize = false;
+				if (!hasLoggedSize)
+				{
+					hasLoggedSize = true;
+					LogWarn("Vulkan: %u mirrored vertices and %u indices do not fit the arenas; the reflections show only what is on screen.", vertexCount, indexCount);
+				}
+
+				return false;
+			}
+
+			if (!ReserveDrawSpace(vertexBytes, indexBytes))
+			{
+				return false;
+			}
+
+			uint8_t* vertexAddress = nullptr;
+			uint8_t* indexAddress  = nullptr;
+
+			if (!ArenaAllocate(vertexArena, vertexBytes, 16, vertexBuffer, vertexOffset, vertexAddress) || !ArenaAllocate(indexArena, indexBytes, sizeof(uint32_t), indexBuffer, indexOffset, indexAddress))
+			{
+				return false;
+			}
+
+			// The sizes fit their arena blocks, so they fit a size_t.
+			memcpy(vertexAddress, vertices, static_cast<size_t>(vertexBytes));
+			memcpy(indexAddress, indices, static_cast<size_t>(indexBytes));
+		}
+
+		// Draw them into the mirror, cleared to no piece, over the whole back buffer
+		EndRenderPassIfActive();
+
+		VkClearValue clears[2]{};
+		memcpy(clears[0].color.float32, MIRROR_CLEAR, sizeof(MIRROR_CLEAR));
+		clears[1].depthStencil.depth = 1.0f;
+
+		VkRenderPassBeginInfo beginInformation{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+		beginInformation.renderPass        = mirrorPass;
+		beginInformation.framebuffer       = mirrorFramebuffer;
+		beginInformation.renderArea.extent = { renderWidth, renderHeight };
+		beginInformation.clearValueCount   = _countof(clears);
+		beginInformation.pClearValues      = clears;
+
+		vkCmdBeginRenderPass(commandBuffer, &beginInformation, VK_SUBPASS_CONTENTS_INLINE);
+
+		if (hasGeometry)
+		{
+			// Viewports are in floats, which hold any window size exactly
+			VkViewport const viewport{ 0.0f, 0.0f, static_cast<float>(renderWidth), static_cast<float>(renderHeight), 0.0f, 1.0f };
+			VkRect2D const   scissor{ { 0, 0 }, { renderWidth, renderHeight } };
+
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffer, &vertexOffset);
+			vkCmdBindIndexBuffer(commandBuffer, indexBuffer, indexOffset, VK_INDEX_TYPE_UINT32);
+
+			VkPipeline      boundPipeline = VK_NULL_HANDLE;
+			VkDescriptorSet boundSets[2]  = {};
+
+			for (uint32_t index = 0; index < drawCount; index++)
+			{
+				ShadowCasterDraw const& draw = draws[index];
+				if (draw.indexCount == 0 || uint64_t{ draw.firstIndex } + draw.indexCount > indexCount)
+				{
+					continue;
+				}
+
+				VkPipeline const pipeline = (draw.topology == SHADOW_CASTER_LINES) ? mirrorLinePipeline : ((draw.topology == SHADOW_CASTER_POINTS) ? mirrorPointPipeline : mirrorTrianglePipeline);
+				if (pipeline != boundPipeline)
+				{
+					vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+					boundPipeline = pipeline;
+				}
+
+				// The white texture stands in for an untextured piece
+				uint32_t const texture = (draw.texture < textures.size() && textures[draw.texture].isLive) ? draw.texture : 0;
+				VkDescriptorSet const sets[2] = { textures[texture].descriptor, GetSamplerSet(draw.samplerParameters) };
+
+				if (sets[0] != boundSets[0] || sets[1] != boundSets[1])
+				{
+					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mirrorPipelineLayout, 0, 2, sets, 0, nullptr);
+					boundSets[0] = sets[0];
+					boundSets[1] = sets[1];
+				}
+
+				vkCmdPushConstants(commandBuffer, mirrorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(draw.constants), draw.constants);
+				vkCmdDrawIndexed(commandBuffer, draw.indexCount, 1, draw.firstIndex, draw.vertexOffset, 0);
+			}
+		}
+
+		vkCmdEndRenderPass(commandBuffer);
+		mirrorImage.layout      = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		mirrorDepthImage.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		isMirrorDrawn           = true;
+
+		InvalidateBindings();
+		return true;
 	}
 
 	bool VulkanBackend::SubmitForExternalWork(void)

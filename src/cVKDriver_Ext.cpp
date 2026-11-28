@@ -183,6 +183,9 @@ namespace scvk
 		NoteRegionStep("restore r%u region %d,%d %dx%d -> screen %d,%d", region, x, y, width, height, screenX, screenY);
 		ResetTile();
 
+		// A scroll restores the view moved, and the water reflections follow it
+		NoteViewShift(x, y, width, height, screenX, screenY);
+
 		// Restore it
 		//
 		// The region is the source, at the first pair of coordinates, and the screen is

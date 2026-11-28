@@ -61,7 +61,14 @@ namespace scvk
 		float uv[2];
 	};
 
-	/** One draw into the shadow map. */
+	/** A vertex of a piece mirrored in the water: a shadow caster's, with the colour the game lit it with, RGBA8. */
+	struct MirrorVertex
+	{
+		float    position[3];
+		float    uv[2];
+		uint32_t colour;
+	};
+
 	/** How a caster's indices are drawn into the shadow map. */
 	enum ShadowCasterTopology : uint32_t
 	{
@@ -70,6 +77,7 @@ namespace scvk
 		SHADOW_CASTER_POINTS    = 2,
 	};
 
+	/** One draw into the shadow map, or into the water's mirror. */
 	struct ShadowCasterDraw
 	{
 		// Into the vertices and indices handed over with the batch.
@@ -83,7 +91,8 @@ namespace scvk
 		uint32_t samplerParameters[4] = { 1, 1, 2, 2 };
 
 		// The push constants: a light matrix, the two texture rows a 2D sample reads, then
-		// four floats whose meaning depends on the pipeline. See shadow.frag.
+		// four floats whose meaning depends on the pipeline. See shadow.frag. A draw into the
+		// water's mirror carries mirror.vert's instead.
 		float constants[32] = {};
 
 		// Registry casters project their texture from the world position instead of
@@ -115,13 +124,14 @@ namespace scvk
 	/** What the water reflections read, laid out as reflection.frag declares its uniform block. */
 	struct WaterReflectionConstants
 	{
-		float origin[4];       // the view position of the back buffer's top left corner at depth 0; the water's height along up
+		float origin[4];       // the view position of the back buffer's top left corner at depth 0; what the water levels are kept against
 		float scale[4];        // view units per pixel right, per pixel down, per unit of depth; strength
 		float up[4];           // the world's up in view space, facing the camera; the longest march, as a share of the height
 		float options[4];      // 1 to show the water mask instead; the least thickness a surface has; how far off the water's height a pixel still counts as water; the shade of an underside
 		float axisX[4];        // the world's x axis in view space
 		float axisZ[4];        // the world's z axis in view space; how far the waves tilt the normal
 		float translation[4];  // the view position of the world's origin
+		float mirror[4];       // 1 to read the mirrored pieces; the tallest height their depth stands for, in view units
 	};
 
 	/**
@@ -963,6 +973,28 @@ namespace scvk
 		VkPipelineLayout      reflectionPipelineLayout   = VK_NULL_HANDLE;
 		VkPipeline            reflectionPipeline         = VK_NULL_HANDLE;
 
+		// The pieces mirrored in the water, which the reflections read: their colour and
+		// height, the depth that keeps the lowest, and a pipeline per topology. Whether the
+		// image holds a drawing since it was last made, which reading it needs.
+		RenderImage           mirrorImage;
+		RenderImage           mirrorDepthImage;
+		VkRenderPass          mirrorPass                 = VK_NULL_HANDLE;
+		VkFramebuffer         mirrorFramebuffer          = VK_NULL_HANDLE;
+		VkShaderModule        mirrorVertexModule         = VK_NULL_HANDLE;
+		VkShaderModule        mirrorFragmentModule       = VK_NULL_HANDLE;
+		VkPipelineLayout      mirrorPipelineLayout       = VK_NULL_HANDLE;
+		VkPipeline            mirrorTrianglePipeline     = VK_NULL_HANDLE;
+		VkPipeline            mirrorLinePipeline         = VK_NULL_HANDLE;
+		VkPipeline            mirrorPointPipeline        = VK_NULL_HANDLE;
+		bool                  isMirrorDrawn              = false;
+
+		// The lowest and highest water level each pixel was drawn with, moved with the saved
+		// view as the game scrolls it. Two images, since a copy cannot move an image onto itself, and which
+		// one holds them. They are cleared to no water on their first use.
+		RenderImage           waterLevelImages[2];
+		uint32_t              waterLevelCurrent          = 0;
+		bool                  areWaterLevelsCleared      = false;
+
 		//// Private Functions
 
 		// Device and swapchain, in VulkanBackend.cpp
@@ -1318,6 +1350,21 @@ namespace scvk
 
 		/** The copy of the frame the water reflections read, at the render size. */
 		bool CreateReflectionSource(void);
+
+		/** The water levels' two images, at the render size. */
+		bool CreateWaterLevels(void);
+
+		/** Clears the water levels to no water the first time they are used. Whether they exist. */
+		bool PrepareWaterLevels(void);
+
+		/** Clears a water level image to one level, outside any render pass. */
+		void ClearWaterLevelImage(RenderImage& image, float lowest, float highest);
+
+		/** The mirrored pieces' pass and pipelines, for the water reflections. */
+		bool CreateMirrorResources(void);
+
+		/** The mirrored pieces' images and framebuffer at the render size, for a pass that exists. */
+		bool CreateMirrorTarget(void);
 
 		/** Makes the effects' images of the render size again, at the new one. */
 		bool ResizeEffectImages(void);
@@ -1751,6 +1798,25 @@ namespace scvk
 		 * of the frame as it stands.
 		 */
 		void DrawWaterReflections(WaterReflectionConstants const& constants);
+
+		/** Moves the water levels by whole pixels right and down, as a scroll moves the saved view. What it uncovers holds no water. */
+		void ShiftWaterLevels(int32_t right, int32_t down);
+
+		/** Sets the lowest and highest water level of a rectangle of window pixels, measured from the top left. */
+		void FillWaterLevels(int32_t const rectangle[4], float lowest, float highest);
+
+		/** Whether pieces can be drawn mirrored in the water: the reflections run and the mirror's resources exist. */
+		bool CanDrawMirror(void);
+
+		/** Whether the mirror holds a drawing since its image was last made, which the reflections may read. */
+		bool IsMirrorDrawn(void) const { return isMirrorDrawn; }
+
+		/**
+		 * Draws pieces mirrored in the water for the reflections to read, into the mirror
+		 * cleared first, so no draws leave it empty. The vertices and indices are copied;
+		 * each draw names its range of them, its texture and mirror.vert's constants.
+		 */
+		bool DrawMirroredCasters(MirrorVertex const* vertices, uint32_t vertexCount, uint32_t const* indices, uint32_t indexCount, ShadowCasterDraw const* draws, uint32_t drawCount);
 
 		/**
 		 * Submits what the frame has recorded so far without waiting, leaving the back

@@ -71,6 +71,8 @@ STAGES = [
     ("composite.frag",   "COMPOSITE_FRAGMENT_SPIRV",              []),
     ("scene_depth.frag", "SCENE_DEPTH_FRAGMENT_SPIRV",            []),
     ("reflection.frag",  "REFLECTION_FRAGMENT_SPIRV",             []),
+    ("mirror.vert",      "MIRROR_VERTEX_SPIRV",                   []),
+    ("mirror.frag",      "MIRROR_FRAGMENT_SPIRV",                 []),
 ]
 
 

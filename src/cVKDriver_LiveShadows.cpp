@@ -33,6 +33,10 @@
  *
  * Without -LiveShadows:on no draw matches and nothing is captured. The drawing itself is
  * the backend's: VulkanBackend::DrawShadowCasters and CompositeShadows.
+ *
+ * With the water reflections on too, the casters kept in world space are also drawn
+ * mirrored in the water for them (DrawMirroredPieces), with the colour each vertex was lit
+ * with kept beside it.
  */
 
 //// Dependencies
@@ -133,6 +137,13 @@ namespace scvk
 
 		// The floats of a captured vertex: position, then texture coordinate.
 		constexpr size_t VERTEX_FLOATS = 5;
+
+		// A colour channel's byte as a share of full
+		constexpr float COLOUR_PER_STEP = 1.0f / 255.0f;
+
+		// How far the mirror's depth reaches past the tallest piece, in view units, so that
+		// its top is never clipped
+		constexpr float MIRROR_HEADROOM = 1.0f;
 
 		// The game's filter and wrap numbering: linear, then clamp or repeat.
 		constexpr uint32_t CLAMP_SAMPLER[4] = { 1, 1, 2, 2 };
@@ -638,7 +649,22 @@ namespace scvk
 		bool const hasCoordinates = RZVertexFormatNumElements(vertexFormat, kGDElementType_TexCoord) != 0;
 		uint32_t const coordinateOffset = hasCoordinates ? RZVertexFormatElementOffset(vertexFormat, kGDElementType_TexCoord, 0) : 0;
 
+		// With the water reflections on, also the colour the game lit each vertex with, for
+		// the pieces mirrored in the water
+		//
+		// Lit as geometry.vert lights it: the ambient light times the vertex colour where the
+		// game maps that onto the ambient material, otherwise times white, clamped. The game
+		// packs its colours BGRA, and the mirror reads them RGBA.
+		bool const isColourKept       = areWaterReflectionsOn;
+		bool const isColourFromVertex = isColourKept && isVertexColourAmbient && RZVertexFormatNumElements(vertexFormat, kGDElementType_Color) != 0;
+		uint32_t const colourOffset   = isColourFromVertex ? RZVertexFormatElementOffset(vertexFormat, kGDElementType_Color, 0) : 0;
+
 		draw.vertices.resize(size_t{ vertexCount } * VERTEX_FLOATS);
+		if (isColourKept)
+		{
+			draw.colours.resize(vertexCount);
+		}
+
 		for (uint32_t index = 0; index < vertexCount; index++)
 		{
 			uint8_t const* const vertex = vertices + size_t{ index } * vertexStride;
@@ -649,6 +675,31 @@ namespace scvk
 			{
 				std::memcpy(out + 3, vertex + coordinateOffset, sizeof(float) * 2);
 			}
+
+			if (!isColourKept)
+			{
+				continue;
+			}
+
+			float material[3] = { 1.0f, 1.0f, 1.0f };
+			if (isColourFromVertex)
+			{
+				uint8_t const* const packed = vertex + colourOffset;
+				material[0] = static_cast<float>(packed[2]) * COLOUR_PER_STEP;
+				material[1] = static_cast<float>(packed[1]) * COLOUR_PER_STEP;
+				material[2] = static_cast<float>(packed[0]) * COLOUR_PER_STEP;
+			}
+
+			// Opaque, red in the lowest byte. Each channel is clamped to 0 to 1 first, so its
+			// steps fit a byte.
+			uint32_t colour = 0xFF000000u;
+			for (unsigned channel = 0; channel < 3; channel++)
+			{
+				float const lit = std::clamp(material[channel] * colourMultiplier[channel], 0.0f, 1.0f);
+				colour |= static_cast<uint32_t>(lit * 255.0f + 0.5f) << (channel * 8);
+			}
+
+			draw.colours[index] = colour;
 		}
 
 		draw.indices  = primitives;
@@ -1223,6 +1274,12 @@ namespace scvk
 			{
 				isLiveShadowWorldValid = false;
 			}
+		}
+
+		// The pieces mirrored in the water follow this pass's view and casters
+		if (isStaticPass && hasView && hasProjection && areWaterReflectionsOn)
+		{
+			NoteMirrorView(worldToView, projection);
 		}
 
 		// Without the registry a partial pass only ever sees the casters drawn inside its own
@@ -1970,6 +2027,211 @@ namespace scvk
 		vulkan->CompositeShadows(composite, rectangle, isTerrainBound, hasOccupantBoxes ? liveShadowOccupantBoxes.data() : nullptr, occupantCount);
 		liveShadowStats.composites++;
 		liveShadowDraws.clear();
+	}
+
+	void cVKDriver::NoteMirrorView(float const* worldToView, float const* projection)
+	{
+		// The pass's projection covers its own viewport, the dirty rectangle of a partial
+		// pass. The mirror covers the whole window, so its clip space is the pass's widened:
+		// the viewport's square lands on the viewport's rectangle of the window's. The
+		// viewport counts up from the bottom, as clip space does.
+		float const windowX  = static_cast<float>(std::max(windowWidth, 1));
+		float const windowY  = static_cast<float>(std::max(windowHeight, 1));
+		float const width    = static_cast<float>(viewportWidth);
+		float const height   = static_cast<float>(viewportHeight);
+		float const left     = static_cast<float>(viewportX);
+		float const bottom   = static_cast<float>(viewportY);
+
+		float widen[16] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+		widen[0]  = width / windowX;
+		widen[5]  = height / windowY;
+		widen[12] = (2.0f * left + width) / windowX - 1.0f;
+		widen[13] = (2.0f * bottom + height) / windowY - 1.0f;
+
+		float worldToClip[16] = {};
+		Multiply(projection, worldToView, worldToClip);
+
+		Multiply(widen, worldToClip, mirrorWorldToClip);
+
+		isMirrorViewValid = true;
+		isMirrorStale     = true;
+
+		// The view is this pass's own, so a scroll before it is already in it
+		mirrorPendingShift[0] = 0;
+		mirrorPendingShift[1] = 0;
+		hasMirrorPendingShift = false;
+	}
+
+	bool cVKDriver::DrawMirroredPieces(float undersideShade, float& outTallest)
+	{
+		// A scroll whose strips gave no view moves the last view by as many pixels as the
+		// saved view moved (see NoteViewShift). The rows count down and clip space up.
+		//
+		// At the widest zooms the strips are a pixel or two wide, and often hold nothing
+		// the view can be read from: no terrain, no water and no shadow record. Without the
+		// move the mirror stayed where the last view put it, and its reflections were dragged
+		// along with the scroll.
+		if (hasMirrorPendingShift)
+		{
+			hasMirrorPendingShift = false;
+
+			if (isMirrorViewValid)
+			{
+				float const across = 2.0f * static_cast<float>(mirrorPendingShift[0]) / static_cast<float>(std::max(windowWidth, 1));
+				float const up     = -2.0f * static_cast<float>(mirrorPendingShift[1]) / static_cast<float>(std::max(windowHeight, 1));
+
+				for (unsigned column = 0; column < 4; column++)
+				{
+					float const w = mirrorWorldToClip[column * 4 + 3];
+					mirrorWorldToClip[column * 4 + 0] += across * w;
+					mirrorWorldToClip[column * 4 + 1] += up * w;
+				}
+
+				isMirrorStale = true;
+			}
+
+			mirrorPendingShift[0] = 0;
+			mirrorPendingShift[1] = 0;
+		}
+
+		// Only live shadows keep the pieces, and only while they run
+		if (!LiveShadowHooks::Enabled() || LiveShadowHooks::Paused() || !isLiveShadowWorldValid || !isMirrorViewValid || !vulkan->CanDrawMirror())
+		{
+			return false;
+		}
+
+		// Drawn again after a static pass, or once the mirror was made again at another size
+		bool const isDrawingNeeded = isMirrorStale || (isMirrorUsable && !vulkan->IsMirrorDrawn());
+		if (!isDrawingNeeded)
+		{
+			outTallest = mirrorTallest;
+			return isMirrorUsable;
+		}
+
+		isMirrorStale  = false;
+		isMirrorUsable = false;
+
+		float const level = waterWorldLevel;
+
+		std::vector<LiveShadowDraw const*> pieces;
+		std::vector<MirrorVertex>          vertices;
+		std::vector<uint32_t>              indices;
+		std::vector<ShadowCasterDraw>      draws;
+
+		try
+		{
+			// The pieces standing above the water whose mirror image lands in the window
+			//
+			// A piece whose texture has since been deleted, or its name reused, is left out,
+			// and so is one whose colours were not kept.
+			float  highest     = level;
+			size_t vertexCount = 0;
+			size_t indexCount  = 0;
+
+			for (LiveShadowDraw const& draw : liveShadowWorldCasters)
+			{
+				bool const isCurrent = draw.texture == 0 || vulkan->TextureSerial(draw.texture) == draw.textureSerial;
+				if (draw.worldHigh[1] <= level || !isCurrent || draw.colours.size() * VERTEX_FLOATS != draw.vertices.size())
+				{
+					continue;
+				}
+
+				// The mirror image's box, cut at the water
+				float const low[3]  = { draw.worldLow[0], 2.0f * level - draw.worldHigh[1], draw.worldLow[2] };
+				float const high[3] = { draw.worldHigh[0], std::min(2.0f * level - draw.worldLow[1], level), draw.worldHigh[2] };
+				if (BoxInViewport(low, high, mirrorWorldToClip) == ViewportOverlap::Outside)
+				{
+					continue;
+				}
+
+				pieces.push_back(&draw);
+				highest      = std::max(highest, draw.worldHigh[1]);
+				vertexCount += draw.colours.size();
+				indexCount  += draw.indices.size();
+			}
+
+			if (pieces.empty())
+			{
+				return false;
+			}
+
+			// The depth runs from the water up to the tallest piece
+			float const tallest     = (highest - level) * waterViewScale + MIRROR_HEADROOM;
+			float const heightScale = waterViewScale / tallest;
+
+			// The mirror in the water's level, which takes a height y to 2 level - y. Column
+			// major.
+			float mirror[16] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+			mirror[13] = 2.0f * level;
+
+			float worldToMirrorClip[16] = {};
+			Multiply(mirrorWorldToClip, mirror, worldToMirrorClip);
+
+			vertices.reserve(vertexCount);
+			indices.reserve(indexCount);
+			draws.reserve(pieces.size());
+
+			for (LiveShadowDraw const* piece : pieces)
+			{
+				ShadowCasterDraw draw;
+				draw.firstIndex   = static_cast<uint32_t>(indices.size());
+				draw.indexCount   = static_cast<uint32_t>(piece->indices.size());
+				draw.topology     = piece->topology;
+				draw.vertexOffset = static_cast<int32_t>(vertices.size());
+				draw.texture      = piece->texture;
+				std::memcpy(draw.samplerParameters, piece->samplerParameters, sizeof(draw.samplerParameters));
+
+				// mirror.vert's constants: the model to the mirror's clip space, the height above
+				// the water over the tallest, from the world's y row of the piece's placement,
+				// the texture rows, then the material
+				float const* const placement = piece->modelToWorld;
+				Multiply(worldToMirrorClip, placement, draw.constants);
+
+				draw.constants[16] = placement[1] * heightScale;
+				draw.constants[17] = placement[5] * heightScale;
+				draw.constants[18] = placement[9] * heightScale;
+				draw.constants[19] = (placement[13] - level) * heightScale;
+
+				TextureRows(piece->textureMatrix, draw.constants + 20);
+				draw.constants[28] = static_cast<float>(piece->alphaFunction);
+				draw.constants[29] = piece->alphaReference;
+				draw.constants[30] = piece->isAlphaTested ? 1.0f : 0.0f;
+				draw.constants[31] = undersideShade;
+
+				for (size_t index = 0; index < piece->colours.size(); index++)
+				{
+					float const* const source = piece->vertices.data() + index * VERTEX_FLOATS;
+					vertices.push_back(MirrorVertex{ { source[0], source[1], source[2] }, { source[3], source[4] }, piece->colours[index] });
+				}
+
+				indices.insert(indices.end(), piece->indices.begin(), piece->indices.end());
+				draws.push_back(draw);
+			}
+
+			mirrorTallest = tallest;
+		}
+		catch (std::bad_alloc const&)
+		{
+			return false;
+		}
+
+		if (!vulkan->DrawMirroredCasters(vertices.data(), static_cast<uint32_t>(vertices.size()), indices.data(), static_cast<uint32_t>(indices.size()), draws.data(), static_cast<uint32_t>(draws.size())))
+		{
+			return false;
+		}
+
+		// Say once what the first mirror held, and the water's level in the world, which a
+		// misplaced mirror is checked against. %f takes doubles.
+		static bool hasLoggedMirror = false;
+		if (!hasLoggedMirror)
+		{
+			hasLoggedMirror = true;
+			Log(LogCategory::Initialization, "water reflections: first mirror drew %u pieces (%u vertices) above the water at world height %.2f, up to %.1f view units", static_cast<unsigned>(draws.size()), static_cast<unsigned>(vertices.size()), static_cast<double>(level), static_cast<double>(mirrorTallest));
+		}
+
+		isMirrorUsable = true;
+		outTallest     = mirrorTallest;
+		return true;
 	}
 
 	void cVKDriver::LogLiveShadowSummary(void)

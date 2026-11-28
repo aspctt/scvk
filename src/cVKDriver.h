@@ -192,6 +192,7 @@ namespace scvk
 		{
 			std::vector<float>    vertices;             // position xyz, texture coordinate uv
 			std::vector<uint32_t> indices;              // a list of the topology's primitives
+			std::vector<uint32_t> colours;              // the lit colour of each vertex, RGBA8, kept only with the water reflections on
 			uint32_t              topology        = 0;  // ShadowCasterTopology
 			uint32_t              texture         = 0;  // backend handle, 0 untextured
 			uint32_t              textureSerial   = 0;  // which picture the handle named
@@ -217,6 +218,14 @@ namespace scvk
 		 * few hundred frames. The times are performance counter ticks, counted only while the
 		 * log is at debug level.
 		 */
+		/** A rectangle of window pixels, from the top left, where water was drawn between two levels. */
+		struct WaterLevelFill
+		{
+			int32_t rectangle[4] = {};
+			float   lowest       = 0.0f;
+			float   highest      = 0.0f;
+		};
+
 		struct LiveShadowStats
 		{
 			// Static passes, over the whole window or one dirty rectangle, and the partial
@@ -545,6 +554,32 @@ namespace scvk
 		float waterReflectionAxisX[3]    = {};  // the world's x axis in view space
 		float waterReflectionAxisZ[3]    = {};  // the world's z axis in view space
 		float waterReflectionOffset[3]   = {};  // the view position of the world's origin
+		float waterWorldLevel            = 0.0f;  // the water's height in the world
+		float waterViewScale             = 1.0f;  // view units per world unit along the world's up
+
+		// The pieces mirrored in the water: the whole window's clip space from the world, as
+		// the last static pass with a view saw it, whether the mirror has to be drawn again,
+		// whether it holds pieces the reflections can read, and the tallest height its
+		// depth stands for, in view units
+		float mirrorWorldToClip[16]      = {};
+		bool  isMirrorViewValid          = false;
+		bool  isMirrorStale              = true;
+		bool  isMirrorUsable             = false;
+		float mirrorTallest              = 0.0f;
+
+		// How far scrolls moved the saved view, in back buffer pixels right and down, until a
+		// pass with a view makes it unneeded or the mirror takes it
+		int32_t mirrorPendingShift[2]    = {};
+		bool    hasMirrorPendingShift    = false;
+
+		// The water's level by pixel, which the backend keeps: the rectangles the water was
+		// drawn in since the last flush, the move a scroll gave the saved view before them,
+		// and what the moves have added to every kept level, which the levels are kept
+		// against. See cVKDriver_Reflections.cpp.
+		std::vector<WaterLevelFill> waterLevelFills;
+		int32_t waterLevelShift[2]       = {};
+		bool    hasWaterLevelShift       = false;
+		double  waterLevelOffset         = 0.0;
 
 		// Configurations already reported once, and the last multitextured one, so an
 		// unchanged one costs a compare rather than a search.
@@ -757,6 +792,16 @@ namespace scvk
 		/** Remembers the terrain's modelview, which stands in for the view in a city without shadow records. */
 		void NoteLiveShadowTerrainView(uint8_t const* firstVertex);
 
+		/** Keeps a static pass's view, widened from its viewport to the whole window, for the pieces mirrored in the water. */
+		void NoteMirrorView(float const* worldToView, float const* projection);
+
+		/**
+		 * Draws the kept casters mirrored in the water for the reflections, again only once
+		 * a static pass changed them or the view. Whether the mirror holds pieces to read,
+		 * and the tallest height its depth stands for, in view units.
+		 */
+		bool DrawMirroredPieces(float undersideShade, float& outTallest);
+
 		// Water reflections, in cVKDriver_Reflections.cpp
 
 		/** Turns the reflections on as the settings ask, once the device draws. */
@@ -767,6 +812,12 @@ namespace scvk
 
 		/** Lays the reflections over the water of the finished 3D view. */
 		void RenderWaterReflections(void);
+
+		/** Notes how far a restore of the saved view moved it, which a scroll does, for the water levels and the mirrored pieces. */
+		void NoteViewShift(int32_t regionX, int32_t regionY, int32_t width, int32_t height, int32_t screenX, int32_t screenY);
+
+		/** Hands the backend the water levels' move and the strips filled since, in the order the game made them. */
+		void FlushWaterLevels(void);
 
 		/** Keeps a static pass's casters in world space and works out what a partial pass changed. */
 		bool TrackLiveShadowWorldCasters(float const* eyeToWorld, float const* worldToView, float const* projection, float const sun[3], bool isSunKnown, bool isPartialPass);

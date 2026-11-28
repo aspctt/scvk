@@ -75,7 +75,9 @@ $stages = @(
 	@{ file = "fullscreen.vert";  name = "FULLSCREEN_VERTEX_SPIRV";               defines = @() },
 	@{ file = "composite.frag";   name = "COMPOSITE_FRAGMENT_SPIRV";              defines = @() },
 	@{ file = "scene_depth.frag"; name = "SCENE_DEPTH_FRAGMENT_SPIRV";            defines = @() },
-	@{ file = "reflection.frag";  name = "REFLECTION_FRAGMENT_SPIRV";             defines = @() }
+	@{ file = "reflection.frag";  name = "REFLECTION_FRAGMENT_SPIRV";             defines = @() },
+	@{ file = "mirror.vert";      name = "MIRROR_VERTEX_SPIRV";                   defines = @() },
+	@{ file = "mirror.frag";      name = "MIRROR_FRAGMENT_SPIRV";                 defines = @() }
 )
 
 # SPIR-V words per line of the generated arrays.

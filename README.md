@@ -173,10 +173,13 @@ warns when one leaves buildings or props without a shadow.
 ### Water reflections
 
 `-Reflections:on` lets the water reflect what stands above it: bridges, piers, buildings
-on the shore and boats. scvk works them out from the picture on screen, so only what is
-in view can be reflected. The underside of a bridge, which the camera never sees, shows
-in shade, and small still ripples break the reflections up the way real water does. They
-are off by default while they are new.
+on the shore and boats. scvk works them out from the picture on screen, so on their own
+they only show what is in view. With [live shadows](#live-shadows) on as well, the
+bridges, network pieces and props those track are also mirrored in the water, off screen
+ones included, so a bridge whose deck sits above the top of the screen still shows in the
+water below it. The underside of a bridge, which the camera never sees, shows in shade,
+and small still ripples break the reflections up the way real water does. They are off by
+default while they are new.
 
 ### ReShade
 
